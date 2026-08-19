@@ -156,6 +156,26 @@ PORT=3150 APP_PASSWORD="YourSecurePassword" bun run server/index.ts
 
 ---
 
+## Customizing Your Branding & Logo
+
+ServeTracker is built to be white-labeled for your own process serving agency. To replace the default branding with your own business logo and company name:
+
+1. **Replace Logo and Favicon Files in `/public`**:
+   - `public/logo.webp` — Your horizontal or square company logo (appears in top navigation bar).
+   - `public/favicon.svg` — Your vector browser tab icon.
+   - `public/apple-touch-icon.webp` — Mobile home-screen bookmark icon (180x180 px).
+
+2. **Update Company Name & Phone**:
+   - Open `src/utils/fieldSheetEngine.ts` and update the company header constants (e.g. your business name, contact phone, and licensing number).
+   - Open `index.html` and update `<title>Your Agency Name - ServeTracker</title>`.
+
+3. **Rebuild**:
+   ```bash
+   npm run build
+   ```
+
+---
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
