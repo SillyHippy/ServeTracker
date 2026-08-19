@@ -429,6 +429,43 @@ function runMigrations(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_sig_user_status ON user_signature_assets(user_id, status);
     CREATE INDEX IF NOT EXISTS idx_assign_events_case ON case_assignment_events(case_id, occurred_at DESC);
     CREATE INDEX IF NOT EXISTS idx_exec_case ON affidavit_executions(case_id, status, created_at DESC);
+
+    -- 11. Push Notifications and In-App Inbox tables
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      platform TEXT DEFAULT 'unknown',
+      user_agent TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      entity_type TEXT DEFAULT '',
+      entity_id TEXT DEFAULT '',
+      action_url TEXT DEFAULT '',
+      read_at TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS watchdog_events (
+      id TEXT PRIMARY KEY,
+      watchdog_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      notified_at TEXT NOT NULL,
+      UNIQUE(watchdog_type, entity_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_notif_user_unread ON notifications(user_id, read_at);
   `);
 
   // 10. Session metadata columns (idempotent)

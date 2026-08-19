@@ -92,6 +92,25 @@ function applyAssignment(
 
   if (prev !== newServerId) {
     invalidateExecutionsForCase(db, caseId, newServerId ? "server_changed" : "unassigned");
+    
+    // Targeted Push Alert on Assignment
+    if (newServerId) {
+      const caseRow = db.query("SELECT case_number, defendant_respondent, case_name FROM client_cases WHERE id = ?").get(caseId) as Record<string, unknown> | null;
+      const caseNum = String(caseRow?.case_number || "New Case");
+      const person = String(caseRow?.defendant_respondent || caseRow?.case_name || "");
+      import("./notifications").then(({ createNotification }) => {
+        createNotification(db, {
+          userId: newServerId,
+          type: "case_assigned",
+          priority: "normal",
+          title: `New Case Assigned: ${caseNum}`,
+          body: person ? `Assigned to serve ${person}. Tap to view directives.` : "Tap to view case papers and directives.",
+          entityType: "case",
+          entityId: caseId,
+          actionUrl: `/dashboard?caseId=${caseId}`,
+        }).catch(() => {});
+      });
+    }
   }
 
   return { assigned_to: newServerId, assigned_name: name };
@@ -1418,6 +1437,23 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }
     }
 
+    // Notify all active Admins of the logged attempt
+    import("./notifications").then(({ notifyAdmins }) => {
+      const serverName = String(user.displayName || user.username || "Server");
+      const caseNum = String(response.case_number || response.caseNumber || "Case");
+      const person = String(response.person_being_served || response.personBeingServed || "");
+      const statusLabel = String(response.status || "logged");
+      notifyAdmins(db, {
+        type: statusLabel.toLowerCase() === "served" ? "serve_complete" : "serve_attempt",
+        priority: statusLabel.toLowerCase() === "served" ? "high" : "normal",
+        title: `Attempt: ${caseNum} (${statusLabel})`,
+        body: `${serverName} logged attempt on ${person || caseNum}`,
+        entityType: "serve",
+        entityId: String(id),
+        actionUrl: `/history?case=${caseNum}`,
+      }).catch(() => {});
+    });
+
     return c.json(response, 201);
   });
 
@@ -2478,6 +2514,98 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       const msg = error instanceof Error ? error.message : "Upload failed";
       return c.json({ success: false, error: msg }, 500);
     }
+  });
+
+  // Notifications & Push API
+  app.get("/api/notifications", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const rows = db.query(
+      "SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50"
+    ).all(user.id) as Record<string, unknown>[];
+    const unreadCount = (db.query(
+      "SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND (read_at = '' OR read_at IS NULL)"
+    ).get(user.id) as { count: number }).count;
+    return c.json({ notifications: rows, unreadCount });
+  });
+
+  app.patch("/api/notifications/:id/read", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const id = c.req.param("id");
+    db.query("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?").run(
+      nowIso(),
+      id,
+      user.id
+    );
+    return c.json({ success: true });
+  });
+
+  app.patch("/api/notifications/read-all", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    db.query("UPDATE notifications SET read_at = ? WHERE user_id = ? AND (read_at = '' OR read_at IS NULL)").run(
+      nowIso(),
+      user.id
+    );
+    return c.json({ success: true });
+  });
+
+  // Targeted Admin Nudge to an assigned server
+  app.post("/api/admin/cases/:id/nudge", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const id = c.req.param("id");
+    const caseObj = resolveCase(db, id);
+    if (!caseObj) return c.json({ error: "Case not found" }, 404);
+
+    const assignedTo = String(caseObj.assigned_to || "").trim();
+    if (!assignedTo) return c.json({ error: "Cannot nudge: No server assigned to this case" }, 400);
+
+    const body = await c.req.json().catch(() => ({}));
+    const message = String(body.message || "Attempt needed today").trim();
+    const caseNum = String(caseObj.case_number || "Case");
+    const person = String(caseObj.defendant_respondent || caseObj.case_name || "");
+
+    const { createNotification } = await import("./notifications");
+    const notif = await createNotification(db as any, {
+      userId: assignedTo,
+      type: "nudge",
+      priority: "high",
+      title: `Action Requested: ${caseNum}`,
+      body: `${message} for ${person || caseNum}`,
+      entityType: "case",
+      entityId: String(caseObj.id),
+      actionUrl: `/dashboard?caseId=${caseObj.id}`,
+    });
+
+    return c.json({ success: true, notification: notif });
+  });
+
+  // Admin Team Broadcast
+  app.post("/api/admin/broadcast", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const title = String(body.title || "Team Announcement").trim();
+    const message = String(body.message || "").trim();
+    if (!message) return c.json({ error: "Message is required" }, 400);
+
+    const { createNotification } = await import("./notifications");
+    const activeServers = db.query("SELECT id FROM users WHERE role = 'server' AND is_active = 1").all() as { id: string }[];
+    for (const server of activeServers) {
+      await createNotification(db as any, {
+        userId: server.id,
+        type: "broadcast",
+        priority: "normal",
+        title,
+        body: message,
+        actionUrl: "/dashboard",
+      });
+    }
+
+    return c.json({ success: true, count: activeServers.length });
   });
 }
 

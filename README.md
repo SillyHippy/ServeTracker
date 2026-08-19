@@ -1,119 +1,189 @@
-# ServeTracker (Community Edition)
+# ServeTracker (PDFUSAEDIT)
 
-> Open-source, production-grade process serving management platform with court-ready affidavit generation, field server role-based privacy controls, offline-first mobile sync, accessible single-page field sheets, and legal e-signature workflows.
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/SillyHippy/ServeTracker)
-[![License: Business Source License 1.1 / Non-Commercial](https://img.shields.io/badge/License-BSL%201.1%20%2F%20Non--Commercial-blue.svg)](#legal-terms-license--governing-law)
+> Modern, full-stack process serving management software with automated affidavit generation, field server role-based access controls, offline photo & attempt logging, accessible field sheets, and audit-ready legal workflows.
 
 ---
 
-## Key Capabilities
+## Features
 
-- **Field Server RBAC & Privacy Isolation**: Dedicated sub-accounts for process servers. Client identities, billing amounts, client email/phone numbers, and fee structures are strictly stripped from all server views and API queries.
-- **Accessible Single-Page Field Sheets**: High-contrast, letter-size printable field sheets with large party-to-serve banners, contact numbers, case requirements, and manual attempt logs. Engineered to print reliably on Android Chrome and iOS without white-screen or pop-up blocker issues.
-- **Offline-First Attempt Logger**: Record attempts, photos, timestamps, and GPS coordinates even in cellular dead zones. Automatically queues records locally and syncs back seamlessly upon reconnecting.
-- **Automated Court-Ready Affidavits**: Dynamic generation of Return of Service, Affidavit of Personal Service, and Affidavit of Non-Service with tamper-evident e-signatures, GPS coordinate embedding, and Oklahoma-specific legal venue defaults.
-- **Client Email Notifications**: Instant transactional email dispatches to clients when an attempt or completed serve is logged (via Resend or SMTP).
-
----
-
-## Free Cloudflare 1-Click Deployment (Recommended)
-
-ServeTracker runs natively on Cloudflare's serverless edge infrastructure (Cloudflare Pages + Workers + D1 + R2) allowing any solo process server or small legal agency to deploy and run their own private instance **100% free of charge ($0/month)**.
-
-### Free Tier Architecture & Quotas
-
-| Service | Component | Free Tier Allowance | Real-World Capacity |
-| :--- | :--- | :--- | :--- |
-| **Cloudflare Pages** | Frontend Web App | Unlimited requests & global CDN | Zero cost for web hosting. |
-| **Cloudflare D1** | Serverless SQLite DB | 5,000,000 read rows/day<br>100,000 write rows/day<br>5 GB storage | Supports over 50,000+ active cases and attempts before reaching limits. |
-| **Cloudflare Workers** | Backend API (Hono) | 100,000 requests/day | Sufficient for multiple process servers logging serves in real time. |
-| **Cloudflare R2** | Photo & Doc Storage | 10 GB storage / month<br>10M reads / month ($0 egress fees) | Stores ~20,000–30,000 compressed field evidence photos. |
+- **Field Server Management & RBAC**: Dedicated server accounts with strict privacy isolation (zero client contact info or billing leakage to field contractors).
+- **Offline First**: Log attempts, photos, timestamps, and GPS coordinates even in dead zones with automatic background sync when reconnected.
+- **Accessible Field Sheets**: Single-page printable field sheets tailored for process servers with large-text targets, contact numbers, case directives, and attempt loggers (without pop-up blocks or mobile blank screens).
+- **Automated Affidavit Engine**: Generate court-compliant Oklahoma proofs of service, non-service affidavits, and amended filings directly from verified GPS attempts.
+- **Multi-Server Workload Dispatch**: Track active serves, server licensing expirations, and territory coverage.
+- **Self-Contained SQLite Backend**: Powered by Hono + Bun/Node for blazing fast single-binary performance.
 
 ---
 
-### Step-by-Step Deployment Guide (No Coding Required)
+## Deployment Options & Free-Tier Guide
 
-#### Step 1: Create Free Accounts
-1. Create a free account at [Cloudflare](https://dash.cloudflare.com/sign-up).
-2. Create a free transactional email account at [Resend](https://resend.com/signup) to send serve notices to your clients.
-
-#### Step 2: 1-Click Fork & Deploy
-1. Click the **[Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/SillyHippy/ServeTracker)** button at the top of this repository.
-2. Authorize GitHub to fork this repository into your personal account.
-3. In the Cloudflare Dashboard:
-   - Go to **Workers & Pages** -> **Create application** -> **Pages** -> **Connect to Git**.
-   - Select your forked `ServeTracker` repository.
-   - Build Settings:
-     - **Framework preset**: `Vite`
-     - **Build command**: `npm run build`
-     - **Build output directory**: `dist`
-
-#### Step 3: Configure Cloudflare D1 Database & Storage
-In your Cloudflare Dashboard:
-1. Navigate to **Storage & Databases** -> **D1 SQL Database** -> Click **Create database**.
-2. Name the database `servetracker-db`.
-3. In your Pages project settings, go to **Settings** -> **Functions** -> **D1 database bindings** -> Bind `DB` to `servetracker-db`.
-4. Run the initial migration script:
-   - In D1 Console, paste the contents of `server/schema.sql` and execute.
+ServeTracker is built with standard web technologies (TypeScript, React, Vite, Tailwind CSS, Hono, SQLite) and can be deployed for **$0/month** across several popular platforms.
 
 ---
 
-## Automated Client Notifications via Resend (Step-by-Step)
+### Option 1: Cloudflare Pages + Workers + D1 (Recommended Free Tier)
 
-To enable automatic email notifications to clients when an attempt is made or a serve is completed:
+Deploy globally to Cloudflare's Edge network for zero hosting costs and near-instant load times.
 
-1. Log into your [Resend Dashboard](https://resend.com).
-2. Go to **API Keys** -> Click **Create API Key**. Copy the key (starts with `re_...`).
-3. Add and verify your sending domain (e.g. `service@yourdomain.com`) under **Domains**.
-4. In your Cloudflare Pages / Server environment variables, add the following:
+#### Architecture on Cloudflare
+- **Frontend**: Cloudflare Pages (Free unlimited bandwidth & static asset hosting).
+- **Backend API**: Cloudflare Workers / Pages Functions (Runs Hono serverless natively).
+- **Database**: Cloudflare D1 (Serverless SQLite).
+- **Photo/File Storage**: Cloudflare R2 (S3-compatible bucket).
 
-```env
-RESEND_API_KEY=re_123456789abcdef
-EMAIL_FROM=Just Legal Solutions <service@yourdomain.com>
+#### Cloudflare Free Tier Limitations
+| Resource | Free Tier Limit | What It Means for a Process Server |
+| :--- | :--- | :--- |
+| **D1 Database** | 5M read rows/day<br>100k write rows/day<br>5 GB storage | Holds ~50,000+ case records and attempts before reaching limits. |
+| **Workers API** | 100,000 requests/day | Supports over 50 servers actively logging attempts all day. |
+| **R2 Storage** | 10 GB storage<br>10M reads/month<br>$0 egress fees | Stores ~20,000–30,000 high-res compressed field attempt photos. |
+| **Pages** | Unlimited requests | Fast global CDN delivery with automatic HTTPS. |
+
+#### Step-by-Step Deployment Instructions (Cloudflare)
+
+1. **Prerequisites**:
+   - Install [Node.js](https://nodejs.org/) (v18+) or [Bun](https://bun.sh/).
+   - Install Cloudflare Wrangler CLI:
+     ```bash
+     npm install -g wrangler
+     wrangler login
+     ```
+
+2. **Clone & Configure**:
+   ```bash
+   git clone https://github.com/SillyHippy/PDFUSAEDIT-zo.git servetracker
+   cd servetracker
+   cp .env.example .env
+   ```
+
+3. **Create Cloudflare D1 Database**:
+   ```bash
+   wrangler d1 create servetracker-db
+   ```
+   *Copy the `database_id` output and paste it into your `wrangler.toml` file under `[[d1_databases]]`.*
+
+4. **Initialize Database Schema**:
+   ```bash
+   wrangler d1 execute servetracker-db --local --file=./server/schema.sql
+   wrangler d1 execute servetracker-db --remote --file=./server/schema.sql
+   ```
+
+5. **Create Cloudflare R2 Bucket (For Photos)**:
+   ```bash
+   wrangler r2 bucket create servetracker-photos
+   ```
+
+6. **Build Frontend & Deploy**:
+   ```bash
+   npm install
+   npm run build
+   npx wrangler pages deploy dist --project-name=servetracker
+   ```
+
+7. **Set Secret Environment Variables**:
+   ```bash
+   npx wrangler secret put APP_PASSWORD
+   npx wrangler secret put SESSION_SECRET
+   ```
+
+---
+
+### Option 2: Fly.io (Dockerized Bun / SQLite)
+
+Run ServeTracker as a standard persistent application with a mounted SQLite volume.
+
+#### Free/Hobby Tier Limitations
+- **Allowance**: Up to 3 shared-cpu VMs (256MB RAM) and 3GB persistent disk volume.
+- **Limitation**: If using free shared compute, ensure app memory is tuned (Bun uses ~40-60MB). Must configure a persistent volume at `/data` so SQLite files persist across restarts.
+
+#### Step-by-Step Deployment Instructions (Fly.io)
+
+1. **Install Fly CLI**:
+   ```bash
+   curl -L https://fly.io/install.sh | sh
+   fly auth login
+   ```
+
+2. **Launch App**:
+   ```bash
+   fly launch --no-deploy
+   ```
+
+3. **Create Persistent Storage Volume (3GB)**:
+   ```bash
+   fly volumes create servetracker_data --size 3 --region ord
+   ```
+
+4. **Add Volume Mount to `fly.toml`**:
+   ```toml
+   [mounts]
+     source = "servetracker_data"
+     destination = "/data"
+   ```
+
+5. **Deploy**:
+   ```bash
+   fly deploy
+   ```
+
+---
+
+### Option 3: Render / Railway / Turso + Vercel
+
+- **Turso (Serverless LibSQL / SQLite)**:
+  - **Free Tier**: 500 databases, 9 GB total storage, 1 billion row reads/month.
+  - Pair with **Vercel** or **Render** for a free full-stack deploy.
+- **Render.com**:
+  - **Free Tier**: Web service with auto-spin-down on 15 min idle. (Best paired with external DB like Turso).
+
+---
+
+### Option 4: Self-Hosted VPS / Zo Computer / Docker
+
+ServeTracker is 100% self-contained. You can run it on any Linux server, VPS (Hetzner, DigitalOcean, Oracle Free Tier), or Zo Computer:
+
+```bash
+# 1. Install Bun
+curl -fsSL https://bun.sh/install | bash
+
+# 2. Install dependencies & build
+bun install
+bun run build
+
+# 3. Start server
+PORT=3150 APP_PASSWORD="YourSecurePassword" bun run server/index.ts
 ```
 
-*ServeTracker will now automatically dispatch branded PDF affidavits, timestamps, and service summaries directly to clients when you log an attempt.*
-
 ---
 
-## Alternative Free Hosting Options
+## Environment Variables
 
-| Platform | Type | Free Quota | Setup Summary |
+| Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **Fly.io** | Dockerized Bun/Node + SQLite Volume | Free compute tier + 3GB persistent disk | `fly launch` -> mount volume at `/data` for zero database cost. |
-| **Turso (LibSQL) + Vercel** | Serverless SQLite + Frontend | 500 DBs, 9GB storage, 1B row reads/mo | Connect Turso DB URL & Token to Vercel environment variables. |
-| **Self-Hosted VPS / Zo Computer** | Dedicated Linux / Bun Runtime | Run on any $0–$5/mo VPS or Zo Computer | `bun install && bun run build && PORT=3150 bun run server/index.ts` |
+| `APP_PASSWORD` | **Yes** | `Password` | Master admin login password |
+| `PORT` | No | `3150` | HTTP port for server process |
+| `DATABASE_PATH` | No | `./data/pdfusaedit.db` | Local SQLite database file path |
+| `VITE_BASE_PATH` | No | `/` | Subpath prefix if served behind a reverse proxy |
+| `EMAIL_FROM` | No | `""` | Outbound email notification sender |
+| `SMTP_HOST` | No | `""` | SMTP Host for automated serve notices |
+| `SMTP_PORT` | No | `587` | SMTP Port |
+| `SMTP_USER` | No | `""` | SMTP Username |
+| `SMTP_PASSWORD` | No | `""` | SMTP Password |
 
 ---
 
-## Live Interactive Demo
+## Local Development & Testing
 
-An interactive sandbox demo featuring separate **Admin** and **Field Server** testing accounts is available for community testing at:
-- **Demo URL**: *Coming Soon / Staging Preview*
-- **Admin Access**: View case intake, client billing management, e-signatures, and server workload dispatch.
-- **Server Access**: Test mobile attempt logging, GPS capture, offline caching, and field sheets.
+```bash
+# Start development frontend & backend concurrently
+bun run dev
 
----
-
-## Legal Terms, License & Governing Law
-
-### 1. Proprietary & Non-Commercial Source License (BSL 1.1)
-This source code and software repository are made available solely for individual, internal operational use by licensed process servers, independent legal support professionals, and legal aid clinics. 
-
-**STRICT PROHIBITION ON COMMERCIAL RESALE, RE-DISTRIBUTION, OR WHITE-LABELING:**
-- You may **NOT** sell, license, sub-license, rent, lease, white-label, rebrand, or offer this software (or any derivative work thereof) as a paid commercial Software-as-a-Service (SaaS), hosted service, or turnkey commercial product to third parties without prior express written consent from the author.
-- Commercial software vendors, aggregators, and process serving networks are prohibited from repackaging or bundling this software into commercial offerings.
-
-### 2. Mandatory Choice of Law & Jurisdiction (Tulsa County, Oklahoma)
-- **Governing Law**: Any dispute, controversy, claim, or litigation arising out of or related to this software, its source code, its documentation, or any breach of these terms shall be governed by, construed, and enforced in accordance with the internal laws of the **State of Oklahoma**, without giving effect to any choice or conflict of law provision or rule.
-- **Exclusive Forum & Venue**: The author and any user or licensee of this software irrevocably submit to the **exclusive jurisdiction and venue of the District Court of Tulsa County, State of Oklahoma** (or, if federal jurisdiction exists, the United States District Court for the Northern District of Oklahoma) for the resolution of all lawsuits, actions, claims, or proceedings arising out of this software or these terms. All parties waive any objection to forum non conveniens or improper venue.
-
-### 3. Legal Disclaimer & Disclaimer of Warranties
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, COURT ACCEPTANCE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, DEFICIENCIES IN COURT FILINGS, MISSED STATUTORY DEADLINES, SERVICE CONTESTATIONS, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# Run automated test suite
+bun test
+```
 
 ---
 
-## Author & Copyright
-Copyright (c) 2026 Joseph Iannazzi / Just Legal Solutions. All rights reserved.
-Tulsa, Oklahoma, USA.
+## License
+
+MIT License — feel free to fork, customize, and deploy for your process serving business or agency.

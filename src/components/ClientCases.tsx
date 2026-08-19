@@ -15,6 +15,7 @@ import ClientDocuments from "./ClientDocuments";
 import ServeHistory from "./ServeHistory";
 import AffidavitGenerator from "./AffidavitGenerator";
 import FieldSheetButton from "./FieldSheetButton";
+import NudgeServerDialog from "./NudgeServerDialog";
 import EditCaseDialog from "./EditCaseDialog";
 import ServerAssignmentPanel from "./ServerAssignmentPanel";
 import { mergeServeAndCaseData } from "@/utils/dataNormalization";
@@ -451,6 +452,13 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                         clientCase={clientCase}
                         onUpdate={updateCase}
                       />
+                      {clientCase.assigned_to && (
+                        <NudgeServerDialog
+                          caseId={clientCase.$id || (clientCase as any).id}
+                          caseNumber={clientCase.case_number}
+                          serverName={clientCase.assigned_name}
+                        />
+                      )}
                       <Button
                         variant="outline"
                         size="sm"

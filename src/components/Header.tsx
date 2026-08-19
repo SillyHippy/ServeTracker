@@ -24,6 +24,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useAuth } from "@/context/AuthContext";
 import { flushPending, subscribePending, type PendingServe } from "@/lib/offlineQueue";
 import { api } from "@/lib/api";
+import NotificationBell from "./NotificationBell";
 
 export function Header() {
   const navigate = useNavigate();
@@ -281,6 +282,7 @@ export function Header() {
               </NavLink>
             </nav>
             <div className="ml-auto flex items-center space-x-2">
+              <NotificationBell />
               {pendingCount > 0 && (
                 <Button
                   variant="outline"
