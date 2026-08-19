@@ -85,8 +85,9 @@ export function Header() {
         <div className="flex flex-col h-full">
           <div className="border-b p-4 flex items-center justify-between">
             <div>
-              <Link to="/dashboard" className="font-bold text-lg block" onClick={() => setIsMenuOpen(false)}>
-                ServeTracker
+              <Link to="/dashboard" className="font-bold text-lg flex items-center gap-2" onClick={() => setIsMenuOpen(false)}>
+                <img src="/logo.webp" alt="JLS Logo" className="h-6 w-auto object-contain rounded" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
+                <span>ServeTracker</span>
               </Link>
               {user && (
                 <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
@@ -205,8 +206,9 @@ export function Header() {
         ) : (
           <>
             <div className="mr-6 flex items-center gap-2">
-              <Link to="/dashboard" className="font-bold text-lg">
-                ServeTracker
+              <Link to="/dashboard" className="font-bold text-lg flex items-center gap-2">
+                <img src="/logo.webp" alt="JLS Logo" className="h-6 w-auto object-contain rounded" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
+                <span>ServeTracker</span>
               </Link>
               {user && (
                 <span className={cn(
