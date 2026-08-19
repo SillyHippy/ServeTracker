@@ -312,7 +312,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="h-10 px-3 flex items-center gap-1.5 text-xs font-semibold">
+        <Button variant="outline" size="sm" className="h-10 px-3 w-full sm:w-auto justify-center flex items-center gap-1.5 text-xs font-semibold">
           <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
           <span>Affidavit</span>
         </Button>

@@ -410,7 +410,7 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
   // ADMINISTRATOR VIEW
   // ==========================================
   return (
-    <div className="w-full pb-16 touch-pan-y">
+    <div className="w-full min-w-0 max-w-full pb-16 touch-pan-y">
       <MemoryMonitor />
 
       <div className="mb-6 text-center md:text-left">
@@ -502,11 +502,11 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
 
       {/* Recent Activity List */}
       <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-            <ClipboardList className="w-5 h-5 text-blue-600" /> Recent Serve Attempts
+        <div className="flex flex-wrap justify-between items-center gap-2">
+          <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2 min-w-0">
+            <ClipboardList className="w-5 h-5 shrink-0 text-blue-600" /> Recent Serve Attempts
           </h2>
-          <Link to="/history">
+          <Link to="/history" className="shrink-0">
             <Button variant="outline" size="sm" className="h-8 text-xs font-semibold">
               View All History <ChevronRight className="w-3 h-3 ml-1" />
             </Button>

@@ -12,11 +12,11 @@ const Layout: React.FC<LayoutProps> = ({ className }) => {
   const isMobile = useIsMobile();
 
   return (
-    <div className="bg-background w-full">
+    <div className="bg-background w-full min-w-0 max-w-full">
       <Header />
       <main
         className={cn(
-          "pb-28 w-full",
+          "pb-28 w-full min-w-0 max-w-full",
           isMobile ? "pt-2 px-4" : "page-container",
           className
         )}

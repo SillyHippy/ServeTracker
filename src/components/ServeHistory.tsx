@@ -1,13 +1,14 @@
 import React from "react";
 import { ServeAttemptData } from "@/types/ServeAttemptData";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
-import { Calendar, MapPin, Edit, Trash2, Clock, ClipboardList, User, ShieldCheck, FileCheck, Layers, Plus } from "lucide-react";
+import { Calendar, MapPin, Edit, Trash2, Clock, ClipboardList, User, ShieldCheck, Plus } from "lucide-react";
 import AffidavitGenerator from "@/components/AffidavitGenerator";
 import FieldSheetButton from "@/components/FieldSheetButton";
 import { ClientData } from "@/components/ClientForm";
 import { useAuth } from "@/context/AuthContext";
+import { serviceMethodLabel } from "@/utils/affidavitEngine";
 
 interface ServeHistoryProps {
   serves: ServeAttemptData[];
@@ -66,8 +67,8 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
   }
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <div className="space-y-6 min-w-0">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 min-w-0">
         {serves.map((serve) => {
           if (!serve || !serve.id) return null;
 
@@ -78,111 +79,113 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
           const caseServes = serves.filter((s) => (s.clientId === serve.clientId || s.client_id === serve.client_id) && (s.caseNumber === serve.caseNumber || s.case_number === serve.case_number));
           const hasEdits = serve.edits && serve.edits.length > 0;
           const photos = serve.photos && serve.photos.length > 0 ? serve.photos : (serve.imageUrl || serve.image_url ? [{ id: "p1", position: 1, imageUrl: serve.imageUrl || serve.image_url!, image_url: serve.imageUrl || serve.image_url! }] : []);
+          const methodRaw = String(serve.serviceMethod || serve.service_method || "");
+          const methodLabel = serviceMethodLabel(methodRaw) || methodRaw.replace(/-/g, " ");
+          const isSuccess = serve.status === "completed" || serve.status === "served";
 
           return (
-            <Card key={serve.id} className="border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition">
-              <CardHeader className="pb-2 bg-slate-50/50 dark:bg-slate-900/50">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="flex items-center gap-1.5 font-bold text-slate-900 dark:text-slate-100 text-base">
-                      <User className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                      <span>{pbs}</span>
+            <Card key={serve.id} className="border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition min-w-0 w-full max-w-full overflow-x-clip [overflow-wrap:anywhere]">
+              <CardHeader className="pb-2 bg-slate-50/50 dark:bg-slate-900/50 space-y-2 min-w-0 max-w-full">
+                <div className="flex flex-col gap-2 min-w-0 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start gap-1.5 font-bold text-slate-900 dark:text-slate-100 text-base">
+                      <User className="w-4 h-4 mt-0.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                      <span className="min-w-0 break-words leading-snug">{pbs}</span>
                     </div>
                     {!isServer && (
-                    <div className="text-xs text-slate-500 font-medium">Client: {clientName}</div>
+                      <div className="text-xs text-slate-500 font-medium break-words">Client: {clientName}</div>
                     )}
                   </div>
-
-                  <div className="flex items-center gap-1.5">
-                    <FieldSheetButton
-                      data={{
-                        caseId: (serve as any).caseId || (serve as any).case_id,
-                        caseNumber: serve.caseNumber || serve.case_number,
-                        caseName: serve.caseName || serve.case_name,
-                        courtName: serve.court_name,
-                        plaintiff: serve.plaintiff_petitioner,
-                        defendant: serve.defendant_respondent,
-                        documents: (serve as any).documents_to_serve || "",
-                        requirements: (serve as any).service_requirements || "",
-                        contactInfo: (serve as any).contact_info || "",
-                        notes: serve.notes,
-                        homeAddress: serve.home_address || serve.serviceAddress || serve.service_address || serve.address,
-                        workAddress: serve.work_address,
-                        personToServe: pbs,
-                        assignedServer: (serve as any).loggedByName || (serve as any).logged_by_name || "",
-                        clientName,
-                        clientId: serve.clientId || (serve as any).client_id,
-                        hideClient: isServer,
-                      }}
-                    />
-                    {(isAdmin || isServer) && (
-                      <AffidavitGenerator
-                        client={client || ({
-                          id: serve.clientId || serve.client_id || '',
-                          name: serve.clientName || (serve as any).client_name || 'Client',
-                          email: '', phone: '', address: '', notes: '',
-                        } as ClientData)}
-                        serves={caseServes}
-                        caseNumber={serve.caseNumber || serve.case_number}
-                        caseName={serve.caseName || serve.case_name}
-                        personBeingServed={pbs}
-                        courtName={serve.court_name}
-                        plaintiffPetitioner={serve.plaintiff_petitioner}
-                        defendantRespondent={serve.defendant_respondent}
-                        homeAddress={serve.home_address}
-                        workAddress={serve.work_address}
-                        documentsToServe={(serve as any).documents_to_serve || ""}
-                      />
-                    )}
-                    <span
-                      className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                        serve.status === "completed" || serve.status === "served"
-                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                      }`}
-                    >
-                      {serve.status === "completed" || serve.status === "served" ? "Successful" : "Unsuccessful"}
-                    </span>
-                  </div>
+                  <span
+                    className={`self-start text-[11px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                      isSuccess
+                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                        : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                    }`}
+                  >
+                    {isSuccess ? "Successful" : "Unsuccessful"}
+                  </span>
                 </div>
 
-                <CardDescription className="pt-1 flex items-center justify-between text-xs">
-                  <span className="flex items-center gap-1">
-                    <ClipboardList className="h-3.5 w-3.5" />
-                    <span>Case: {serve.caseNumber || serve.case_number}</span>
-                  </span>
+                <div className="flex items-start gap-1 min-w-0 text-xs text-muted-foreground">
+                  <ClipboardList className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  <span className="break-words min-w-0">Case: {serve.caseNumber || serve.case_number}</span>
+                </div>
 
-                  <div className="flex gap-1">
-                    <span className="bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold">
-                      {(serve.attemptType || serve.attempt_type || "physical").toUpperCase()}
+                <div className="grid grid-cols-1 min-[380px]:grid-cols-2 gap-2 min-w-0 w-full">
+                  <FieldSheetButton
+                    label="Field Sheet"
+                    className="h-10 w-full justify-center"
+                    data={{
+                      caseId: (serve as any).caseId || (serve as any).case_id,
+                      caseNumber: serve.caseNumber || serve.case_number,
+                      caseName: serve.caseName || serve.case_name,
+                      courtName: serve.court_name,
+                      plaintiff: serve.plaintiff_petitioner,
+                      defendant: serve.defendant_respondent,
+                      documents: (serve as any).documents_to_serve || "",
+                      requirements: (serve as any).service_requirements || "",
+                      contactInfo: (serve as any).contact_info || "",
+                      notes: serve.notes,
+                      homeAddress: serve.home_address || serve.serviceAddress || serve.service_address || serve.address,
+                      workAddress: serve.work_address,
+                      personToServe: pbs,
+                      assignedServer: (serve as any).loggedByName || (serve as any).logged_by_name || "",
+                      clientName,
+                      clientId: serve.clientId || (serve as any).client_id,
+                      hideClient: isServer,
+                    }}
+                  />
+                  {(isAdmin || isServer) && (
+                    <AffidavitGenerator
+                      client={client || ({
+                        id: serve.clientId || serve.client_id || '',
+                        name: serve.clientName || (serve as any).client_name || 'Client',
+                        email: '', phone: '', address: '', notes: '',
+                      } as ClientData)}
+                      serves={caseServes}
+                      caseNumber={serve.caseNumber || serve.case_number}
+                      caseName={serve.caseName || serve.case_name}
+                      personBeingServed={pbs}
+                      courtName={serve.court_name}
+                      plaintiffPetitioner={serve.plaintiff_petitioner}
+                      defendantRespondent={serve.defendant_respondent}
+                      homeAddress={serve.home_address}
+                      workAddress={serve.work_address}
+                      documentsToServe={(serve as any).documents_to_serve || ""}
+                    />
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-1 min-w-0">
+                  <span className="bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold">
+                    {(serve.attemptType || serve.attempt_type || "physical").toUpperCase()}
+                  </span>
+                  {isSuccess && methodLabel ? (
+                    <span className="bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 text-[10px] px-1.5 py-0.5 rounded font-semibold break-words">
+                      {methodLabel}
                     </span>
-                    {(serve.status === "completed" || serve.status === "served") && (serve.serviceMethod || serve.service_method) ? (
-                      <span className="bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold">
-                        {(serve.serviceMethod || serve.service_method)}
-                      </span>
-                    ) : null}
-                    {serve.gpsSource === "captured" || serve.gps_source === "captured" ? (
-                      <span className="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
-                        <ShieldCheck className="w-2.5 h-2.5" /> GPS
-                      </span>
-                    ) : (
-                      <span className="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 text-[10px] px-1.5 py-0.5 rounded font-semibold">
-                        Manual
-                      </span>
-                    )}
-                    {hasEdits && (
-                      <span className="bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300 text-[10px] px-1.5 py-0.5 rounded font-semibold">
-                        Edited
-                      </span>
-                    )}
-                  </div>
-                </CardDescription>
+                  ) : null}
+                  {serve.gpsSource === "captured" || serve.gps_source === "captured" ? (
+                    <span className="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-semibold flex items-center gap-0.5">
+                      <ShieldCheck className="w-2.5 h-2.5" /> GPS
+                    </span>
+                  ) : (
+                    <span className="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 text-[10px] px-1.5 py-0.5 rounded font-semibold">
+                      Manual
+                    </span>
+                  )}
+                  {hasEdits && (
+                    <span className="bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300 text-[10px] px-1.5 py-0.5 rounded font-semibold">
+                      Edited
+                    </span>
+                  )}
+                </div>
               </CardHeader>
 
-              <CardContent className="py-3 text-xs space-y-2">
-                {/* Photo Exhibit Gallery Grid */}
+              <CardContent className="py-3 text-xs space-y-2 min-w-0">
                 {photos.length > 0 && (
-                  <div className="grid grid-cols-5 gap-1.5 mb-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 mb-2">
                     {photos.map((p, idx) => (
                       <div key={idx} className="relative aspect-square rounded border overflow-hidden bg-slate-900">
                         <img src={p.imageUrl || p.image_url} alt="Exhibit" className="w-full h-full object-cover" />
@@ -194,54 +197,54 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-2 text-xs border-t pt-2 dark:border-slate-800">
-                  <div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs border-t pt-2 dark:border-slate-800 min-w-0">
+                  <div className="min-w-0">
                     <p className="font-medium text-slate-500 flex items-center gap-1">
-                      <Calendar className="h-3 w-3" /> Event Time
+                      <Calendar className="h-3 w-3 shrink-0" /> Event Time
                     </p>
-                    <p className="font-semibold text-slate-800 dark:text-slate-200">
+                    <p className="font-semibold text-slate-800 dark:text-slate-200 break-words">
                       {formatDate(serve.occurredAt || serve.occurred_at || serve.timestamp)}
                     </p>
                   </div>
 
-                  <div>
+                  <div className="min-w-0">
                     <p className="font-medium text-slate-500 flex items-center gap-1">
-                      <MapPin className="h-3 w-3" /> Location
+                      <MapPin className="h-3 w-3 shrink-0" /> Location
                     </p>
                     {googleMapsLink ? (
-                      <a href={googleMapsLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate block">
+                      <a href={googleMapsLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline break-all">
                         {formatCoordinates(serve.coordinates)}
                       </a>
                     ) : (
-                      <p className="text-slate-600 dark:text-slate-400 truncate">{formatCoordinates(serve.coordinates)}</p>
+                      <p className="text-slate-600 dark:text-slate-400 break-all">{formatCoordinates(serve.coordinates)}</p>
                     )}
                   </div>
                 </div>
 
                 {serve.contactPerson || serve.contact_person ? (
-                  <div className="text-xs bg-slate-50 dark:bg-slate-900 p-1.5 rounded border border-slate-200 dark:border-slate-800">
+                  <div className="text-xs bg-slate-50 dark:bg-slate-900 p-1.5 rounded border border-slate-200 dark:border-slate-800 break-words">
                     <span className="font-semibold text-slate-700 dark:text-slate-300">Spoke To:</span>{" "}
                     <span className="text-slate-900 dark:text-slate-100">{serve.contactPerson || serve.contact_person}</span>
                   </div>
                 ) : null}
 
                 {serve.notes && (
-                  <div className="space-y-1 text-xs pt-1">
+                  <div className="space-y-1 text-xs pt-1 min-w-0">
                     <p className="font-medium text-slate-500">Notes</p>
-                    <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap bg-slate-50 dark:bg-slate-900/50 p-2 rounded border border-slate-100 dark:border-slate-800">
+                    <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-slate-50 dark:bg-slate-900/50 p-2 rounded border border-slate-100 dark:border-slate-800">
                       {serve.notes}
                     </p>
                   </div>
                 )}
               </CardContent>
 
-              <CardFooter className="pt-2 border-t dark:border-slate-800 flex justify-between items-center text-[11px] text-slate-400">
-                <div className="flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  <span>Logged: {formatDate(serve.enteredAt || serve.entered_at || serve.timestamp)}</span>
+              <CardFooter className="pt-2 border-t dark:border-slate-800 flex flex-wrap justify-between items-center gap-2 text-[11px] text-slate-400 min-w-0 w-full max-w-full">
+                <div className="flex items-center gap-1 min-w-0">
+                  <Clock className="h-3 w-3 shrink-0" />
+                  <span className="break-words">Logged: {formatDate(serve.enteredAt || serve.entered_at || serve.timestamp)}</span>
                 </div>
 
-                <div className="flex gap-1 items-center">
+                <div className="flex flex-wrap gap-1 items-center">
                   <Button
                     variant="outline"
                     size="sm"
@@ -268,7 +271,7 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                     <Plus className="h-4 w-4 mr-1" />
                     Log another
                   </Button>
-                    {onEdit && (
+                  {onEdit && (
                     <Button
                       variant="ghost"
                       size="sm"
