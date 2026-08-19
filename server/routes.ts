@@ -216,6 +216,9 @@ function clientRow(row: Record<string, unknown>) {
     address: row.address,
     notes: row.notes,
     created_at: row.created_at,
+    updated_at: row.updated_at,
+    latest_activity: row.latest_activity || row.last_case_at || null,
+    last_case_at: row.latest_activity || row.last_case_at || null,
   };
 }
 
@@ -528,7 +531,26 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (user.role === "server") {
       return c.json([]);
     }
-    const rows = db.query("SELECT * FROM clients ORDER BY COALESCE(updated_at, created_at) DESC").all() as Record<string, unknown>[];
+    // Most recent case or serve attempt first (Joe: Campbell Law Offices with a new job jumps to #1).
+    // Clients with no cases sort below anyone who has case activity.
+    const rows = db.query(`
+      SELECT c.*, MAX(COALESCE(sub.act_time, '')) AS latest_activity
+      FROM clients c
+      LEFT JOIN (
+        SELECT client_id, MAX(COALESCE(updated_at, created_at)) AS act_time
+        FROM client_cases
+        GROUP BY client_id
+        UNION ALL
+        SELECT client_id, MAX(COALESCE(occurred_at, timestamp)) AS act_time
+        FROM serve_attempts
+        GROUP BY client_id
+      ) sub ON sub.client_id = c.id
+      GROUP BY c.id
+      ORDER BY
+        CASE WHEN latest_activity IS NULL OR latest_activity = '' THEN 1 ELSE 0 END,
+        latest_activity DESC,
+        c.name ASC
+    `).all() as Record<string, unknown>[];
     return c.json(rows.map(clientRow));
   });
 
@@ -706,6 +728,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         ts,
         ts
       );
+      // Touch client record so latest_activity updates instantly
+      db.query("UPDATE clients SET updated_at = ? WHERE id = ?").run(ts, body.client_id);
     }
 
     // Auto-create serve_recipient if defendant_respondent provided
@@ -728,6 +752,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           ts
         );
       }
+    }
+
+    if (body.client_id) {
+      db.query("UPDATE clients SET updated_at = ? WHERE id = ?").run(ts, body.client_id);
     }
 
     const row = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;

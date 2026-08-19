@@ -58,17 +58,21 @@ export const ServerAssignmentPanel: React.FC<Props> = ({
       .then((users: any) => {
         if (!active || !Array.isArray(users)) return;
         const opts: ServerOption[] = users
-          .filter((u) => u.role === "server" && u.is_active !== 0)
-          .map((u) => ({
-            id: u.id,
-            label: u.legal_name || u.display_name || u.username,
-            ineligible:
-              u.onboarding_status !== "active"
-                ? "Pending onboarding"
-                : u.license_expires_at && new Date(u.license_expires_at).getTime() < Date.now()
-                ? "License expired"
-                : undefined,
-          }));
+          .filter((u) => u.role === "server" && u.isActive !== false && u.is_active !== 0)
+          .map((u) => {
+            const onboarding = u.onboardingStatus || u.onboarding_status;
+            const expires = u.licenseExpiresAt || u.license_expires_at;
+            return {
+              id: u.id,
+              label: u.legalName || u.legal_name || u.displayName || u.display_name || u.username,
+              ineligible:
+                onboarding && onboarding !== "active"
+                  ? "Pending onboarding"
+                  : expires && new Date(expires).getTime() < Date.now()
+                  ? "License expired"
+                  : undefined,
+            };
+          });
         setLoadedServers(opts);
       })
       .catch(() => {
@@ -80,7 +84,12 @@ export const ServerAssignmentPanel: React.FC<Props> = ({
     };
   }, [propServers]);
 
-  const availableServers = propServers && propServers.length > 0 ? propServers : loadedServers;
+  const availableServers: ServerOption[] =
+    Array.isArray(propServers) && propServers.length > 0
+      ? propServers
+      : Array.isArray(loadedServers)
+        ? loadedServers
+        : [];
 
   const doAssign = async () => {
     if (!selected) return;

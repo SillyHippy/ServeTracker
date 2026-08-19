@@ -52,7 +52,7 @@ export interface ActiveCaseItem {
   updated_at?: string;
 }
 
-export default function ActiveCasesPanel() {
+export default function ActiveCasesPanel({ fullPage = false }: { fullPage?: boolean }) {
   const [cases, setCases] = useState<ActiveCaseItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -178,7 +178,7 @@ export default function ActiveCasesPanel() {
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[520px] overflow-y-auto">
+          <div className={`divide-y divide-slate-100 dark:divide-slate-800 overflow-y-auto ${fullPage ? "" : "max-h-[520px]"}`}>
             {filtered.map((item) => {
               const caseId = item.id || item.$id || "";
               const person = item.defendant_respondent || item.case_name || "Recipient";
@@ -238,7 +238,6 @@ export default function ActiveCasesPanel() {
                   <div className="flex items-center gap-2 shrink-0 flex-wrap self-end md:self-auto">
                     {/* 1-Click Field Sheet Modal & Print */}
                     <FieldSheetButton
-                      caseId={caseId}
                       className="h-8 text-xs"
                       data={{
                         caseId,

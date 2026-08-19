@@ -15,7 +15,8 @@ import {
   Briefcase,
   Settings,
   UserCircle,
-  CloudOff
+  CloudOff,
+  ClipboardList
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -109,6 +110,12 @@ export function Header() {
               <Home className="h-5 w-5" />
               {isServer ? "My Assigned Cases" : "Dashboard"}
             </NavLink>
+            {isAdmin && (
+              <NavLink to="/active-cases" className={mobileNavLink} onClick={() => setIsMenuOpen(false)}>
+                <ClipboardList className="h-5 w-5" />
+                Active Cases
+              </NavLink>
+            )}
             <NavLink to="/new-serve" className={mobileNavLink} onClick={() => setIsMenuOpen(false)}>
               <Plus className="h-5 w-5" />
               New Attempt
@@ -230,6 +237,15 @@ export function Header() {
                 <Home className="h-4 w-4" />
                 {isServer ? "My Assigned Cases" : "Dashboard"}
               </NavLink>
+              {isAdmin && (
+                <NavLink
+                  to="/active-cases"
+                  className={desktopNavLink}
+                >
+                  <ClipboardList className="h-4 w-4" />
+                  Active Cases
+                </NavLink>
+              )}
               {isAdmin && (
                 <NavLink
                   to="/clients"

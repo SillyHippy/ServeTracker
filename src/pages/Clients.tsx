@@ -53,13 +53,43 @@ const Clients: React.FC<ClientsProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [selectedClient, setSelectedClient] = useState<ClientData | null>(null);
   const [isDetailView, setIsDetailView] = useState(false);
+  const [liveClients, setLiveClients] = useState<ClientData[]>(clients);
   const { toast } = useToast();
+
+  useEffect(() => {
+    setLiveClients(clients);
+  }, [clients]);
+
+  const refreshClients = async () => {
+    try {
+      const apiClients = await api.getClients();
+      if (!Array.isArray(apiClients)) return;
+      setLiveClients(
+        apiClients.map((c: any) => ({
+          id: c.id || c.$id,
+          name: c.name || "",
+          email: c.email || "",
+          additionalEmails: c.additionalEmails || c.additional_emails || [],
+          phone: c.phone || "",
+          address: c.address || "",
+          notes: c.notes || "",
+        }))
+      );
+    } catch (err) {
+      console.warn("Clients: live refresh failed, using current list", err);
+    }
+  };
+
+  useEffect(() => {
+    void refreshClients();
+  }, []);
 
   const handleAddClient = async (client: ClientData) => {
     setIsLoading(true);
     
     try {
       await addClient(client);
+      await refreshClients();
       toast({
         title: "Client added",
         description: "New client has been created successfully",
@@ -152,9 +182,10 @@ const Clients: React.FC<ClientsProps> = ({
   const handleBackToList = () => {
     setSelectedClient(null);
     setIsDetailView(false);
+    void refreshClients();
   };
 
-  const filteredClients = clients.filter((client) => {
+  const filteredClients = liveClients.filter((client) => {
     const q = searchTerm.toLowerCase();
     const name = (client.name || "").toLowerCase();
     const email = (client.email || "").toLowerCase();
@@ -228,7 +259,7 @@ const Clients: React.FC<ClientsProps> = ({
       <div className="mb-8">
         <h1 className="text-3xl font-bold tracking-tight mb-2">Client Management</h1>
         <p className="text-muted-foreground">
-          Add, edit, and manage your process serving clients
+          Sorted by most recent case — the client you just added a job for is at the top
         </p>
       </div>
 
@@ -264,7 +295,7 @@ const Clients: React.FC<ClientsProps> = ({
         </Dialog>
       </div>
 
-      {clients.length === 0 ? (
+      {liveClients.length === 0 ? (
         <Card className="neo-card">
           <CardContent className="pt-6 flex flex-col items-center justify-center text-center min-h-[200px]">
             <div className="p-4 rounded-full bg-muted mb-4">

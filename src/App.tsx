@@ -10,6 +10,7 @@ import { toast } from '@/components/ui/use-toast';
 
 // Lazy load heavy page components for better initial load performance
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const ActiveCases = lazy(() => import('./pages/ActiveCases'));
 const NewServe = lazy(() => import('./pages/NewServe'));
 const Clients = lazy(() => import('./pages/Clients'));
 const History = lazy(() => import('./pages/History'));
@@ -124,6 +125,7 @@ const AnimatedRoutes = () => {
 
   // Fetch clients only after an admin session exists. Field servers and the
   // login page must not hit /api/clients (401 loop / empty client leak).
+  // Re-fetch on navigation so a newly added case (e.g. Campbell) jumps to #1.
   useEffect(() => {
     if (authStatus !== "authenticated" || !isAdmin) return;
     api.getClients().then(apiClients => {
@@ -141,7 +143,7 @@ const AnimatedRoutes = () => {
     }).catch(() => {
       console.log("Could not fetch from API, using localStorage");
     });
-  }, [authStatus, isAdmin]);
+  }, [authStatus, isAdmin, location.pathname]);
 
   // Data will be fetched fresh when needed
 
@@ -179,7 +181,7 @@ const AnimatedRoutes = () => {
           notes: newClient.notes || "",
         };
         
-        setClients(prev => [...prev, clientData]);
+        setClients(prev => [clientData, ...prev]);
         
         setTimeout(() => {
         }, 500);
@@ -414,6 +416,13 @@ const AnimatedRoutes = () => {
               <Dashboard clients={clients} serves={[]} />
             </Suspense>
           } />
+          <Route path="/active-cases" element={
+            <Suspense fallback={<PageLoader />}>
+              <ProtectedRoute adminOnly>
+                <ActiveCases />
+              </ProtectedRoute>
+            </Suspense>
+          } />
           <Route path="/new-serve" element={
             <Suspense fallback={<PageLoader />}>
               <NewServe clients={clients} addServe={createServe} />
@@ -498,3 +507,4 @@ export default function App() {
 const FORCE_NEW_BUILD = true;
 // BUILD_CACHE_BUST_1780205619
 // BUILD_CACHE_BUST_20260818_field_server_profile
+// BUILD_CACHE_BUST_20260819_active_cases_menu_client_sort

@@ -26,7 +26,6 @@ import ServeHistory from "@/components/ServeHistory";
 import EditServeDialog from "@/components/EditServeDialog";
 import MemoryMonitor from "@/components/MemoryMonitor";
 import ServerWorkloadCard from "@/components/ServerWorkloadCard";
-import ActiveCasesPanel from "@/components/ActiveCasesPanel";
 import SignatureEnrollmentDialog from "@/components/SignatureEnrollmentDialog";
 import SignatureStatusBadge from "@/components/SignatureStatusBadge";
 import FieldSheetButton from "@/components/FieldSheetButton";
@@ -500,9 +499,6 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
 
       {/* Field Server Workload (admin only) */}
       <ServerWorkloadCard />
-
-      {/* Active Cases Management Panel (admin only) */}
-      <ActiveCasesPanel />
 
       {/* Recent Activity List */}
       <div className="space-y-4">
