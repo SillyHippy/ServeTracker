@@ -229,6 +229,9 @@ function runMigrations(db: Database) {
   addCol("physical_description", "TEXT DEFAULT ''");
   addCol("service_method", "TEXT DEFAULT ''");
   addCol("accepted_by", "TEXT DEFAULT ''");
+  addCol("posting_location", "TEXT DEFAULT ''");
+  addCol("entity_name", "TEXT DEFAULT ''");
+  addCol("recipient_title", "TEXT DEFAULT ''");
   addCol("logged_by", "TEXT DEFAULT ''");
   addCol("logged_by_name", "TEXT DEFAULT ''");
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_case ON serve_attempts(case_id);");

@@ -150,13 +150,21 @@ function executionSentence(
   acceptedBy: string,
   refusedToIdentify: boolean,
   physicalDescription: string,
-  documentsLine: string
+  documentsLine: string,
+  extraOptions?: {
+    postingLocation?: string;
+    entityName?: string;
+    recipientTitle?: string;
+  }
 ): string {
   const docs = documentsLine
     ? "true and correct copies of the documents listed above"
     : "true and correct copies of the documents";
   const name = esc(recipientName);
   const accepted = esc(acceptedBy.trim());
+  const postLoc = esc(extraOptions?.postingLocation?.trim() || "the front entrance door");
+  const entity = esc(extraOptions?.entityName?.trim() || recipientName);
+  const title = esc(extraOptions?.recipientTitle?.trim() || "Registered Agent");
 
   switch (method) {
     case "personal":
@@ -181,11 +189,11 @@ function executionSentence(
         accepted || "the person apparently in charge thereof"
       }, the person apparently in charge thereof.`;
     case "corporate":
-      return `I executed service of process upon <strong>${name}</strong>, an entity, by delivering ${docs} to ${
-        accepted || "the registered agent"
-      }, the registered agent authorized to accept service on behalf of <strong>${name}</strong>.`;
+      return `I executed service of process upon <strong>${entity}</strong> by delivering ${docs} to <strong>${
+        accepted || "the authorized agent"
+      }</strong>, the <strong>${title}</strong> authorized to accept service on behalf of <strong>${entity}</strong>.`;
     case "posting":
-      return `I executed service upon <strong>${name}</strong> by posting ${docs} in a conspicuous manner to the front door of <strong>${name}</strong>.`;
+      return `I executed service upon <strong>${name}</strong> by posting ${docs} in a conspicuous manner upon ${postLoc} of the premises.`;
     case "non-service":
       return `After due search, careful inquiry and diligent attempts at the address(es) listed above, I have been unable to effect process upon <strong>${name}</strong> because of the reason(s) recorded above.`;
     default:
@@ -449,7 +457,12 @@ export function generateAffidavitHtml(data: AffidavitPayload): string {
             acceptedBy,
             refusedToIdentify,
             physicalDescription,
-            documentsLine
+            documentsLine,
+            {
+              postingLocation: (servedAttempt as any)?.posting_location || (servedAttempt as any)?.postingLocation,
+              entityName: (servedAttempt as any)?.entity_name || (servedAttempt as any)?.entityName,
+              recipientTitle: (servedAttempt as any)?.recipient_title || (servedAttempt as any)?.recipientTitle,
+            }
           )
         : `After due diligence at the known address(es), I have been unable to effect personal service upon <strong>${recipientName}</strong> for the reasons in the log above.`
     }

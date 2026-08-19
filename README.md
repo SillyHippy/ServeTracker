@@ -156,6 +156,32 @@ PORT=3150 APP_PASSWORD="YourSecurePassword" bun run server/index.ts
 
 ---
 
+## Automated Client Notifications via Resend / SMTP
+
+To enable automatic email notifications to clients when an attempt is made or a serve is completed:
+
+1. **Option A: Resend (Recommended)**
+   - Sign up for a free account at [Resend](https://resend.com).
+   - Generate an API Key (starts with `re_...`).
+   - Add and verify your sending domain (e.g. `service@yourdomain.com`).
+   - Set environment variables:
+     ```env
+     RESEND_API_KEY=re_your_api_key_here
+     EMAIL_FROM=Just Legal Solutions <service@yourdomain.com>
+     ```
+
+2. **Option B: Custom SMTP**
+   - Configure your standard SMTP credentials:
+     ```env
+     SMTP_HOST=smtp.resend.com (or your provider)
+     SMTP_PORT=587
+     SMTP_USER=resend
+     SMTP_PASSWORD=re_your_api_key_here
+     EMAIL_FROM=Just Legal Solutions <service@yourdomain.com>
+     ```
+
+---
+
 ## Customizing Your Branding & Logo
 
 ServeTracker is built to be white-labeled for your own process serving agency. To replace the default branding with your own business logo and company name:
@@ -184,11 +210,12 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 | `PORT` | No | `3150` | HTTP port for server process |
 | `DATABASE_PATH` | No | `./data/pdfusaedit.db` | Local SQLite database file path |
 | `VITE_BASE_PATH` | No | `/` | Subpath prefix if served behind a reverse proxy |
-| `EMAIL_FROM` | No | `""` | Outbound email notification sender |
+| `RESEND_API_KEY` | No | `""` | Resend API Key for automated email dispatches |
+| `EMAIL_FROM` | No | `""` | Outbound email notification sender (e.g. `JLS <service@domain.com>`) |
 | `SMTP_HOST` | No | `""` | SMTP Host for automated serve notices |
 | `SMTP_PORT` | No | `587` | SMTP Port |
 | `SMTP_USER` | No | `""` | SMTP Username |
-| `SMTP_PASSWORD` | No | `""` | SMTP Password |
+| `SMTP_PASSWORD` | No | `""` | SMTP Password (fallback if RESEND_API_KEY not set) |
 
 ---
 

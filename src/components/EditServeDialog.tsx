@@ -334,32 +334,32 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
               <Label htmlFor="postingLocation" className="text-right">
                 Posting
               </Label>
-              <select
+              <input
                 id="postingLocation"
+                type="text"
+                className="col-span-3 rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2 text-sm"
+                placeholder="e.g. Front entrance door, eye level"
                 value={postingLocation}
                 onChange={(e) => setPostingLocation(e.target.value)}
-                className="col-span-3 rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2"
-              >
-                <option value="">Select location</option>
-                <option value="front_door">Front door</option>
-                <option value="conspicuous_place">Conspicuous place</option>
-              </select>
+              />
             </div>
           )}
 
           {status === "completed" && serviceMethod === "corporate" && (
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="corporateAgent" className="text-right">
-                Agent/Company
-              </Label>
-              <input
-                id="corporateAgent"
-                type="text"
-                className="col-span-3 rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2"
-                placeholder="Registered agent / company name"
-                value={corporateAgent}
-                onChange={(e) => setCorporateAgent(e.target.value)}
-              />
+            <div className="space-y-3">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="corporateEntity" className="text-right">
+                  Entity Name
+                </Label>
+                <input
+                  id="corporateEntity"
+                  type="text"
+                  className="col-span-3 rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2 text-sm"
+                  placeholder="e.g. Acme Corporation, LLC"
+                  value={corporateAgent}
+                  onChange={(e) => setCorporateAgent(e.target.value)}
+                />
+              </div>
             </div>
           )}
 

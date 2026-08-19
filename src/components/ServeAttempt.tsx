@@ -98,8 +98,10 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const [serviceMethod, setServiceMethod] = useState<string>("personal");
   const [acceptedBy, setAcceptedBy] = useState<string>("");
   const [refusedToIdentify, setRefusedToIdentify] = useState(false);
-  const [postingLocation, setPostingLocation] = useState<string>("");
+  const [postingLocation, setPostingLocation] = useState<string>("front_door");
   const [corporateAgent, setCorporateAgent] = useState<string>("");
+  const [entityName, setEntityName] = useState<string>("");
+  const [recipientTitle, setRecipientTitle] = useState<string>("Registered Agent");
   const [moreMethodsOpen, setMoreMethodsOpen] = useState(false);
 
   const [addressSearchTerm, setAddressSearchTerm] = useState("");
@@ -437,7 +439,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         accepted_by: refusedToIdentify ? "" : acceptedBy,
         refusedToIdentify, refused_to_identify: refusedToIdentify,
         postingLocation, posting_location: postingLocation,
-        corporateAgent, corporate_agent: corporateAgent,
+        corporateAgent: entityName || corporateAgent, corporate_agent: entityName || corporateAgent,
+        entityName: entityName || corporateAgent, entity_name: entityName || corporateAgent,
+        recipientTitle, recipient_title: recipientTitle,
       };
       // Single POST only — NewServe.onComplete must NOT createServeAttempt again.
       const saved = await api.createServeAttempt(serveData);
@@ -825,29 +829,47 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                     {serviceMethod === "posting" && (
                       <div>
                         <label className="text-xs font-bold block mb-1">
-                          Posting location <span className="text-red-500">*</span>
+                          Posting Location Description <span className="text-red-500">*</span>
                         </label>
-                        <Select value={postingLocation} onValueChange={setPostingLocation}>
-                          <SelectTrigger className="h-10"><SelectValue placeholder="Select posting location" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="front_door">Front door</SelectItem>
-                            <SelectItem value="conspicuous_place">Conspicuous place</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <Input
+                          className="h-10 text-sm"
+                          placeholder="e.g. Front entrance door, eye level"
+                          value={postingLocation}
+                          onChange={(e) => setPostingLocation(e.target.value)}
+                        />
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          Conspicuous place on the premises — Photo required
+                        </p>
                       </div>
                     )}
 
                     {serviceMethod === "corporate" && (
-                      <div>
-                        <label className="text-xs font-bold block mb-1">
-                          Registered Agent / Company Name <span className="text-red-500">*</span>
-                        </label>
-                        <Input
-                          className="h-10 text-sm"
-                          placeholder="e.g. Crowe & Dunlevy"
-                          value={corporateAgent}
-                          onChange={(e) => setCorporateAgent(e.target.value)}
-                        />
+                      <div className="space-y-2">
+                        <div>
+                          <label className="text-xs font-bold block mb-1">
+                            Entity Name Being Served <span className="text-red-500">*</span>
+                          </label>
+                          <Input
+                            className="h-10 text-sm"
+                            placeholder="e.g. Acme Corporation, LLC"
+                            value={entityName}
+                            onChange={(e) => setEntityName(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-bold block mb-1">
+                            Recipient Capacity / Title <span className="text-red-500">*</span>
+                          </label>
+                          <Select value={recipientTitle} onValueChange={setRecipientTitle}>
+                            <SelectTrigger className="h-10"><SelectValue placeholder="Select title" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Registered Agent">Registered Agent</SelectItem>
+                              <SelectItem value="Managing Agent">Managing Agent</SelectItem>
+                              <SelectItem value="President / Officer">President / Officer</SelectItem>
+                              <SelectItem value="Authorized Representative">Authorized Representative</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </div>
                     )}
                   </div>

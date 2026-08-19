@@ -102,6 +102,10 @@ export interface ServeAttemptData {
   /** Company / registered agent name (corporate method) */
   corporateAgent?: string;
   corporate_agent?: string;
+  entityName?: string;
+  entity_name?: string;
+  recipientTitle?: string;
+  recipient_title?: string;
   original_filename?: string;
   originalFilename?: string;
 
