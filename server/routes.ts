@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { writeFile, unlink, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import type { Db } from "./db";
@@ -405,6 +405,12 @@ function serveRow(row: Record<string, unknown>, db?: Db, role: "admin" | "server
     physical_description: row.physical_description || "",
     serviceMethod: row.service_method || "",
     service_method: row.service_method || "",
+    attemptHash: row.attempt_hash || "",
+    attempt_hash: row.attempt_hash || "",
+    accuracyMeters: Number(row.accuracy_meters || 0),
+    accuracy_meters: Number(row.accuracy_meters || 0),
+    deviceInfo: row.device_info || "",
+    device_info: row.device_info || "",
     acceptedBy: row.accepted_by || "",
     accepted_by: row.accepted_by || "",
     loggedBy: row.logged_by || "",
@@ -1385,6 +1391,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     const serveStatus = body.status || "unknown";
+    const accuracyMeters = Number(body.accuracy_meters || body.accuracyMeters || 0);
+    const deviceInfo = String(body.device_info || body.deviceInfo || c.req.header("user-agent") || "").slice(0, 255);
+    const attemptHash = createHash("sha256").update(`${id}|${caseNum}|${timestamp}|${coordinates}|${user.id}|${serveStatus}`).digest("hex");
 
     db.query(
       `INSERT INTO serve_attempts (
@@ -1392,8 +1401,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         status, notes, address, service_address, coordinates, image_url, image_file_id,
         thumbnail_url, thumbnail_file_id, image_data, timestamp, occurred_at, entered_at,
         attempt_number, attempt_type, gps_source, contact_person, is_manual, result_detail, physical_description, case_id,
-        service_method, accepted_by, logged_by, logged_by_name
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        service_method, accepted_by, logged_by, logged_by_name, attempt_hash, accuracy_meters, device_info
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       clientId,
@@ -1426,7 +1435,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       body.serviceMethod || body.service_method || "",
       body.acceptedBy || body.accepted_by || "",
       user.id,
-      user.displayName || user.username || ""
+      user.displayName || user.username || "",
+      attemptHash,
+      accuracyMeters,
+      deviceInfo
     );
 
     // Assign sequential attempt_number for this person/job (ignore client-supplied number)
