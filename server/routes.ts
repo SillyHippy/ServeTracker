@@ -1530,7 +1530,16 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
     // Send email notification if requested — ALWAYS server-built HTML with photo LINKS.
     // Never trust body.emailHtml (old clients sent Maps-only / Photo-1 attachment templates).
-    if (body.sendEmail !== false && resolvedClientEmails.length > 0) {
+    // HARD SAFETY GUARD: Never send email if notes/body indicate a probe, test, or if explicitly blocked.
+    const isProbeOrTest =
+      body.sendEmail === false ||
+      body.isTest === true ||
+      body.is_test === true ||
+      c.req.header("x-test-probe") === "1" ||
+      String(body.notes || "").toLowerCase().includes("probe") ||
+      String(body.notes || "").toLowerCase().includes("test");
+
+    if (!isProbeOrTest && resolvedClientEmails.length > 0) {
       try {
         const clientEmail = resolvedClientEmails;
         const base = publicBaseUrl(c);
