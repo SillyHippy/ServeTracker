@@ -21,40 +21,38 @@ export default function DpaPage() {
           <CardHeader className="border-b pb-4">
             <div className="flex items-center gap-2">
               <FileCheck className="h-6 w-6 text-purple-600" />
-              <CardTitle className="text-2xl font-bold tracking-tight">Data Processing Agreement (DPA)</CardTitle>
+              <CardTitle className="text-2xl font-bold tracking-tight">Hosted Data Terms</CardTitle>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              For Law Firms & Corporate Clients • Version 2026.1 • Effective Date: August 21, 2026
+              Optional hosted instances only • Version 2026.3 • Effective Date: August 22, 2026
             </p>
           </CardHeader>
           <CardContent className="prose dark:prose-invert max-w-none py-6 space-y-5 text-sm leading-relaxed text-slate-700 dark:text-slate-300">
             <div>
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">1. Controller & Processor Designations</h3>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">1. Scope</h3>
               <p>
-                The Law Firm, Corporate Client, or Legal Entity submitting process serving orders is the <strong>Data Controller</strong>. ServeTracker (operated by Just Legal Solutions) acts as the <strong>Data Processor</strong>, processing personal data solely on documented instructions from the Data Controller to execute process serving workflows.
+                This page applies only if we host ServeTracker for you. The open-source code on GitHub is software you run yourself. We are not your process server, lawyer, or employer. You remain responsible for your own cases, licenses, and service of process.
               </p>
             </div>
 
             <div>
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">2. Technical & Organizational Measures (TOMs)</h3>
-              <ul className="list-disc pl-5 space-y-1">
-                <li><strong>Transport Security:</strong> Strict TLS 1.3 encryption across all API and web sessions.</li>
-                <li><strong>Access Control:</strong> Multi-tier RBAC restricting field process servers to assigned cases; client financial terms and unassigned documents are completely inaccessible.</li>
-                <li><strong>Encrypted Backups:</strong> Automated daily backups transmitted via TLS 1.3 to off-site cloud storage holding SOC 2 Type II and ISO 27001 certifications.</li>
-              </ul>
-            </div>
-
-            <div>
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">3. Non-Disclosure of Unserved Litigants</h3>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">2. Your data</h3>
               <p>
-                Data Processor covenants that unserved litigation documents, summonses, witness subpoenas, and unserved home/employment addresses shall remain strictly confidential, non-indexed, and shielded from third-party data brokers.
+                You own the records in your hosted instance. We process them only to keep that instance running. We do not sell them. We do not use them for skip tracing, ads, or other agencies’ work.
               </p>
             </div>
 
             <div>
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">4. 72-Hour Security Incident Notification</h3>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">3. Security (honest)</h3>
               <p>
-                In the event of a confirmed security incident resulting in unauthorized access to unencrypted personal data, Data Processor shall notify Data Controller without undue delay and in any event within seventy-two (72) hours of becoming aware of the incident.
+                Hosted instances use login, role limits, TLS in transit, and backups of the kind we use for our own copy. We do not claim SOC 2, ISO 27001, or any other audit certification.
+              </p>
+            </div>
+
+            <div>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">4. Incidents</h3>
+              <p>
+                If we confirm unauthorized access to your hosted data, we will tell you as soon as we reasonably can. This is not a certified 72-hour SLA.
               </p>
             </div>
           </CardContent>

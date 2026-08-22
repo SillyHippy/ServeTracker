@@ -223,7 +223,7 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 ### Auth & legal pages
 
 - Login is Argon2id against `users.password_hash`. There is no hardcoded fallback password.
-- Public pages: `/terms` (v2026.3), `/privacy`, `/dpa`, `/join`, `/forgot-password`, `/reset-password`.
+- Public pages: `/terms` (v2026.3 software ToS), `/privacy` and `/dpa` (hosted-instance data terms only — no SOC 2 / ISO claims), `/join`, `/forgot-password`, `/reset-password`.
 - `/join` requires `accepted_tos`. Existing field users are **not** gated on ToS at login.
 - Password-reset emails always use `PUBLIC_BASE_URL` or `https://servetracker.justlegalsolutions.org` — never `localhost`.
 - Forgot-password is rate-limited by IP + identifier.
