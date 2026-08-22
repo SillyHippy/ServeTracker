@@ -12,7 +12,7 @@
 - **Automated Affidavit Engine**: Generate court-compliant Oklahoma proofs of service, non-service affidavits, and amended filings directly from verified GPS attempts.
 - **Multi-Server Workload Dispatch**: Track active serves, server licensing expirations, and territory coverage.
 - **Self-Contained SQLite Backend**: Powered by Hono + Bun/Node for blazing fast single-binary performance.
-- **Software Terms & Consent**: Public `/terms`, `/privacy`, and `/dpa`. Signup requires accepting Terms + Privacy. Those pages are **software / logging terms only** — not a process-serving service contract, license warranty, or attempt-fee policy (v2026.2).
+- **Software Terms & Consent**: Public `/terms`, `/privacy`, and `/dpa`. Signup requires accepting Terms + Privacy. Those pages are **software / logging terms only** — not a process-serving service contract, license warranty, or attempt-fee policy (v2026.3: AS IS, no software liability except what Oklahoma law will not let you waive).
 
 ---
 
@@ -223,7 +223,7 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 ### Auth & legal pages
 
 - Login is Argon2id against `users.password_hash`. There is no hardcoded fallback password.
-- Public pages: `/terms` (v2026.2), `/privacy`, `/dpa`, `/join`, `/forgot-password`, `/reset-password`.
+- Public pages: `/terms` (v2026.3), `/privacy`, `/dpa`, `/join`, `/forgot-password`, `/reset-password`.
 - `/join` requires `accepted_tos`. Existing field users are **not** gated on ToS at login.
 - Password-reset emails always use `PUBLIC_BASE_URL` or `https://servetracker.justlegalsolutions.org` — never `localhost`.
 - Forgot-password is rate-limited by IP + identifier.

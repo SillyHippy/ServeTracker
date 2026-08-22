@@ -24,7 +24,7 @@ export default function TermsPage() {
               <CardTitle className="text-2xl font-bold tracking-tight">Terms of Service</CardTitle>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              ServeTracker Platform • Version 2026.2 • Effective Date: August 22, 2026
+              ServeTracker Platform • Version 2026.3 • Effective Date: August 22, 2026
             </p>
           </CardHeader>
           <CardContent className="prose dark:prose-invert max-w-none py-6 space-y-5 text-sm leading-relaxed text-slate-700 dark:text-slate-300">
@@ -50,9 +50,9 @@ export default function TermsPage() {
             </div>
 
             <div>
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">4. Limitation of Liability & Governing Law</h3>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">4. No Warranty; No Software Liability</h3>
               <p>
-                ServeTracker is provided as a record-keeping tool. To the maximum extent permitted by law, operator liability is limited to fees paid for the software during the preceding six (6) months. This Agreement is governed by the laws of the State of Oklahoma, with venue in Tulsa County District Court.
+                ServeTracker is provided “AS IS” and “AS AVAILABLE,” with no warranties of any kind, express or implied, including merchantability, fitness for a particular purpose, uptime, or accuracy of stored records. To the maximum extent permitted by law, the operator has no liability for any damages arising from use of the software — including lost data, lost profits, missed deadlines, failed or defective service of process, or consequential, incidental, special, or punitive damages — even if advised of the possibility. Where a court will not enforce a total waiver, any remaining software liability is $0. Nothing in this section waives liability that Oklahoma law does not allow to be waived (including fraud or willful misconduct). This Agreement is governed by the laws of the State of Oklahoma, with venue in Tulsa County District Court.
               </p>
             </div>
           </CardContent>
