@@ -47,11 +47,13 @@ function nowIso() {
 }
 
 /** Validate a target server can be assigned (active + onboarded; expired license blocked).
- *  Missing license is allowed so work can be handed out; affidavit e-sign still requires a license. */
+ *  Missing license is allowed so work can be handed out; affidavit e-sign still requires a license.
+ *  Admins (Joseph) can take their own jobs — onboarding/license gates apply to field servers only. */
 function validateAssignTarget(db: Db, serverId: string): string | null {
   const u = db.query("SELECT * FROM users WHERE id = ?").get(serverId) as Record<string, unknown> | null;
   if (!u) return "Server not found";
   if (String(u.is_active) !== "1" && u.is_active !== 1) return "Server is deactivated";
+  if (String(u.role || "") === "admin") return null;
   if (String(u.onboarding_status || "") !== "active") return "Server onboarding is not complete";
   const lic = computeLicenseStatus(u.license_number, u.license_jurisdiction, u.license_expires_at);
   if (lic === "expired") return "Server license is expired";
@@ -119,12 +121,22 @@ function applyAssignment(
 function getUserOrAdmin(c: Context): AuthUser {
   return (
     getAuthUser(c) || {
-      id: "usr_admin_default",
-      username: "admin",
-      displayName: "Admin",
-      role: "admin",
+      id: "",
+      username: "",
+      displayName: "",
+      role: "unauthorized" as any,
     }
   );
+}
+
+/** Rough device-family detection from a User-Agent string (stored per push subscription). */
+function detectPlatform(ua: string): string {
+  if (/android/i.test(ua)) return "android";
+  if (/iphone|ipad|ipod/i.test(ua)) return "ios";
+  if (/windows/i.test(ua)) return "windows";
+  if (/mac os/i.test(ua)) return "macos";
+  if (/linux/i.test(ua)) return "linux";
+  return "unknown";
 }
 
 function escapeHtml(str: unknown): string {
@@ -431,13 +443,24 @@ function documentRow(row: Record<string, unknown>) {
   return {
     $id: row.id,
     id: row.id,
+    clientId: row.client_id,
     client_id: row.client_id,
-    case_number: row.case_number,
+    caseId: row.case_id || "",
+    case_id: row.case_id || "",
+    caseNumber: row.case_number || "",
+    case_number: row.case_number || "",
+    fileName: row.file_name,
     file_name: row.file_name,
+    fileSize: row.file_size,
     file_size: row.file_size,
+    fileType: row.file_type,
     file_type: row.file_type,
+    filePath: row.file_path,
     file_path: row.file_path,
+    fileHash: row.file_hash || "",
+    file_hash: row.file_hash || "",
     description: row.description,
+    createdAt: row.created_at,
     created_at: row.created_at,
   };
 }
@@ -470,6 +493,81 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
   app.get("/api/health", (c: Context) => {
     const count = db.query("SELECT COUNT(*) as count FROM clients").get() as { count: number };
     return c.json({ ok: true, clients: count.count });
+  });
+
+  // User Consent Endpoint (ToS, DPA, Privacy Policy acceptance)
+  app.post("/api/auth/consent", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user?.id) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const documentType = String(body.document_type || body.documentType || "").trim().toLowerCase();
+    const version = String(body.version || "2026.1").trim();
+
+    if (!documentType || !["tos", "privacy", "dpa"].includes(documentType)) {
+      return c.json({ error: "Valid document_type ('tos', 'privacy', 'dpa') is required" }, 400);
+    }
+
+    const now = nowIso();
+    const ip = c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "127.0.0.1";
+    const userAgent = c.req.header("user-agent") || "";
+    const id = "cs_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+
+    db.query(`
+      INSERT INTO user_consents (id, user_id, document_type, version, accepted_at, ip_address, user_agent)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, user.id, documentType, version, now, ip, userAgent);
+
+    if (documentType === "tos") {
+      db.query("UPDATE users SET tos_accepted_at = ?, tos_version = ?, tos_ip = ? WHERE id = ?").run(now, version, ip, user.id);
+    } else if (documentType === "dpa") {
+      db.query("UPDATE users SET dpa_accepted_at = ?, dpa_version = ? WHERE id = ?").run(now, version, user.id);
+    }
+
+    logAuditEvent(db, {
+      event_type: "legal.consent_accepted",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      ip_address: ip,
+      user_agent: userAgent,
+      details: { document_type: documentType, version }
+    });
+
+    return c.json({ success: true, document_type: documentType, version, accepted_at: now });
+  });
+
+  // GET /api/compliance/status - check current user consent status
+  app.get("/api/compliance/status", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user?.id) return c.json({ error: "Unauthorized" }, 401);
+
+    const userRow = db.query("SELECT tos_accepted_at, tos_version, dpa_accepted_at, dpa_version FROM users WHERE id = ?").get(user.id) as {
+      tos_accepted_at?: string;
+      tos_version?: string;
+      dpa_accepted_at?: string;
+      dpa_version?: string;
+    } | null;
+
+    return c.json({
+      tos_accepted: Boolean(userRow?.tos_accepted_at),
+      tos_version: userRow?.tos_version || "",
+      tos_accepted_at: userRow?.tos_accepted_at || "",
+      dpa_accepted: Boolean(userRow?.dpa_accepted_at),
+      dpa_version: userRow?.dpa_version || "",
+      dpa_accepted_at: userRow?.dpa_accepted_at || "",
+    });
+  });
+
+  // GET /api/compliance/audit-logs - Admin only audit log inspection
+  app.get("/api/compliance/audit-logs", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const limit = Math.min(Number(c.req.query("limit") || 100), 500);
+    const logs = db.query("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?").all(limit);
+    return c.json({ logs });
   });
 
   // Global Search
@@ -704,12 +802,21 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       : null;
 
     let id = body.id || newId();
+    const assignedTo = body.assigned_to || body.assignedTo || "";
+    let assignedName = body.assigned_name || body.assignedName || "";
+    if (assignedTo && !assignedName) {
+      const srvUser = db.query("SELECT display_name, legal_name, username FROM users WHERE id = ? OR username = ?").get(assignedTo, assignedTo) as { display_name?: string; legal_name?: string; username?: string } | null;
+      if (srvUser) {
+        assignedName = srvUser.display_name || srvUser.legal_name || srvUser.username || "";
+      }
+    }
+
     if (existing) {
       id = existing.id;
     } else {
       db.query(
-        `INSERT INTO client_cases (id, client_id, case_number, case_name, court_name, plaintiff_petitioner, defendant_respondent, home_address, work_address, documents_to_serve, notes, service_requirements, contact_info, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO client_cases (id, client_id, case_number, case_name, court_name, plaintiff_petitioner, defendant_respondent, home_address, work_address, documents_to_serve, notes, service_requirements, contact_info, status, assigned_to, assigned_name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.client_id,
@@ -725,6 +832,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         body.service_requirements || body.requirements || "",
         body.contact_info || body.contactInfo || "",
         body.status || "Open",
+        assignedTo,
+        assignedName,
         ts,
         ts
       );
@@ -765,6 +874,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
   // Case status update (used to open/close cases)
   app.patch("/api/cases/:id/status", async (c: Context) => {
     const user = getUserOrAdmin(c);
+    if (!user?.id) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
     const id = c.req.param("id");
     const body = await c.req.json();
     const existing = db.query("SELECT id, assigned_to FROM client_cases WHERE id = ?").get(id) as { id: string; assigned_to?: string } | null;
@@ -777,7 +889,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         return c.json({ error: "Forbidden: Not assigned to this case" }, 403);
       }
     }
-    const status = String(body.status || "Open");
+    const status = String(body.status || "active").trim();
     db.query("UPDATE client_cases SET status = ?, updated_at = ? WHERE id = ?").run(status, nowIso(), id);
     invalidateExecutionsForCase(db, id, "material_change");
     const row = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
@@ -1330,8 +1442,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       invalidateExecutionsForCase(db, caseId, "material_change");
     }
 
-    // Successful serve closes THIS case row only (by UUID)
-    // Cases stay active until an admin closes them. Do not auto-close on successful serve.
+    // Auto-update case status to 'Served' when a successful serve is recorded
+    const isSuccessful = serveStatus === "served" || attemptType === "served" || Boolean(body.serviceMethod || body.service_method);
+    if (caseId && isSuccessful) {
+      db.query("UPDATE client_cases SET status = 'Served', updated_at = ? WHERE id = ?").run(nowIso(), caseId);
+    }
 
     // Save multiple photos if provided in creation POST
     if (Array.isArray(body.photos) && body.photos.length > 0) {
@@ -1959,7 +2074,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     let assignedServer: Record<string, unknown> | null = null;
     const assignedTo = String(caseObj.assigned_to || "");
     if (assignedTo) {
-      assignedServer = db.query("SELECT * FROM users WHERE id = ?").get(assignedTo) as Record<string, unknown> | null;
+      assignedServer = db.query("SELECT * FROM users WHERE id = ? OR username = ?").get(assignedTo, assignedTo) as Record<string, unknown> | null;
     }
     const active = activeExecution(db, String(caseObj.id));
 
@@ -2030,7 +2145,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       return c.json({ error: "Forbidden: Admin access required" }, 403);
     }
 
-    const servers = db.query("SELECT * FROM users WHERE role = 'server' ORDER BY created_at ASC").all() as Record<string, unknown>[];
+    const servers = db.query(
+      `SELECT * FROM users
+       WHERE role IN ('server', 'admin')
+       ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, created_at ASC`
+    ).all() as Record<string, unknown>[];
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayIso = todayStart.toISOString();
@@ -2105,6 +2224,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         onboardingStatus: s.onboarding_status || "pending",
         licenseStatus,
         licenseExpiresAt: s.license_expires_at || "",
+        phone: s.phone || "",
+        email: s.email || "",
+        serviceTerritory: territory,
+        profileNotes: s.profile_notes || "",
         assignedActiveCases,
         noAttemptCases,
         stale48hCases,
@@ -2337,22 +2460,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (!assigned) return c.json({ error: "Case is not assigned to a field server" }, 400);
     const kind = inferAffidavitKind(bundle.attempts, requestedKind);
 
-    if (user.role === "admin") {
-      const confirmation = String(body.confirmation || "").trim().toLowerCase();
-      const targetName = String(assigned.legal_name || assigned.display_name || "").trim().toLowerCase();
-      if (!confirmation || confirmation !== targetName) {
-        return c.json(
-          { error: `Type the assigned server's exact legal name to confirm (${assigned.legal_name || assigned.display_name})` },
-          400
-        );
-      }
-    } else {
-      if (String(assigned.id) !== user.id) {
-        return c.json({ error: "Forbidden: you can only sign affidavits assigned to you" }, 403);
-      }
-      if (body.acknowledged !== true && body.ack !== true) {
-        return c.json({ error: "You must acknowledge the affidavit contents are accurate" }, 400);
-      }
+    const isSelf =
+      String(assigned.id) === user.id ||
+      String(assigned.username || "").toLowerCase() === String(user.username || "").toLowerCase();
+    if (user.role !== "admin" && !isSelf) {
+      return c.json({ error: "Forbidden: you can only sign affidavits assigned to you" }, 403);
     }
 
     const v = validateSignable(db, String(bundle.caseObj.id), undefined, kind);
@@ -2364,7 +2476,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       county: venueCounty,
     });
     const sourceHash = sha256Hex(snapshot);
-    const mode: "server_self" | "admin_on_behalf" = user.role === "admin" ? "admin_on_behalf" : "server_self";
+    const mode: "server_self" | "admin_on_behalf" =
+      user.role === "admin" && !isSelf ? "admin_on_behalf" : "server_self";
     const prev = latestExecution(db, String(bundle.caseObj.id));
 
     // First create a temporary execution record so renderExecutionHtml can read it
@@ -2373,7 +2486,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       clientId: String(bundle.caseObj.client_id),
       assignedServerId: String(assigned.id),
       signedByUserId: String(assigned.id),
-      appliedByUserId: user.id,
+      appliedByUserId: String(user.id || assigned.id),
       applicationMode: mode,
       sourceSnapshotJson: snapshot,
       sourceHash,
@@ -2396,7 +2509,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const bundle = loadCaseBundle(db, caseKey);
     if (!bundle) return c.json({ error: "Case not found" }, 404);
 
-    if (user.role !== "admin" && String(bundle.caseObj.assigned_to || "") !== user.id) {
+    const isAssigned =
+      String(bundle.caseObj.assigned_to || "") === user.id ||
+      String(bundle.caseObj.assigned_to || "").toLowerCase() === String(user.username || "").toLowerCase();
+    if (user.role !== "admin" && !isAssigned) {
       return c.json({ error: "Forbidden: only the assigned server or an administrator can render this affidavit" }, 403);
     }
 
@@ -2428,6 +2544,66 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       .query("SELECT * FROM affidavit_executions WHERE case_id = ? ORDER BY created_at DESC")
       .all(bundle.caseObj.id) as Record<string, unknown>[];
     return c.json({ executions: rows.map((r) => executionPublic(r)) });
+  });
+
+  // GET /api/affidavits/queue — pending affidavits needing signature (for server or admin)
+  app.get("/api/affidavits/queue", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user?.id) return c.json({ error: "Unauthorized" }, 401);
+
+    const signedCaseIds = new Set(
+      (
+        db
+          .query(
+            "SELECT DISTINCT case_id FROM affidavit_executions WHERE status = 'signed_not_notarized' AND (invalidated_at = '' OR invalidated_at IS NULL)"
+          )
+          .all() as Array<{ case_id: string }>
+      ).map((r) => r.case_id)
+    );
+
+    const casesQuery = `
+      SELECT c.*,
+        (SELECT s.status FROM serve_attempts s WHERE (s.case_id = c.id OR s.case_number = c.case_number) ORDER BY s.occurred_at DESC LIMIT 1) as last_service_type,
+        (SELECT s.service_method FROM serve_attempts s WHERE (s.case_id = c.id OR s.case_number = c.case_number) ORDER BY s.occurred_at DESC LIMIT 1) as last_service_method,
+        (SELECT s.occurred_at FROM serve_attempts s WHERE (s.case_id = c.id OR s.case_number = c.case_number) ORDER BY s.occurred_at DESC LIMIT 1) as last_served_at
+      FROM client_cases c
+    `;
+    let rows: Record<string, unknown>[];
+
+    if (user.role === "server") {
+      rows = db
+        .query(`${casesQuery} WHERE (c.assigned_to = ? OR c.assigned_to = ?) ORDER BY c.created_at DESC`)
+        .all(user.id, user.username) as Record<string, unknown>[];
+    } else {
+      rows = db.query(`${casesQuery} ORDER BY c.created_at DESC`).all() as Record<string, unknown>[];
+    }
+
+    const queue: Array<Record<string, unknown>> = [];
+    for (const r of rows) {
+      const caseId = String(r.id);
+      if (signedCaseIds.has(caseId)) continue;
+
+      const status = String(r.status || "").toLowerCase();
+      const lastType = String(r.last_service_type || "").toLowerCase();
+      const isServed = status === "served" || status === "completed" || lastType === "serve";
+
+      if (isServed) {
+        queue.push({
+          caseId,
+          caseNumber: String(r.case_number || ""),
+          caseName: String(r.case_name || r.defendant_respondent || ""),
+          defendantName: String(r.defendant_respondent || ""),
+          personServed: String(r.defendant_respondent || r.case_name || "Recipient"),
+          serviceMethod: String(r.last_service_method || "Personal Service"),
+          servedAt: String(r.last_served_at || r.updated_at || r.created_at || ""),
+          assignedServerName: String(r.assigned_name || "Assigned Server"),
+          status: String(r.status || "Served"),
+          clientName: user.role === "admin" ? String(r.client_name || "") : undefined,
+        });
+      }
+    }
+
+    return c.json({ queue });
   });
 
   // Client Documents
@@ -2470,36 +2646,273 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const clientId = String(form.clientId || form.client_id || "");
     const caseNumber = String(form.caseNumber || form.case_number || "");
     const description = String(form.description || "");
+    const cleanName = sanitizeDocumentFilename(file.name);
     const id = newId();
     const fileId = newId();
-    const clientDir = join(UPLOADS_DIR, "documents", clientId);
+    const clientDir = join(UPLOADS_DIR, "documents", clientId.replace(/[^a-zA-Z0-9_-]/g, ""));
     await mkdir(clientDir, { recursive: true });
-    const destPath = join(clientDir, `${fileId}_${file.name}`);
+    const destPath = join(clientDir, `${fileId}_${cleanName}`);
+    if (!destPath.startsWith(clientDir)) {
+      return c.json({ error: "Invalid path" }, 400);
+    }
     await writeFile(destPath, Buffer.from(await file.arrayBuffer()));
 
     const createdAt = nowIso();
     db.query(
       `INSERT INTO client_documents (id, client_id, case_number, file_name, file_size, file_type, file_path, description, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, clientId, caseNumber, file.name, file.size, file.type, `${clientId}/${fileId}_${file.name}`, description, createdAt);
+    ).run(id, clientId, caseNumber, cleanName, file.size, file.type, `${clientId}/${fileId}_${cleanName}`, description, createdAt);
 
     const row = db.query("SELECT * FROM client_documents WHERE id = ?").get(id) as Record<string, unknown>;
     return c.json(documentRow(row), 201);
   });
 
-  app.delete("/api/documents/:id", async (c: Context) => {
+  // Filename Sanitizer to prevent Directory Traversal attacks
+  function sanitizeDocumentFilename(rawName: string): string {
+    const ext = rawName.includes(".") ? "." + rawName.split(".").pop()!.toLowerCase().replace(/[^a-z0-9]/g, "") : ".pdf";
+    const base = rawName.substring(0, rawName.lastIndexOf(".") !== -1 ? rawName.lastIndexOf(".") : rawName.length)
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 80);
+    return `${base || "court_document"}${ext}`;
+  }
+
+  // GET /api/cases/:id/documents — Role-Gated Case Documents Listing
+  app.get("/api/cases/:id/documents", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user || user.role === "unauthorized") {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const caseId = c.req.param("id");
+    const caseObj = resolveCase(db, caseId);
+    if (!caseObj) return c.json({ error: "Case not found" }, 404);
+
+    // Field Server RBAC Gate: Must be assigned to this case
+    if (user.role === "server") {
+      const isAssigned = String(caseObj.assigned_to || "") === user.id || String(caseObj.assigned_to || "") === user.username;
+      if (!isAssigned) return c.json({ error: "Forbidden: You are not assigned to this case" }, 403);
+    }
+
+    const rows = db.query(
+      "SELECT id, client_id, case_id, case_number, file_name, file_size, file_type, description, is_archived, gdrive_file_id, created_at FROM client_documents WHERE (case_id = ? OR (case_id = '' AND case_number = ?)) ORDER BY created_at ASC"
+    ).all(caseObj.id, caseObj.case_number) as Record<string, unknown>[];
+
+    return c.json(rows.map(r => ({
+      id: r.id,
+      caseId: r.case_id || caseObj.id,
+      fileName: r.file_name,
+      fileSize: r.file_size,
+      fileType: r.file_type,
+      description: r.description || "",
+      isArchived: r.is_archived === 1,
+      hasDriveBackup: !!r.gdrive_file_id,
+      createdAt: r.created_at
+    })));
+  });
+
+  // POST /api/cases/:id/documents — Upload Court Documents Attached to Case (Admin only)
+  app.post("/api/cases/:id/documents", async (c: Context) => {
     const user = getUserOrAdmin(c);
     if (user.role !== "admin") {
       return c.json({ error: "Forbidden: Admin access required" }, 403);
     }
-    const id = c.req.param("id");
-    const row = db.query("SELECT file_path FROM client_documents WHERE id = ?").get(id) as { file_path: string } | null;
+
+    const caseId = c.req.param("id");
+    const caseObj = resolveCase(db, caseId);
+    if (!caseObj) return c.json({ error: "Case not found" }, 404);
+
+    const form = await c.req.parseBody();
+    const file = form.file;
+    if (!(file instanceof File)) {
+      return c.json({ error: "File required" }, 400);
+    }
+
+    const description = String(form.description || form.category || "Court Document");
+    const cleanFileName = sanitizeDocumentFilename(file.name);
+    const id = newId();
+    const fileId = newId();
+    const fileBuf = Buffer.from(await file.arrayBuffer());
+
+    // Preflight check for PDF corruption or password lock
+    if (file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf") {
+      try {
+        const { PDFDocument } = await import("pdf-lib");
+        await PDFDocument.load(fileBuf, { ignoreEncryption: false });
+      } catch (err: any) {
+        if (err?.message?.includes("encrypt") || err?.message?.includes("password")) {
+          return c.json({ error: "This PDF is password-protected. Please upload an unlocked copy." }, 400);
+        }
+        console.warn("[DocUpload] PDF-lib preflight warning (continuing):", err?.message);
+      }
+    }
+
+    const crypto = await import("crypto");
+    const sha256Hex = crypto.createHash("sha256").update(fileBuf).digest("hex");
+
+    const caseDir = join(UPLOADS_DIR, "documents", String(caseObj.id));
+    await mkdir(caseDir, { recursive: true });
+    const storageKey = `${String(caseObj.id)}/${fileId}_${cleanFileName}`;
+    const destPath = join(caseDir, `${fileId}_${cleanFileName}`);
+    await writeFile(destPath, fileBuf);
+
+    const createdAt = nowIso();
+    db.query(
+      `INSERT INTO client_documents (id, client_id, case_id, case_number, file_name, file_size, file_type, file_path, file_hash, description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      String(caseObj.client_id || ""),
+      String(caseObj.id),
+      String(caseObj.case_number || ""),
+      cleanFileName,
+      file.size,
+      file.type || "application/pdf",
+      storageKey,
+      sha256Hex,
+      description,
+      createdAt
+    );
+
+    const row = db.query("SELECT * FROM client_documents WHERE id = ?").get(id) as Record<string, unknown>;
+    return c.json(documentRow(row), 201);
+  });
+
+  // POST /api/cases/by-number/:caseNumber/documents — Upload documents by Case Number (Google Apps Script / Webhook / Hermes)
+  app.post("/api/cases/by-number/:caseNumber/documents", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const caseNumber = c.req.param("caseNumber");
+    const caseObj = db.query(
+      "SELECT * FROM client_cases WHERE case_number = ? OR case_number = ? ORDER BY created_at DESC LIMIT 1"
+    ).get(caseNumber, caseNumber.replace(/-/g, "")) as Record<string, unknown> | null;
+    if (!caseObj) return c.json({ error: `Case '${caseNumber}' not found` }, 404);
+
+    const form = await c.req.parseBody();
+    const file = form.file;
+    if (!(file instanceof File)) {
+      return c.json({ error: "File required" }, 400);
+    }
+
+    const description = String(form.description || form.category || "Court Document");
+    const cleanFileName = sanitizeDocumentFilename(file.name);
+    const id = newId();
+    const fileId = newId();
+    const fileBuf = Buffer.from(await file.arrayBuffer());
+
+    const crypto = await import("crypto");
+    const sha256Hex = crypto.createHash("sha256").update(fileBuf).digest("hex");
+
+    const caseDir = join(UPLOADS_DIR, "documents", String(caseObj.id));
+    await mkdir(caseDir, { recursive: true });
+    const storageKey = `${String(caseObj.id)}/${fileId}_${cleanFileName}`;
+    const destPath = join(caseDir, `${fileId}_${cleanFileName}`);
+    await writeFile(destPath, fileBuf);
+
+    const createdAt = nowIso();
+    db.query(
+      `INSERT INTO client_documents (id, client_id, case_id, case_number, file_name, file_size, file_type, file_path, file_hash, description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      String(caseObj.client_id || ""),
+      String(caseObj.id),
+      String(caseObj.case_number || ""),
+      cleanFileName,
+      file.size,
+      file.type || "application/pdf",
+      storageKey,
+      sha256Hex,
+      description,
+      createdAt
+    );
+
+    const row = db.query("SELECT * FROM client_documents WHERE id = ?").get(id) as Record<string, unknown>;
+    return c.json(documentRow(row), 201);
+  });
+
+  // GET /api/cases/:id/documents/:docId/download — Authenticated Binary Stream
+  app.get("/api/cases/:id/documents/:docId/download", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const caseId = c.req.param("id");
+    const docId = c.req.param("docId");
+    const caseObj = resolveCase(db, caseId);
+    if (!caseObj) return c.json({ error: "Case not found" }, 404);
+
+    if (user.role === "server") {
+      const isAssigned = String(caseObj.assigned_to || "") === user.id || String(caseObj.assigned_to || "") === user.username;
+      if (!isAssigned) return c.json({ error: "Forbidden: You are not assigned to this case" }, 403);
+    }
+
+    // STRICT IDOR GUARD: Document must belong to this case (or client-scoped case_number legacy fallback)
+    const doc = db.query(
+      "SELECT * FROM client_documents WHERE id = ? AND (case_id = ? OR (case_id = '' AND client_id = ? AND case_number = ?))"
+    ).get(docId, caseObj.id, caseObj.client_id, caseObj.case_number) as Record<string, unknown> | null;
+    if (!doc) return c.json({ error: "Document not found for this case" }, 404);
+
+    const { resolve, sep } = await import("path");
+    const baseDocsDir = resolve(UPLOADS_DIR, "documents");
+    const absPath = resolve(baseDocsDir, String(doc.file_path));
+
+    // Path Traversal Security Check
+    if (!absPath.startsWith(baseDocsDir + sep) && absPath !== baseDocsDir) {
+      return c.json({ error: "Security violation: Invalid file path" }, 400);
+    }
+
+    const file = Bun.file(absPath);
+    if (!(await file.exists())) {
+      return c.json({ error: "Document file not found on server (may be archived in Drive)" }, 404);
+    }
+
+    const buffer = await file.arrayBuffer();
+    const mime = String(doc.file_type || "application/pdf");
+    const fileName = String(doc.file_name || "document.pdf");
+
+    logAuditEvent(db, {
+      event_type: "docs.download",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: docId,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+      details: { case_id: caseId, file_name: fileName },
+    });
+
+    return new Response(buffer, {
+      headers: {
+        "Content-Type": mime,
+        "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        "Cache-Control": "private, no-cache, no-store",
+      },
+    });
+  });
+
+  // DELETE /api/cases/:id/documents/:docId — Admin Document Deletion
+  app.delete("/api/cases/:id/documents/:docId", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const docId = c.req.param("docId");
+    const row = db.query("SELECT file_path FROM client_documents WHERE id = ?").get(docId) as { file_path: string } | null;
     if (row) await deleteDocumentFile(row.file_path);
-    db.query("DELETE FROM client_documents WHERE id = ?").run(id);
+    db.query("DELETE FROM client_documents WHERE id = ?").run(docId);
+    logAuditEvent(db, {
+      event_type: "docs.delete",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: docId,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+    });
     return c.json({ success: true });
   });
 
   app.post("/api/email/send", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
     try {
       const body = await c.req.json();
       const result = await sendEmail(body);
@@ -2576,6 +2989,95 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     return c.json({ success: true });
   });
 
+  // Web Push VAPID public key — the browser needs it to create a subscription
+  app.get("/api/push/vapid-public-key", async (c: Context) => {
+    const { getVapidPublicKey } = await import("./notifications");
+    const key = getVapidPublicKey();
+    if (!key) return c.json({ error: "VAPID not configured on server" }, 500);
+    return c.json({ publicKey: key });
+  });
+
+  // Register / refresh a Push API subscription for the authenticated user.
+  // The browser sends this after pushManager.subscribe() succeeds.
+  app.post("/api/push-subscriptions", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const body = await c.req.json().catch(() => ({}));
+    const endpoint = String(body.endpoint || "").trim();
+    const p256dh = String(body.keys?.p256dh || "").trim();
+    const auth = String(body.keys?.auth || "").trim();
+
+    if (!endpoint || !p256dh || !auth) {
+      return c.json({ error: "endpoint, keys.p256dh and keys.auth are required" }, 400);
+    }
+
+    const ua = c.req.header("user-agent") || "";
+    const platform = String(body.platform || detectPlatform(ua));
+    const now = nowIso();
+
+    // Upsert keyed on the unique endpoint; re-assign to the current user
+    // (same device re-login) and refresh last_seen_at.
+    db.query(`
+      INSERT INTO push_subscriptions (id, user_id, endpoint, p256dh, auth, platform, user_agent, created_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET
+        user_id = excluded.user_id,
+        p256dh = excluded.p256dh,
+        auth = excluded.auth,
+        platform = excluded.platform,
+        user_agent = excluded.user_agent,
+        last_seen_at = excluded.last_seen_at
+    `).run(newId(), user.id, endpoint, p256dh, auth, platform, ua.slice(0, 300), now, now);
+
+    return c.json({ success: true });
+  });
+
+  // Remove a Push API subscription (logout / permission revoked)
+  app.delete("/api/push-subscriptions", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const body = await c.req.json().catch(() => ({}));
+    const endpoint = String(body.endpoint || c.req.query("endpoint") || "").trim();
+    if (!endpoint) return c.json({ error: "endpoint is required" }, 400);
+    db.query("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?").run(endpoint, user.id);
+    return c.json({ success: true });
+  });
+
+  // Targeted Direct Notification to a specific field server
+  app.post("/api/admin/servers/:id/notify", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const serverId = c.req.param("id");
+    const serverRow = db.query("SELECT id, display_name, username, email, phone FROM users WHERE id = ?").get(serverId) as {
+      id: string;
+      display_name: string;
+      username: string;
+      email?: string;
+      phone?: string;
+    } | null;
+
+    if (!serverRow) return c.json({ error: "Server not found" }, 404);
+
+    const body = await c.req.json().catch(() => ({}));
+    const title = String(body.title || "Dispatch Directive").trim();
+    const message = String(body.message || "").trim();
+    const priority = (body.priority || "high") as "normal" | "high" | "urgent";
+
+    if (!message) return c.json({ error: "Message is required" }, 400);
+
+    const { createNotification } = await import("./notifications");
+    const notif = await createNotification(db as any, {
+      userId: serverRow.id,
+      type: "nudge",
+      priority,
+      title,
+      body: message,
+      actionUrl: "/dashboard",
+    });
+
+    return c.json({ success: true, notification: notif });
+  });
+
   // Targeted Admin Nudge to an assigned server
   app.post("/api/admin/cases/:id/nudge", async (c: Context) => {
     const user = getUserOrAdmin(c);
@@ -2635,6 +3137,53 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
     return c.json({ success: true, count: activeServers.length });
   });
+
+  // VAPID Public Key for Web Push
+  app.get("/api/push/vapid-public-key", (c: Context) => {
+    const key = process.env.VAPID_PUBLIC_KEY || "";
+    return c.json({ publicKey: key });
+  });
+
+  // Subscribe client device to Web Push
+  app.post("/api/push/subscribe", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const body = await c.req.json().catch(() => ({}));
+    const endpoint = String(body.endpoint || "").trim();
+    const p256dh = String(body.keys?.p256dh || body.p256dh || "").trim();
+    const auth = String(body.keys?.auth || body.auth || "").trim();
+    const platform = String(body.platform || "browser").trim();
+    const userAgent = c.req.header("user-agent") || "";
+
+    if (!endpoint || !p256dh || !auth) {
+      return c.json({ error: "Invalid subscription payload" }, 400);
+    }
+
+    const id = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+
+    db.query(`
+      INSERT INTO push_subscriptions (id, user_id, endpoint, p256dh, auth, platform, user_agent, created_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET
+        user_id = excluded.user_id,
+        p256dh = excluded.p256dh,
+        auth = excluded.auth,
+        last_seen_at = excluded.last_seen_at
+    `).run(id, user.id, endpoint, p256dh, auth, platform, userAgent, now, now);
+
+    return c.json({ success: true });
+  });
+
+  // Unsubscribe client device
+  app.delete("/api/push/unsubscribe", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const body = await c.req.json().catch(() => ({}));
+    const endpoint = String(body.endpoint || "").trim();
+    if (endpoint) {
+      db.query("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?").run(endpoint, user.id);
+    }
+    return c.json({ success: true });
+  });
 }
 
 async function deleteServeFiles(imageFileId?: string, thumbnailFileId?: string) {
@@ -2655,5 +3204,36 @@ async function deleteDocumentFile(filePath: string) {
     await unlink(join(UPLOADS_DIR, "documents", filePath));
   } catch {
     // file may not exist
+  }
+}
+
+export function logAuditEvent(db: Db, event: {
+  event_type: string;
+  actor_user_id?: string;
+  actor_role?: string;
+  target_resource_id?: string;
+  ip_address?: string;
+  user_agent?: string;
+  details?: Record<string, unknown>;
+}) {
+  try {
+    const id = "aud_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    const now = new Date().toISOString();
+    db.query(`
+      INSERT INTO audit_logs (id, event_type, actor_user_id, actor_role, target_resource_id, ip_address, user_agent, details, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      event.event_type,
+      event.actor_user_id || "",
+      event.actor_role || "",
+      event.target_resource_id || "",
+      event.ip_address || "",
+      event.user_agent || "",
+      JSON.stringify(event.details || {}),
+      now
+    );
+  } catch (err) {
+    console.error("Audit log error:", err);
   }
 }

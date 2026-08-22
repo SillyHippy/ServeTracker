@@ -5,6 +5,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import ChangePasswordPage from './pages/ChangePassword';
+import RegisterServerPage from './pages/RegisterServerPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import { Loader2 } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 
@@ -19,6 +22,9 @@ const MigrationPage = lazy(() => import('./pages/Migration'));
 const DataExport = lazy(() => import('./pages/DataExport'));
 const Servers = lazy(() => import('./pages/Servers'));
 const MyProfile = lazy(() => import('./pages/MyProfile'));
+const TermsPage = lazy(() => import('./pages/TermsPage'));
+const PrivacyPage = lazy(() => import('./pages/PrivacyPage'));
+const DpaPage = lazy(() => import('./pages/DpaPage'));
 
 // Loading fallback component
 const PageLoader = () => (
@@ -89,6 +95,7 @@ const queryClient = new QueryClient({
 });
 
 import { AuthProvider, useAuth } from '@/context/AuthContext';
+import { NotificationProvider } from "@/context/NotificationContext";
 
 // Create a protected route wrapper component
 const ProtectedRoute = ({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) => {
@@ -400,6 +407,13 @@ const AnimatedRoutes = () => {
       <Routes location={location}>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/change-password" element={<ChangePasswordPage />} />
+        <Route path="/join" element={<RegisterServerPage />} />
+        <Route path="/signup" element={<RegisterServerPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/terms" element={<Suspense fallback={<PageLoader />}><TermsPage /></Suspense>} />
+        <Route path="/privacy" element={<Suspense fallback={<PageLoader />}><PrivacyPage /></Suspense>} />
+        <Route path="/dpa" element={<Suspense fallback={<PageLoader />}><DpaPage /></Suspense>} />
         
         <Route element={
           <ProtectedRoute>
@@ -498,7 +512,9 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <AnimatedRoutes />
+        <NotificationProvider>
+          <AnimatedRoutes />
+        </NotificationProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

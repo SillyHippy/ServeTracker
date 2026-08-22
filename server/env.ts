@@ -43,6 +43,6 @@ export function validateEnv() {
   }
 
   if (!process.env.APP_PASSWORD) {
-    console.warn('APP_PASSWORD not set — login will fall back to "Password" (dev only)');
+    console.info('APP_PASSWORD not set (bootstrap only — admin authenticates via SQLite Argon2 hash)');
   }
 }

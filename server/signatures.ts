@@ -179,11 +179,13 @@ export function validateSignatureImage(buf: Buffer): { ok: boolean; mime?: strin
 }
 
 async function verifyUserPassword(userRow: Record<string, unknown> | null, password: string): Promise<boolean> {
-  if (!userRow) return false;
+  if (!userRow || !password) return false;
+  const hash = String(userRow.password_hash || "");
+  if (!hash || !hash.startsWith("$argon2")) return false;
   try {
-    return await Bun.password.verify(password, String(userRow.password_hash));
+    return await Bun.password.verify(password, hash);
   } catch {
-    return password === String(userRow.password_hash);
+    return false;
   }
 }
 
@@ -192,12 +194,12 @@ export function registerSignatureRoutes(app: {
   post: Function;
   delete: Function;
 }, db: Db) {
-  // POST /api/me/signature — server enrolls/replaces own signature (password + ack required)
+  // POST /api/me/signature — owner enrolls/replaces own signature (password + ack required)
   app.post("/api/me/signature", async (c: Context) => {
     const user = getAuthUser(c);
     if (!user) return c.json({ error: "Unauthorized" }, 401);
-    if (user.role !== "server") {
-      return c.json({ error: "Only field servers can enroll a signature" }, 403);
+    if (user.role !== "server" && user.role !== "admin") {
+      return c.json({ error: "Only active process servers or admins can enroll a signature" }, 403);
     }
 
     const body = await c.req.json().catch(() => ({}));
@@ -262,7 +264,9 @@ export function registerSignatureRoutes(app: {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, '')`
     ).run(assetId, user.id, storageKey, mime, sha, dims?.width || 0, dims?.height || 0, ts, ts);
 
-    db.query("UPDATE users SET signature_asset_id = ?, signature_updated_at = ? WHERE id = ?").run(assetId, ts, user.id);
+    db.query(
+      "UPDATE users SET signature_asset_id = ?, signature_updated_at = ?, onboarding_status = CASE WHEN onboarding_status = 'pending' THEN 'active' ELSE onboarding_status END WHERE id = ?"
+    ).run(assetId, ts, user.id);
 
     return c.json({ success: true, status: "enrolled", assetId, updatedAt: ts }, 201);
   });
@@ -289,6 +293,84 @@ export function registerSignatureRoutes(app: {
     db.query("UPDATE users SET signature_asset_id = '', signature_updated_at = ? WHERE id = ?").run(ts, user.id);
 
     return c.json({ success: true, status: "revoked" });
+  });
+
+  // POST /api/users/:id/signature — admin enrolls/updates a server's signature on their behalf
+  app.post("/api/users/:id/signature", async (c: Context) => {
+    const admin = getAuthUser(c);
+    if (!admin || admin.role !== "admin") return c.json({ error: "Forbidden: Admin access required" }, 403);
+
+    const targetUserId = c.req.param("id");
+    const targetUser = db.query("SELECT * FROM users WHERE id = ?").get(targetUserId) as Record<string, unknown> | null;
+    if (!targetUser) return c.json({ error: "Server user not found" }, 404);
+
+    const body = await c.req.json().catch(() => ({}));
+    let imageData = String(body.image_data || body.signatureData || "");
+    if (!imageData) return c.json({ error: "Signature image is required" }, 400);
+
+    if (imageData.includes("base64,")) {
+      imageData = imageData.split("base64,")[1];
+    }
+    let buf: Buffer;
+    try {
+      buf = Buffer.from(imageData, "base64");
+    } catch {
+      return c.json({ error: "Invalid image encoding" }, 400);
+    }
+
+    const detected = validateSignatureImage(buf);
+    if (!detected.ok || !detected.mime) return c.json({ error: detected.error || "Invalid image" }, 400);
+    const mime = detected.mime;
+    const ext = ALLOWED_MIME[mime];
+    if (!ext) return c.json({ error: "Unsupported image type" }, 400);
+
+    const normalized = stripMetadata(buf, mime);
+    const sha = hex(normalized);
+
+    await mkdir(SIGNATURES_DIR, { recursive: true });
+    const assetId = "sig_" + randomUUID().replace(/-/g, "").slice(0, 20);
+    const storageKey = `${assetId}${ext}`;
+    await writeFile(join(SIGNATURES_DIR, storageKey), normalized);
+
+    const dims = readDimensions(normalized, mime);
+    const ts = new Date().toISOString();
+
+    // Revoke previous active assets
+    const prev = db
+      .query("SELECT id FROM user_signature_assets WHERE user_id = ? AND status = 'active'")
+      .all(targetUserId) as { id: string }[];
+    for (const p of prev) {
+      db.query("UPDATE user_signature_assets SET status = 'revoked', revoked_at = ?, updated_at = ? WHERE id = ?").run(
+        ts,
+        ts,
+        p.id
+      );
+    }
+
+    db.query(
+      `INSERT INTO user_signature_assets (id, user_id, storage_key, mime_type, sha256, width, height, status, created_at, updated_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, '')`
+    ).run(
+      assetId,
+      targetUserId,
+      storageKey,
+      mime,
+      sha,
+      dims?.width || 0,
+      dims?.height || 0,
+      ts,
+      ts
+    );
+
+    db.query(
+      "UPDATE users SET signature_asset_id = ?, signature_updated_at = ?, onboarding_status = CASE WHEN onboarding_status = 'pending' THEN 'active' ELSE onboarding_status END WHERE id = ?"
+    ).run(
+      assetId,
+      ts,
+      targetUserId
+    );
+
+    return c.json({ success: true, assetId, status: "active" }, 201);
   });
 
   // POST /api/users/:id/signature/revoke — admin revokes a server's signature

@@ -12,6 +12,7 @@
 - **Automated Affidavit Engine**: Generate court-compliant Oklahoma proofs of service, non-service affidavits, and amended filings directly from verified GPS attempts.
 - **Multi-Server Workload Dispatch**: Track active serves, server licensing expirations, and territory coverage.
 - **Self-Contained SQLite Backend**: Powered by Hono + Bun/Node for blazing fast single-binary performance.
+- **Software Terms & Consent**: Public `/terms`, `/privacy`, and `/dpa`. Signup requires accepting Terms + Privacy. Those pages are **software / logging terms only** — not a process-serving service contract, license warranty, or attempt-fee policy (v2026.2).
 
 ---
 
@@ -151,7 +152,8 @@ bun install
 bun run build
 
 # 3. Start server
-PORT=3150 APP_PASSWORD="YourSecurePassword" bun run server/index.ts
+# APP_PASSWORD is bootstrap-only (creates the first admin hash). It is NOT a live login.
+PORT=3150 bun run server/index.ts
 ```
 
 ---
@@ -206,9 +208,10 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `APP_PASSWORD` | **Yes** | `Password` | Master admin login password |
+| `APP_PASSWORD` | First boot only | _(none)_ | Bootstrap hash for the first admin user. **Not a live login** after the user exists. |
 | `PORT` | No | `3150` | HTTP port for server process |
 | `DATABASE_PATH` | No | `./data/pdfusaedit.db` | Local SQLite database file path |
+| `PUBLIC_BASE_URL` | No | `https://servetracker.justlegalsolutions.org` | Public origin used in password-reset emails. Localhost / `:3150` is rejected. |
 | `VITE_BASE_PATH` | No | `/` | Subpath prefix if served behind a reverse proxy |
 | `RESEND_API_KEY` | No | `""` | Resend API Key for automated email dispatches |
 | `EMAIL_FROM` | No | `""` | Outbound email notification sender (e.g. `JLS <service@domain.com>`) |
@@ -216,6 +219,14 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 | `SMTP_PORT` | No | `587` | SMTP Port |
 | `SMTP_USER` | No | `""` | SMTP Username |
 | `SMTP_PASSWORD` | No | `""` | SMTP Password (fallback if RESEND_API_KEY not set) |
+
+### Auth & legal pages
+
+- Login is Argon2id against `users.password_hash`. There is no hardcoded fallback password.
+- Public pages: `/terms` (v2026.2), `/privacy`, `/dpa`, `/join`, `/forgot-password`, `/reset-password`.
+- `/join` requires `accepted_tos`. Existing field users are **not** gated on ToS at login.
+- Password-reset emails always use `PUBLIC_BASE_URL` or `https://servetracker.justlegalsolutions.org` — never `localhost`.
+- Forgot-password is rate-limited by IP + identifier.
 
 ---
 

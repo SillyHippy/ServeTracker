@@ -1,7 +1,7 @@
 declare const Bun: any;
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Context, Next } from "hono";
-import { createHash, randomBytes, randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID, randomInt } from "crypto";
 import type { Db } from "./db";
 import {
   computeLicenseStatus,
@@ -24,6 +24,15 @@ export interface AuthUser {
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+const PUBLIC_RESET_HOST = "servetracker.justlegalsolutions.org";
+
+function publicResetUrl(_c: Context, rawToken: string): string {
+  const env = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  const bad = /localhost|127\.0\.0\.1|:3150|:3153|0\.0\.0\.0/i;
+  const base = env && !bad.test(env) ? env : `https://${PUBLIC_RESET_HOST}`;
+  return `${base}/reset-password?token=${rawToken}`;
 }
 
 export function initAuth(database: Db) {
@@ -176,7 +185,12 @@ export function authMiddleware() {
       path === "/api/health" ||
       path === "/api/auth/login" ||
       path === "/api/auth/me" ||
-      path.startsWith("/uploads/")
+      path === "/api/auth/register-server" ||
+      path === "/api/auth/forgot-password" ||
+      path === "/api/auth/verify-reset-token" ||
+      path === "/api/auth/reset-password" ||
+      path === "/api/push/vapid-public-key" ||
+      path.startsWith("/uploads/serves/")
     ) {
       return next();
     }
@@ -247,6 +261,90 @@ function clearLoginFailures(key: string) {
   loginFailures.delete(key);
 }
 
+function clientIp(c: Context): string {
+  const cf = (c.req.header("cf-connecting-ip") || "").trim();
+  if (cf) return cf;
+  const xff = (c.req.header("x-forwarded-for") || "").split(",")[0].trim();
+  return xff || "127.0.0.1";
+}
+
+const resetFailures = new Map<string, { count: number; firstAt: number }>();
+const RESET_MAX_FAILURES = 3;
+const RESET_VERIFY_MAX = 10;
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+
+function checkKeyedRateLimit(store: Map<string, { count: number; firstAt: number }>, key: string, max: number): boolean {
+  const now = Date.now();
+  const entry = store.get(key);
+  if (!entry) return true;
+  if (now - entry.firstAt > RESET_WINDOW_MS) {
+    store.delete(key);
+    return true;
+  }
+  return entry.count < max;
+}
+
+function recordKeyedFailure(store: Map<string, { count: number; firstAt: number }>, key: string) {
+  const now = Date.now();
+  const entry = store.get(key);
+  if (!entry || now - entry.firstAt > RESET_WINDOW_MS) {
+    store.set(key, { count: 1, firstAt: now });
+  } else {
+    entry.count += 1;
+  }
+}
+
+function logAuthAudit(event: {
+  event_type: string;
+  actor_user_id?: string;
+  actor_role?: string;
+  target_resource_id?: string;
+  ip_address?: string;
+  user_agent?: string;
+  details?: Record<string, unknown>;
+}) {
+  if (!db) return;
+  try {
+    const id = "aud_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    db.query(
+      `INSERT INTO audit_logs (id, event_type, actor_user_id, actor_role, target_resource_id, ip_address, user_agent, details, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      event.event_type,
+      event.actor_user_id || "",
+      event.actor_role || "",
+      event.target_resource_id || "",
+      event.ip_address || "",
+      event.user_agent || "",
+      JSON.stringify(event.details || {}),
+      new Date().toISOString()
+    );
+  } catch (err) {
+    console.error("Audit log error:", err);
+  }
+}
+
+function recordUserConsent(database: Db, opts: {
+  userId: string;
+  documentType: string;
+  version: string;
+  ip: string;
+  userAgent: string;
+}) {
+  const now = nowIso();
+  const id = "cs_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  database
+    .query(
+      `INSERT INTO user_consents (id, user_id, document_type, version, accepted_at, ip_address, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(id, opts.userId, opts.documentType, opts.version, now, opts.ip, opts.userAgent);
+  if (opts.documentType === "tos") {
+    database.query("UPDATE users SET tos_accepted_at = ?, tos_version = ?, tos_ip = ? WHERE id = ?").run(now, opts.version, opts.ip, opts.userId);
+  }
+}
+
 export async function handleLogin(c: Context) {
   const body = (await c.req.json().catch(() => ({}))) as {
     username?: string;
@@ -255,8 +353,9 @@ export async function handleLogin(c: Context) {
 
   const username = (body.username || "").trim();
   const password = body.password || "";
-  const adminPassword = process.env.APP_PASSWORD || "Password";
-  const rateKey = (username || "admin").toLowerCase();
+  const ip = clientIp(c);
+  const rateKey = (ip + ":" + (username || "admin")).toLowerCase();
+  const userAgent = c.req.header("user-agent") || "";
 
   if (!password) {
     return c.json({ success: false, message: "Password is required" }, 400);
@@ -273,109 +372,81 @@ export async function handleLogin(c: Context) {
     return c.json({ success: false, message: "Database not initialized" }, 500);
   }
 
-  // 1. Check if user specified a username
-  if (username && username.toLowerCase() !== "admin") {
-    const userRow = db
-      .query("SELECT id, username, password_hash, display_name, role, is_active, must_change_password FROM users WHERE username = ? COLLATE NOCASE")
-      .get(username) as {
-        id: string;
-        username: string;
-        password_hash: string;
-        display_name: string;
-        role: string;
-        is_active: number;
-        must_change_password: number;
-      } | null;
+  const loginIdentifier = username || "admin";
+  const userRow = db
+    .query(
+      `SELECT id, username, password_hash, display_name, role, is_active, must_change_password 
+       FROM users 
+       WHERE (username = ? COLLATE NOCASE OR (email = ? COLLATE NOCASE AND email != ''))`
+    )
+    .get(loginIdentifier, loginIdentifier) as {
+      id: string;
+      username: string;
+      password_hash: string;
+      display_name: string;
+      role: string;
+      is_active: number;
+      must_change_password: number;
+    } | null;
 
-    if (!userRow || userRow.is_active === 0) {
-      recordLoginFailure(rateKey);
-      return c.json({ success: false, message: "Invalid username or password" }, 401);
-    }
-
-    let isMatch = false;
-    try {
-      isMatch = await Bun.password.verify(password, userRow.password_hash);
-    } catch {
-      // Fallback in case of raw password or legacy hash
-      isMatch = password === userRow.password_hash;
-    }
-
-    if (!isMatch) {
-      recordLoginFailure(rateKey);
-      return c.json({ success: false, message: "Invalid username or password" }, 401);
-    }
-
-    clearLoginFailures(rateKey);
-    db.run("UPDATE users SET last_login_at = ? WHERE id = ?", [new Date().toISOString(), userRow.id]);
-
-    const authUser: AuthUser = {
-      id: userRow.id,
-      username: userRow.username,
-      displayName: userRow.display_name,
-      role: (userRow.role as "admin" | "server") || "server",
-      mustChangePassword: userRow.must_change_password === 1,
-    };
-
-    const token = createSession(authUser);
-    setCookie(c, SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "Lax",
-      path: "/",
-      maxAge: SESSION_MAX_AGE_SEC,
-    });
-
-    return c.json({
-      success: true,
-      token,
-      user: authUser,
-    });
-  }
-
-  // 2. Admin login (either username is 'admin' or username was omitted)
-  // Check against env APP_PASSWORD or admin user in users table
-  let adminMatched = password === adminPassword;
-  let adminDisplayName = "Admin";
-  let adminId = "usr_admin_default";
-
-  const adminRow = db
-    .query("SELECT id, username, password_hash, display_name FROM users WHERE username = 'admin' COLLATE NOCASE")
-    .get() as { id: string; username: string; password_hash: string; display_name: string } | null;
-
-  if (!adminMatched && adminRow) {
-    try {
-      adminMatched = await Bun.password.verify(password, adminRow.password_hash);
-    } catch {
-      adminMatched = password === adminRow.password_hash;
-    }
-  }
-
-  if (adminRow) {
-    adminId = adminRow.id;
-    adminDisplayName = adminRow.display_name;
-  }
-
-  if (!adminMatched) {
+  if (!userRow || userRow.is_active === 0) {
     recordLoginFailure(rateKey);
-    return c.json({ success: false, message: "Incorrect password" }, 401);
+    logAuthAudit({
+      event_type: "auth.login_failure",
+      ip_address: ip,
+      user_agent: userAgent,
+      details: { reason: "unknown_or_inactive", identifier: loginIdentifier },
+    });
+    return c.json({ success: false, message: "Invalid username, email, or password" }, 401);
+  }
+
+  let isMatch = false;
+  try {
+    isMatch = await Bun.password.verify(password, userRow.password_hash);
+  } catch {
+    isMatch = false;
+  }
+
+  if (!isMatch) {
+    recordLoginFailure(rateKey);
+    logAuthAudit({
+      event_type: "auth.login_failure",
+      actor_user_id: userRow.id,
+      actor_role: userRow.role,
+      ip_address: ip,
+      user_agent: userAgent,
+      details: { reason: "bad_password" },
+    });
+    return c.json({ success: false, message: "Invalid username, email, or password" }, 401);
   }
 
   clearLoginFailures(rateKey);
-  db.run("UPDATE users SET last_login_at = ? WHERE id = ?", [new Date().toISOString(), adminId]);
+  db.run("UPDATE users SET last_login_at = ? WHERE id = ?", [new Date().toISOString(), userRow.id]);
 
   const authUser: AuthUser = {
-    id: adminId,
-    username: "admin",
-    displayName: adminDisplayName,
-    role: "admin",
-    mustChangePassword: false,
+    id: userRow.id,
+    username: userRow.username,
+    displayName: userRow.display_name,
+    role: (userRow.role as "admin" | "server") || "server",
+    mustChangePassword: userRow.must_change_password === 1,
   };
 
+  const isHttps = c.req.header("x-forwarded-proto") === "https" || process.env.NODE_ENV === "production";
   const token = createSession(authUser);
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "Lax",
+    secure: isHttps,
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
+  });
+
+  logAuthAudit({
+    event_type: "auth.login_success",
+    actor_user_id: authUser.id,
+    actor_role: authUser.role,
+    ip_address: ip,
+    user_agent: userAgent,
   });
 
   return c.json({
@@ -525,6 +596,7 @@ function selfUserRow(db: Database, row: Record<string, unknown>) {
     licenseExpiresAt: row.license_expires_at || "",
     licenseStatus: licenseStatusOf(row),
     serviceTerritory: territoryOf(row),
+    profileNotes: row.profile_notes || "",
     onboardingStatus: row.onboarding_status || "pending",
     mustChangePassword: row.must_change_password === 1 || row.must_change_password === true,
     signatureStatus: sig,
@@ -813,7 +885,11 @@ export function registerUserRoutes(app: any, database: Database) {
     }
 
     database.query("DELETE FROM sessions WHERE user_id = ?").run(id);
+    database.query("DELETE FROM notifications WHERE user_id = ?").run(id);
+    database.query("DELETE FROM password_reset_tokens WHERE user_id = ?").run(id);
     database.query("DELETE FROM user_signature_assets WHERE user_id = ?").run(id);
+    database.query("UPDATE affidavit_executions SET signed_by_user_id = '', applied_by_user_id = '' WHERE signed_by_user_id = ? OR applied_by_user_id = ?").run(id, id);
+    database.query("UPDATE serve_attempts SET logged_by = '' WHERE logged_by = ?").run(id);
     database.query("DELETE FROM users WHERE id = ?").run(id);
 
     return c.json({ success: true });
@@ -853,8 +929,22 @@ export function registerUserRoutes(app: any, database: Database) {
       updates.push("phone = ?");
       values.push(String(body.phone).trim());
     }
+    if (body.serviceTerritory !== undefined || body.service_territory !== undefined) {
+      const raw = body.serviceTerritory || body.service_territory;
+      const list = Array.isArray(raw)
+        ? raw.map((s: unknown) => String(s).trim()).filter(Boolean)
+        : typeof raw === "string"
+        ? raw.split(",").map((s: string) => s.trim()).filter(Boolean)
+        : [];
+      updates.push("service_territory_json = ?");
+      values.push(JSON.stringify(list));
+    }
+    if (body.profileNotes !== undefined || body.profile_notes !== undefined) {
+      updates.push("profile_notes = ?");
+      values.push(String(body.profileNotes || body.profile_notes || "").trim());
+    }
     if (updates.length === 0) {
-      return c.json({ error: "No editable fields provided (displayName, email, phone)" }, 400);
+      return c.json({ error: "No editable fields provided (displayName, email, phone, serviceTerritory, profileNotes)" }, 400);
     }
     values.push(nowIso(), authUser.id);
     database.query(`UPDATE users SET ${updates.join(", ")}, updated_at = ? WHERE id = ?`).run(...values);
@@ -882,14 +972,13 @@ export function registerUserRoutes(app: any, database: Database) {
     if (!row) return c.json({ error: "User not found" }, 404);
 
     let ok = false;
-    try {
-      ok = await Bun.password.verify(currentPassword, String(row.password_hash));
-    } catch {
-      ok = currentPassword === String(row.password_hash);
-    }
-    // Admin fallback: env APP_PASSWORD also validates for the admin account.
-    if (!ok && String(row.username || "").toLowerCase() === "admin") {
-      ok = currentPassword === (process.env.APP_PASSWORD || "Password");
+    const hash = String(row.password_hash || "");
+    if (hash && hash.startsWith("$argon2")) {
+      try {
+        ok = await Bun.password.verify(currentPassword, hash);
+      } catch {
+        ok = false;
+      }
     }
     if (!ok) return c.json({ error: "Current password is incorrect" }, 400);
 
@@ -922,9 +1011,19 @@ export function registerUserRoutes(app: any, database: Database) {
     const rows = database
       .query(
         `SELECT session_id, created_at, expires_at, last_seen_at, revoked_at
-         FROM sessions WHERE user_id = ? ORDER BY created_at DESC`
+         FROM sessions
+         WHERE user_id = ?
+           AND (revoked_at IS NULL OR revoked_at = '')
+           AND expires_at > ?
+         ORDER BY created_at DESC`
       )
-      .all(authUser.id) as { session_id?: string; created_at?: string; expires_at?: string; last_seen_at?: string; revoked_at?: string }[];
+      .all(authUser.id, new Date().toISOString()) as {
+        session_id?: string;
+        created_at?: string;
+        expires_at?: string;
+        last_seen_at?: string;
+        revoked_at?: string;
+      }[];
 
     return c.json(
       rows.map((r) => ({
@@ -962,7 +1061,22 @@ export function registerUserRoutes(app: any, database: Database) {
         )
         .run(nowIso(), authUser.id, sessionId, authUser.id);
     } else {
-      revokeSessionsForUser(authUser.id, authUser.id, currentHash || undefined);
+      // Prefer except-by-session-id so a cookie encoding mismatch cannot revoke this device too.
+      const cur = currentHash
+        ? (database
+            .query("SELECT session_id FROM sessions WHERE token_hash = ? AND user_id = ?")
+            .get(currentHash, authUser.id) as { session_id?: string } | null)
+        : null;
+      if (cur?.session_id) {
+        database
+          .query(
+            `UPDATE sessions SET revoked_at = ?, revoked_by_user_id = ?
+             WHERE user_id = ? AND session_id != ? AND (revoked_at = '' OR revoked_at IS NULL)`
+          )
+          .run(nowIso(), authUser.id, authUser.id, cur.session_id);
+      } else {
+        revokeSessionsForUser(authUser.id, authUser.id, currentHash || undefined);
+      }
     }
     return c.json({ success: true });
   });
@@ -973,5 +1087,344 @@ export function registerUserRoutes(app: any, database: Database) {
     destroySession(token);
     deleteCookie(c, SESSION_COOKIE, { path: "/" });
     return c.json({ success: true });
+  });
+
+  // =========================================================================
+  // PUBLIC FIELD SERVER REGISTRATION & PASSWORD RESET
+  // =========================================================================
+
+  // POST /api/auth/register-server - Public field server self-onboarding
+  app.post("/api/auth/register-server", async (c: Context) => {
+    const body = await c.req.json().catch(() => ({}));
+    const username = String(body.username || "").trim().toLowerCase();
+    const password = String(body.password || "").trim();
+    const displayName = String(body.displayName || body.display_name || body.legalName || body.legal_name || username).trim();
+    const legalName = String(body.legalName || body.legal_name || displayName).trim();
+    const email = validEmail(body.email);
+    const phone = String(body.phone || "").trim();
+    const licenseNumber = String(body.licenseNumber || body.license_number || "").trim();
+    const licenseJurisdiction = String(body.licenseJurisdiction || body.license_jurisdiction || "Oklahoma").trim();
+    const licenseExpiresAt = String(body.licenseExpiresAt || body.license_expires_at || "").trim();
+    const territoryRaw = body.serviceTerritory || body.service_territory || [];
+    const territory = Array.isArray(territoryRaw)
+      ? territoryRaw.map((s: unknown) => String(s).trim()).filter(Boolean)
+      : typeof territoryRaw === "string"
+      ? territoryRaw.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : [];
+
+    // Service Areas & Pricing Notes
+    const standardRate = String(body.standardRate || body.standard_rate || "").trim();
+    const rushRate = String(body.rushRate || body.rush_rate || "").trim();
+    const rateNotes = String(body.rateNotes || body.rate_notes || "").trim();
+    const customNotes = String(body.profileNotes || body.profile_notes || "").trim();
+
+    let combinedNotes = "";
+    if (standardRate || rushRate) {
+      combinedNotes += `Rates: Standard ${standardRate ? `$${standardRate.replace(/^\$/, '')}` : 'N/A'} | Rush ${rushRate ? `$${rushRate.replace(/^\$/, '')}` : 'N/A'}\n`;
+    }
+    if (rateNotes) {
+      combinedNotes += `Pricing Details: ${rateNotes}\n`;
+    }
+    if (customNotes) {
+      combinedNotes += `Notes: ${customNotes}`;
+    }
+    combinedNotes = combinedNotes.trim();
+
+    if (!username || username.length < 2) {
+      return c.json({ error: "Username is required (minimum 2 characters)" }, 400);
+    }
+    if (!password || password.length < 8) {
+      return c.json({ error: "Password must be at least 8 characters" }, 400);
+    }
+    if (!displayName) {
+      return c.json({ error: "Display name or legal name is required" }, 400);
+    }
+
+    const acceptedTos = body.accepted_tos === true || body.acceptedTos === true || String(body.accepted_tos || "").toLowerCase() === "true";
+    const tosVersion = String(body.tos_version || body.tosVersion || "2026.1").trim() || "2026.1";
+    if (!acceptedTos) {
+      return c.json({ error: "You must accept the Terms of Service and Privacy Policy" }, 400);
+    }
+
+    const existing = database.query("SELECT id FROM users WHERE username = ? COLLATE NOCASE").get(username);
+    if (existing) {
+      return c.json({ error: `Username "${username}" is already taken` }, 409);
+    }
+
+    if (licenseExpiresAt && !isValidLicenseDate(licenseExpiresAt)) {
+      return c.json({ error: "Invalid license expiration date" }, 400);
+    }
+
+    const userId = "usr_" + randomUUID().replace(/-/g, "").slice(0, 16);
+    const pwdHash = await Bun.password.hash(password, { algorithm: "argon2id" });
+    const ts = nowIso();
+
+    database
+      .query(
+        `INSERT INTO users (
+          id, username, password_hash, display_name, role, is_active,
+          email, phone, legal_name, license_number, license_jurisdiction, license_expires_at,
+          service_territory_json, onboarding_status, must_change_password, profile_notes,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'server', 1, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?)`
+      )
+      .run(
+        userId,
+        username,
+        pwdHash,
+        displayName,
+        email,
+        phone,
+        legalName,
+        licenseNumber,
+        licenseJurisdiction,
+        licenseExpiresAt,
+        JSON.stringify(territory),
+        combinedNotes,
+        ts,
+        ts
+      );
+
+    try {
+      const ip = clientIp(c);
+      const userAgent = c.req.header("user-agent") || "";
+      recordUserConsent(database, { userId, documentType: "tos", version: tosVersion, ip, userAgent });
+      recordUserConsent(database, { userId, documentType: "privacy", version: tosVersion, ip, userAgent });
+      logAuthAudit({
+        event_type: "legal.consent_accepted",
+        actor_user_id: userId,
+        actor_role: "server",
+        ip_address: ip,
+        user_agent: userAgent,
+        details: { document_type: "tos", version: tosVersion, source: "register-server" },
+      });
+    } catch (err) {
+      console.warn("Could not record registration consent:", err);
+    }
+
+    // Save e-signature if provided during signup
+    const signatureData = body.signatureData || body.signature_data;
+    if (typeof signatureData === "string" && signatureData.startsWith("data:image/png;base64,")) {
+      try {
+        const { SIGNATURES_DIR } = await import("./signatures");
+        const b64 = signatureData.replace(/^data:image\/png;base64,/, "");
+        const buf = Buffer.from(b64, "base64");
+        if (buf.length >= 200) {
+          const sha = createHash("sha256").update(buf).digest("hex");
+          const assetId = "sig_" + randomUUID().replace(/-/g, "").slice(0, 20);
+          const storageKey = `${assetId}.png`;
+          const filePath = `${SIGNATURES_DIR}/${storageKey}`;
+          await Bun.write(filePath, buf);
+
+          database.query(
+            `INSERT INTO user_signature_assets (
+              id, user_id, storage_key, mime_type, sha256, width, height, status, created_at, updated_at, revoked_at
+            ) VALUES (?, ?, ?, 'image/png', ?, 800, 200, 'active', ?, ?, '')`
+          ).run(assetId, userId, storageKey, sha, ts, ts);
+
+          database.query("UPDATE users SET signature_asset_id = ?, signature_updated_at = ? WHERE id = ?").run(assetId, ts, userId);
+        }
+      } catch (err) {
+        console.warn("Could not save initial signature during registration:", err);
+      }
+    }
+
+    // Create an Admin Notification (in-app only)
+    try {
+      const { createNotification } = await import("./notifications");
+      const adminUsers = database.query("SELECT id FROM users WHERE role = 'admin'").all() as { id: string }[];
+      for (const admin of adminUsers) {
+        await createNotification(database as any, {
+          userId: admin.id,
+          type: "broadcast",
+          priority: "normal",
+          title: `New Field Server: ${displayName}`,
+          body: `${displayName} (${licenseNumber || 'No PSL'}) self-enrolled. Territory: ${territory.join(', ') || 'None stated'}.`,
+          actionUrl: "/servers",
+        });
+      }
+    } catch {
+      // ignore
+    }
+
+    // Send Welcome & PWA Setup Email to the newly registered server
+    if (email && email.includes("@")) {
+      try {
+        const { sendWelcomeOnboardingEmail } = await import("./email");
+        await sendWelcomeOnboardingEmail(email, displayName, username);
+      } catch (err) {
+        console.warn("Could not dispatch welcome email to server:", err);
+      }
+    }
+
+    // Auto-login newly registered server
+    const token = createSession({
+      id: userId,
+      role: "server",
+      username,
+      displayName,
+      mustChangePassword: false,
+    });
+
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "Lax",
+      path: "/",
+      maxAge: 30 * 24 * 60 * 60,
+    });
+
+    const row = database.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<string, unknown>;
+    return c.json({ success: true, user: selfUserRow(database, row) }, 201);
+  });
+
+  // POST /api/auth/forgot-password - Request password reset link / code
+  app.post("/api/auth/forgot-password", async (c: Context) => {
+    const body = await c.req.json().catch(() => ({}));
+    const identifier = String(body.email || body.username || "").trim();
+    if (!identifier) {
+      return c.json({ error: "Email or username is required" }, 400);
+    }
+
+    const ip = clientIp(c);
+    const resetKey = (ip + ":" + identifier.toLowerCase());
+    if (!checkKeyedRateLimit(resetFailures, resetKey, RESET_MAX_FAILURES)) {
+      return c.json({ error: "Too many reset requests. Please try again later." }, 429);
+    }
+    recordKeyedFailure(resetFailures, resetKey);
+
+    const user = database
+      .query("SELECT id, username, email, display_name FROM users WHERE (email = ? OR username = ? COLLATE NOCASE) AND is_active = 1")
+      .get(identifier, identifier) as { id: string; username: string; email: string; display_name: string } | null;
+
+    if (user && user.email && user.email.includes("@")) {
+      const rawToken = randomBytes(32).toString("hex");
+      const tokenHash = hashToken(rawToken);
+      const code = String(randomInt(100000, 999999));
+      const codeHash = hashToken(code);
+      const tokenId = "prt_" + randomUUID().replace(/-/g, "").slice(0, 16);
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 mins
+      const ts = nowIso();
+      const ip = clientIp(c);
+
+      // Invalidate any existing unused reset tokens for this user
+      database
+        .query("UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND (used_at = '' OR used_at IS NULL)")
+        .run(ts, user.id);
+
+      database
+        .query(
+          `INSERT INTO password_reset_tokens (id, user_id, token_hash, code_hash, expires_at, used_at, ip_address, created_at)
+           VALUES (?, ?, ?, ?, ?, '', ?, ?)`
+        )
+        .run(tokenId, user.id, tokenHash, codeHash, expiresAt, ip, ts);
+
+      const resetLink = publicResetUrl(c, rawToken);
+
+      const { sendPasswordResetEmail } = await import("./email");
+      await sendPasswordResetEmail(user.email, resetLink, code).catch((err) => {
+        console.warn("Could not dispatch password reset email:", err);
+      });
+    }
+
+    // Always return success to prevent user enumeration
+    return c.json({
+      success: true,
+      message: "If an active account exists with that email/username, a password reset email has been sent.",
+    });
+  });
+
+  // POST /api/auth/verify-reset-token - Check if reset token or code is valid
+  app.post("/api/auth/verify-reset-token", async (c: Context) => {
+    const body = await c.req.json().catch(() => ({}));
+    const token = String(body.token || "").trim();
+    const code = String(body.code || "").trim();
+
+    if (!token && !code) {
+      return c.json({ valid: false, error: "Reset token or 6-digit code required" }, 400);
+    }
+
+    const ip = clientIp(c);
+    const verifyKey = ip + ":verify";
+    if (!checkKeyedRateLimit(resetFailures, verifyKey, RESET_VERIFY_MAX)) {
+      return c.json({ valid: false, error: "Too many attempts. Please try again later." }, 429);
+    }
+    recordKeyedFailure(resetFailures, verifyKey);
+
+    const tokenHash = token ? hashToken(token) : "";
+    const codeHash = code ? hashToken(code) : "";
+    const now = nowIso();
+
+    const record = database
+      .query(
+        `SELECT id, user_id, expires_at FROM password_reset_tokens
+         WHERE (token_hash = ? OR code_hash = ?) AND (used_at = '' OR used_at IS NULL) AND expires_at > ?`
+      )
+      .get(tokenHash || "none", codeHash || "none", now) as { id: string; user_id: string } | null;
+
+    if (!record) {
+      return c.json({ valid: false, error: "Invalid, expired, or already used reset token" }, 400);
+    }
+
+    return c.json({ valid: true });
+  });
+
+  // POST /api/auth/reset-password - Apply new password and revoke old sessions
+  app.post("/api/auth/reset-password", async (c: Context) => {
+    const body = await c.req.json().catch(() => ({}));
+    const token = String(body.token || "").trim();
+    const code = String(body.code || "").trim();
+    const newPassword = String(body.newPassword || body.password || "").trim();
+
+    if (!token && !code) {
+      return c.json({ error: "Reset token or 6-digit code is required" }, 400);
+    }
+    if (!newPassword || newPassword.length < 8) {
+      return c.json({ error: "New password must be at least 8 characters" }, 400);
+    }
+
+    const ip = clientIp(c);
+    const applyKey = ip + ":reset-apply";
+    if (!checkKeyedRateLimit(resetFailures, applyKey, RESET_VERIFY_MAX)) {
+      return c.json({ error: "Too many attempts. Please try again later." }, 429);
+    }
+    recordKeyedFailure(resetFailures, applyKey);
+
+    const tokenHash = token ? hashToken(token) : "";
+    const codeHash = code ? hashToken(code) : "";
+    const now = nowIso();
+
+    const record = database
+      .query(
+        `SELECT id, user_id, expires_at FROM password_reset_tokens
+         WHERE (token_hash = ? OR code_hash = ?) AND (used_at = '' OR used_at IS NULL) AND expires_at > ?`
+      )
+      .get(tokenHash || "none", codeHash || "none", now) as { id: string; user_id: string } | null;
+
+    if (!record) {
+      return c.json({ error: "Invalid, expired, or already used reset token" }, 400);
+    }
+
+    const pwdHash = await Bun.password.hash(newPassword, { algorithm: "argon2id" });
+    const ts = nowIso();
+
+    database
+      .query("UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = ? WHERE id = ?")
+      .run(pwdHash, ts, record.user_id);
+
+    database.query("UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ?").run(ts, record.user_id);
+
+    // Revoke all sessions for security lockdown
+    revokeSessionsForUser(record.user_id, record.user_id);
+
+    logAuthAudit({
+      event_type: "auth.password_changed",
+      actor_user_id: record.user_id,
+      ip_address: clientIp(c),
+      user_agent: c.req.header("user-agent") || "",
+      details: { source: "reset-password" },
+    });
+
+    return c.json({ success: true, message: "Password updated successfully. Please log in with your new password." });
   });
 }

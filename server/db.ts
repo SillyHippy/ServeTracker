@@ -89,11 +89,17 @@ function initSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS client_documents (
       id TEXT PRIMARY KEY,
       client_id TEXT NOT NULL,
+      case_id TEXT DEFAULT '',
       case_number TEXT DEFAULT '',
       file_name TEXT NOT NULL,
       file_size INTEGER DEFAULT 0,
       file_type TEXT DEFAULT '',
       file_path TEXT NOT NULL,
+      file_hash TEXT DEFAULT '',
+      gdrive_file_id TEXT DEFAULT '',
+      gdrive_synced_at TEXT DEFAULT '',
+      is_archived INTEGER DEFAULT 0,
+      archived_at TEXT DEFAULT '',
       description TEXT DEFAULT '',
       created_at TEXT NOT NULL,
       FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
@@ -171,6 +177,21 @@ function initSchema(db: Database) {
       new_status TEXT,
       FOREIGN KEY (serve_id) REFERENCES serve_attempts(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      code_hash TEXT DEFAULT '',
+      expires_at TEXT NOT NULL,
+      used_at TEXT DEFAULT '',
+      ip_address TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_reset_token_hash ON password_reset_tokens(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_reset_user_id ON password_reset_tokens(user_id);
   `);
 }
 
@@ -373,11 +394,10 @@ function runMigrations(db: Database) {
   addUserCol("last_login_at", "TEXT DEFAULT ''");
   addUserCol("last_activity_at", "TEXT DEFAULT ''");
 
-  // Backfill: seeded/default admin is never forced to change password.
-  // Pre-existing field users keep working accounts (active, no forced change).
+  // Backfill: only unset onboarding — never clobber an explicit must_change_password=1.
   db.exec(`
-    UPDATE users SET must_change_password = 0, onboarding_status = 'active'
-    WHERE role = 'admin' OR onboarding_status = 'pending';
+    UPDATE users SET onboarding_status = 'active'
+    WHERE role = 'admin' AND (onboarding_status = '' OR onboarding_status IS NULL OR onboarding_status = 'pending');
   `);
 
   // 9. New feature tables: signature assets, assignment events, affidavit executions
@@ -471,7 +491,27 @@ function runMigrations(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_notif_user_unread ON notifications(user_id, read_at);
   `);
 
-  // 10. Session metadata columns (idempotent)
+  // 12. Client document case links and archival columns (idempotent)
+  const docCols = (db.query("PRAGMA table_info(client_documents)").all() as { name: string }[]).map((c) => c.name);
+  if (!docCols.includes("case_id")) {
+    db.run("ALTER TABLE client_documents ADD COLUMN case_id TEXT DEFAULT ''");
+  }
+  if (!docCols.includes("file_hash")) {
+    db.run("ALTER TABLE client_documents ADD COLUMN file_hash TEXT DEFAULT ''");
+  }
+  if (!docCols.includes("gdrive_file_id")) {
+    db.run("ALTER TABLE client_documents ADD COLUMN gdrive_file_id TEXT DEFAULT ''");
+  }
+  if (!docCols.includes("gdrive_synced_at")) {
+    db.run("ALTER TABLE client_documents ADD COLUMN gdrive_synced_at TEXT DEFAULT ''");
+  }
+  if (!docCols.includes("is_archived")) {
+    db.run("ALTER TABLE client_documents ADD COLUMN is_archived INTEGER DEFAULT 0");
+  }
+  if (!docCols.includes("archived_at")) {
+    db.run("ALTER TABLE client_documents ADD COLUMN archived_at TEXT DEFAULT ''");
+  }
+  db.run("CREATE INDEX IF NOT EXISTS idx_documents_case ON client_documents(case_id)");
   const sessCols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[];
   const sessColNames = new Set(sessCols.map((c) => c.name));
   const addSessCol = (colName: string, sqlDef: string) => {
@@ -485,7 +525,68 @@ function runMigrations(db: Database) {
   addSessCol("revoked_by_user_id", "TEXT DEFAULT ''");
   db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, expires_at, revoked_at);");
 
-  db.exec("PRAGMA user_version = 4;");
+  addUserCol("tos_accepted_at", "TEXT DEFAULT ''");
+  addUserCol("tos_version", "TEXT DEFAULT ''");
+  addUserCol("tos_ip", "TEXT DEFAULT ''");
+  addUserCol("dpa_accepted_at", "TEXT DEFAULT ''");
+  addUserCol("dpa_version", "TEXT DEFAULT ''");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_consents (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      document_type TEXT NOT NULL,
+      version TEXT NOT NULL,
+      accepted_at TEXT NOT NULL,
+      ip_address TEXT DEFAULT '',
+      user_agent TEXT DEFAULT '',
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_consents_user ON user_consents(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_consents_type ON user_consents(document_type);
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      actor_user_id TEXT DEFAULT '',
+      actor_role TEXT DEFAULT '',
+      target_resource_id TEXT DEFAULT '',
+      ip_address TEXT DEFAULT '',
+      user_agent TEXT DEFAULT '',
+      details TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_event ON audit_logs(event_type);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+  `);
+
+  const attemptCols = (db.query("PRAGMA table_info(serve_attempts)").all() as { name: string }[]).map((c) => c.name);
+  if (!attemptCols.includes("attempt_hash")) {
+    db.run("ALTER TABLE serve_attempts ADD COLUMN attempt_hash TEXT DEFAULT ''");
+  }
+  if (!attemptCols.includes("accuracy_meters")) {
+    db.run("ALTER TABLE serve_attempts ADD COLUMN accuracy_meters REAL DEFAULT 0.0");
+  }
+  if (!attemptCols.includes("device_info")) {
+    db.run("ALTER TABLE serve_attempts ADD COLUMN device_info TEXT DEFAULT ''");
+  }
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_prevent_attempt_tampering
+    BEFORE UPDATE OF coordinates, timestamp, service_address, client_id, attempt_number
+    ON serve_attempts
+    FOR EACH ROW
+    WHEN (
+      OLD.coordinates IS NOT NULL AND OLD.coordinates != '' AND
+      (OLD.coordinates != NEW.coordinates OR OLD.timestamp != NEW.timestamp)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'EVIDENTIARY_INTEGRITY_VIOLATION: Attempt GPS coordinates and timestamp cannot be altered after submission.');
+    END;
+  `);
+
+  db.exec("PRAGMA user_version = 5;");
 }
 
 export type Db = Database;
