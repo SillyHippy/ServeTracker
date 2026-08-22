@@ -96,6 +96,7 @@ const queryClient = new QueryClient({
 
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { NotificationProvider } from "@/context/NotificationContext";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 // Create a protected route wrapper component
 const ProtectedRoute = ({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) => {
@@ -510,13 +511,15 @@ const AnimatedRoutes = () => {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <NotificationProvider>
-          <AnimatedRoutes />
-        </NotificationProvider>
-      </AuthProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <NotificationProvider>
+            <AnimatedRoutes />
+          </NotificationProvider>
+        </AuthProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 // cache-bust-1780205047
