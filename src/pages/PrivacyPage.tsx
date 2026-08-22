@@ -55,7 +55,23 @@ export default function PrivacyPage() {
             </div>
 
             <div>
-              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">4. Retention and deletion</h3>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">4. Hosted security (what we actually use)</h3>
+              <ul className="list-disc pl-5 space-y-1">
+                <li>Public site is HTTPS. Live probe on this host: TLS 1.3 with TLS_AES_256_GCM_SHA384 (Cloudflare).</li>
+                <li>Passwords stored as Argon2id hashes. We cannot read your password back.</li>
+                <li>Session cookies are HttpOnly, Secure on HTTPS, SameSite=Lax. The raw session token is stored as SHA-256, not in the clear.</li>
+                <li>Uploaded documents and signature images get a SHA-256 checksum. Attempt GPS/timestamp cannot be quietly rewritten after submit.</li>
+                <li>Serve photos are stripped of camera junk, then restamped with court-relevant time/GPS tags.</li>
+                <li>Logins and password-reset requests are rate-limited. Roles limit what a field server can see versus an admin.</li>
+                <li>We do not store card numbers. Payments, if any, go through a third-party processor.</li>
+              </ul>
+              <p>
+                The case database is ordinary SQLite on the host disk. We do not run SQLCipher / app-level AES on every file. That is not the same thing as “unencrypted on the internet.”
+              </p>
+            </div>
+
+            <div>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">5. Retention and deletion</h3>
               <p>
                 We keep hosted data while your instance is active. If you close the instance or ask in writing, we delete or hand back what we reasonably can. Backups may linger for a short period, then are overwritten.
               </p>

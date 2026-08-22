@@ -45,7 +45,7 @@ export default function DpaPage() {
             <div>
               <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">3. Security (honest)</h3>
               <p>
-                Hosted instances use login, role limits, TLS in transit, and backups of the kind we use for our own copy. We do not claim SOC 2, ISO 27001, or any other audit certification.
+                Hosted instances use TLS 1.3 in transit (AES-256-GCM on this host), Argon2id password hashes, SHA-256 session and file checksums, role limits, and backups of the kind we use for our own copy. We do not claim SOC 2, ISO 27001, or any other audit certification. The database is not SQLCipher-encrypted at the application layer.
               </p>
             </div>
 
