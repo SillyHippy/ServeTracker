@@ -24,6 +24,20 @@ function getTransporter() {
   });
 }
 
+function getBackupTransporter() {
+  const brevoKey = process.env.BREVO_SMTP_KEY;
+  if (!brevoKey) return null;
+  return nodemailer.createTransport({
+    host: process.env.BREVO_SMTP_HOST || "smtp-relay.brevo.com",
+    port: parseInt(process.env.BREVO_SMTP_PORT || "587", 10),
+    secure: false,
+    auth: {
+      user: process.env.BREVO_SMTP_USER || process.env.BREVO_SMTP_LOGIN || "",
+      pass: brevoKey,
+    },
+  });
+}
+
 export async function sendEmail(payload: EmailPayload) {
   const { to, subject, html, imageData, imageUrl, attachImage } = payload;
   if (!to || !subject || !html) {
@@ -97,17 +111,31 @@ export async function sendEmail(payload: EmailPayload) {
 
   const enhancedHtml = html + imageInHtml;
 
-  const transporter = getTransporter();
-  const info = await transporter.sendMail({
+  const mailOptions: nodemailer.SendMailOptions = {
     from: process.env.EMAIL_FROM || process.env.SMTP_FROM || "no-reply@justlegalsolutions.org",
     replyTo: process.env.EMAIL_REPLY_TO || "info@justlegalsolutions.org",
     to: recipients,
     subject,
     html: enhancedHtml,
     attachments,
-  });
+  };
 
-  console.log(`[email] Sent to ${recipients.join(", ")} messageId: ${info.messageId} attachments: ${attachments.length}`);
+  const primaryTransporter = getTransporter();
+  const backupTransporter = getBackupTransporter();
+
+  let info: any;
+  try {
+    info = await primaryTransporter.sendMail(mailOptions);
+    console.log(`[email:primary] Sent via Resend to ${recipients.join(", ")} messageId: ${info.messageId} attachments: ${attachments.length}`);
+  } catch (primaryErr: any) {
+    if (backupTransporter) {
+      console.warn(`[email] Primary (Resend) failed (${primaryErr?.message || primaryErr}) — falling back to Brevo SMTP...`);
+      info = await backupTransporter.sendMail(mailOptions);
+      console.log(`[email:backup] Failover succeeded via Brevo to ${recipients.join(", ")} messageId: ${info.messageId} attachments: ${attachments.length}`);
+    } else {
+      throw primaryErr;
+    }
+  }
 
   return {
     success: true,
