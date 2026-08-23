@@ -13,7 +13,6 @@
 - **Multi-Server Workload Dispatch**: Track active serves, server licensing expirations, and territory coverage.
 - **Self-Contained SQLite Backend**: Powered by Hono + Bun/Node for blazing fast single-binary performance.
 - **Software Terms & Consent**: Public `/terms`, `/privacy`, and `/dpa`. Signup requires accepting Terms + Privacy. Those pages are **software / logging terms only** — not a process-serving service contract, license warranty, or attempt-fee policy (v2026.3: AS IS, no software liability except what Oklahoma law will not let you waive).
-- **Optional SMS**: Field alerts and phone verification can go out through a dedicated Android phone using [SMS Gateway for Android](https://github.com/capcom6/android-sms-gateway), or through [Better Auth](https://www.better-auth.com/) phone OTP on top of that same gateway.
 
 ---
 
@@ -53,7 +52,7 @@ Deploy globally to Cloudflare's Edge network for zero hosting costs and near-ins
 
 2. **Clone & Configure**:
    ```bash
-   git clone https://github.com/SillyHippy/PDFUSAEDIT-zo.git servetracker
+   git clone https://github.com/SillyHippy/ServeTracker.git servetracker
    cd servetracker
    cp .env.example .env
    ```
@@ -159,51 +158,40 @@ PORT=3150 bun run server/index.ts
 
 ---
 
-## Automated Client Notifications via Resend / SMTP
+## Automated Client Notifications & Zero-Downtime Email Failover
 
-To enable automatic email notifications to clients when an attempt is made or a serve is completed:
+ServeTracker features a built-in **Dual-Transporter Email Engine** with automatic failover. Every outbound email (serve completion reports, client updates, password resets, and new server onboarding alerts) routes through `sendEmail()` with zero vendor lock-in.
 
-1. **Option A: Resend (Recommended)**
-   - Sign up for a free account at [Resend](https://resend.com).
-   - Generate an API Key (starts with `re_...`).
-   - Add and verify your sending domain (e.g. `service@yourdomain.com`).
-   - Set environment variables:
-     ```env
-     RESEND_API_KEY=re_your_api_key_here
-     EMAIL_FROM=Just Legal Solutions <service@yourdomain.com>
-     ```
+### 1. Primary: Resend (Fast & Clean API/SMTP)
+- **Free Allowance**: 100 emails/day (3,000/month).
+- Set environment variables:
+  ```env
+  SMTP_HOST=smtp.resend.com
+  SMTP_PORT=587
+  SMTP_USER=resend
+  RESEND_API_KEY=re_your_api_key_here
+  EMAIL_FROM=Your Agency <service@yourdomain.com>
+  ```
 
-2. **Option B: Custom SMTP**
-   - Configure your standard SMTP credentials:
-     ```env
-     SMTP_HOST=smtp.resend.com (or your provider)
-     SMTP_PORT=587
-     SMTP_USER=resend
-     SMTP_PASSWORD=re_your_api_key_here
-     EMAIL_FROM=Just Legal Solutions <service@yourdomain.com>
-     ```
+### 2. Backup: Brevo SMTP (Automatic Failover)
+- **Free Allowance**: 300 emails/day (9,000/month) free forever.
+- If Resend exceeds its daily quota, experiences an outage, or hits rate limits, ServeTracker automatically catches the error and retries the send through Brevo in the same request.
+- Add Brevo credentials to `.env`:
+  ```env
+  BREVO_SMTP_HOST=smtp-relay.brevo.com
+  BREVO_SMTP_PORT=587
+  BREVO_SMTP_LOGIN=your_brevo_smtp_login@domain.com
+  BREVO_SMTP_KEY=xsmtpsib-your_brevo_smtp_key_here
+  ```
 
----
-
-## Optional SMS Notifications
-
-Email covers most client updates. When you also need **text messages** — job assigned, attempt logged, affidavit ready — ServeTracker can send them without Twilio or another paid SMS vendor.
-
-### Free path: Android SMS Gateway
-
-Install **[SMS Gateway for Android](https://github.com/capcom6/android-sms-gateway)** (`capcom6/android-sms-gateway`, Apache-2.0) on a spare or work Android phone that already has a SIM. The official project and docs are:
-
-- Repository: [https://github.com/capcom6/android-sms-gateway](https://github.com/capcom6/android-sms-gateway)
-- Releases / APK: [https://github.com/capcom6/android-sms-gateway/releases](https://github.com/capcom6/android-sms-gateway/releases)
-- Documentation: [https://docs.sms-gate.app](https://docs.sms-gate.app)
-
-The phone becomes your outbound SMS modem. ServeTracker posts to the app’s HTTP API — either on the local network, or through the project’s public cloud relay at `https://api.sms-gate.app` (Firebase push to the handset; no port forwarding required). You pay only the carrier’s normal text rate, which is usually $0 extra on unlimited SMS plans.
-
-### Professional path: Better Auth + the same gateway
-
-If you want sign-in codes, phone verification, and password-reset OTPs in addition to operational alerts, hook [Better Auth](https://github.com/better-auth/better-auth) and its [phone number plugin](https://www.better-auth.com/docs/plugins/phone-number) to that same Android sender. Better Auth stays self-hosted in your SQLite database; the Android phone is only the delivery channel.
-
-Full setup — app install, cloud-relay credentials, environment variables, and the Better Auth `sendOTP` hook — is on the [`docs/android-sms-gateway`](https://github.com/SillyHippy/ServeTracker/tree/docs/android-sms-gateway) branch.
+### 3. DNS Configuration for Dual Senders
+To allow both providers to send on behalf of your domain without deliverability issues:
+- **SPF Record**: Combine both in your single root TXT record:
+  ```text
+  v=spf1 include:zohomail.com include:resend.com include:spf.brevo.com ~all
+  ```
+- **DKIM Records**: Resend and Brevo use distinct selectors (`resend._domainkey` and `b1._domainkey` / `b2._domainkey`), so they coexist without conflicts.
+- **MX Records**: Inbound mail stays 100% pointed to your primary business mailbox (e.g. Zoho, Google Workspace).
 
 ---
 
@@ -234,7 +222,7 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 | `APP_PASSWORD` | First boot only | _(none)_ | Bootstrap hash for the first admin user. **Not a live login** after the user exists. |
 | `PORT` | No | `3150` | HTTP port for server process |
 | `DATABASE_PATH` | No | `./data/pdfusaedit.db` | Local SQLite database file path |
-| `PUBLIC_BASE_URL` | No | `https://servetracker.justlegalsolutions.org` | Public origin used in password-reset emails. Localhost / `:3150` is rejected. |
+| `PUBLIC_BASE_URL` | No | `https://your-domain.com` | Public origin used in password-reset emails. Localhost / `:3150` is rejected. |
 | `VITE_BASE_PATH` | No | `/` | Subpath prefix if served behind a reverse proxy |
 | `RESEND_API_KEY` | No | `""` | Resend API Key for automated email dispatches |
 | `EMAIL_FROM` | No | `""` | Outbound email notification sender (e.g. `JLS <service@domain.com>`) |
@@ -242,18 +230,19 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 | `SMTP_PORT` | No | `587` | SMTP Port |
 | `SMTP_USER` | No | `""` | SMTP Username |
 | `SMTP_PASSWORD` | No | `""` | SMTP Password (fallback if RESEND_API_KEY not set) |
-| `SMS_GATEWAY_ENABLED` | No | `false` | Set `true` to send field/OTP texts through Android SMS Gateway |
-| `SMS_GATEWAY_API_URL` | No | `https://api.sms-gate.app/3rdparty/v1/messages` | Cloud relay or `http://<phone-ip>:8080/message` |
-| `SMS_GATEWAY_USER` | No | `""` | Username shown in the Android app (Cloud or Local Server) |
-| `SMS_GATEWAY_PASS` | No | `""` | Matching password from the Android app — never commit the real value |
-| `SMS_GATEWAY_DEVICE_ID` | No | `""` | Optional device id when several phones share one cloud account |
+| `BREVO_SMTP_HOST` | No | `smtp-relay.brevo.com` | Brevo backup SMTP relay host |
+| `BREVO_SMTP_PORT` | No | `587` | Brevo backup SMTP port |
+| `BREVO_SMTP_LOGIN` | No | `""` | Brevo backup SMTP login username |
+| `BREVO_SMTP_KEY` | No | `""` | Brevo backup SMTP key (`xsmtpsib-...`) for automated failover |
+| `SMS_GATEWAY_ENABLED` | No | `false` | Enable zero-cost SMS dispatch via Android SMS Gateway |
+| `SMS_GATEWAY_API_URL` | No | `https://api.sms-gate.app/3rdparty/v1/messages` | Android SMS Gateway relay endpoint |
 
 ### Auth & legal pages
 
 - Login is Argon2id against `users.password_hash`. There is no hardcoded fallback password.
 - Public pages: `/terms` (v2026.3 software ToS), `/privacy` and `/dpa` (hosted-instance data terms only — no SOC 2 / ISO claims), `/join`, `/forgot-password`, `/reset-password`.
 - `/join` requires `accepted_tos`. Existing field users are **not** gated on ToS at login.
-- Password-reset emails always use `PUBLIC_BASE_URL` or `https://servetracker.justlegalsolutions.org` — never `localhost`.
+- Password-reset emails always use `PUBLIC_BASE_URL` or `https://your-domain.com` — never `localhost`.
 - Forgot-password is rate-limited by IP + identifier.
 
 ---
