@@ -13,6 +13,7 @@
 - **Multi-Server Workload Dispatch**: Track active serves, server licensing expirations, and territory coverage.
 - **Self-Contained SQLite Backend**: Powered by Hono + Bun/Node for blazing fast single-binary performance.
 - **Software Terms & Consent**: Public `/terms`, `/privacy`, and `/dpa`. Signup requires accepting Terms + Privacy. Those pages are **software / logging terms only** — not a process-serving service contract, license warranty, or attempt-fee policy (v2026.3: AS IS, no software liability except what Oklahoma law will not let you waive).
+- **Optional SMS**: Field alerts and phone verification can go out through a dedicated Android phone using [SMS Gateway for Android](https://github.com/capcom6/android-sms-gateway), or through [Better Auth](https://www.better-auth.com/) phone OTP on top of that same gateway.
 
 ---
 
@@ -184,6 +185,28 @@ To enable automatic email notifications to clients when an attempt is made or a 
 
 ---
 
+## Optional SMS Notifications
+
+Email covers most client updates. When you also need **text messages** — job assigned, attempt logged, affidavit ready — ServeTracker can send them without Twilio or another paid SMS vendor.
+
+### Free path: Android SMS Gateway
+
+Install **[SMS Gateway for Android](https://github.com/capcom6/android-sms-gateway)** (`capcom6/android-sms-gateway`, Apache-2.0) on a spare or work Android phone that already has a SIM. The official project and docs are:
+
+- Repository: [https://github.com/capcom6/android-sms-gateway](https://github.com/capcom6/android-sms-gateway)
+- Releases / APK: [https://github.com/capcom6/android-sms-gateway/releases](https://github.com/capcom6/android-sms-gateway/releases)
+- Documentation: [https://docs.sms-gate.app](https://docs.sms-gate.app)
+
+The phone becomes your outbound SMS modem. ServeTracker posts to the app’s HTTP API — either on the local network, or through the project’s public cloud relay at `https://api.sms-gate.app` (Firebase push to the handset; no port forwarding required). You pay only the carrier’s normal text rate, which is usually $0 extra on unlimited SMS plans.
+
+### Professional path: Better Auth + the same gateway
+
+If you want sign-in codes, phone verification, and password-reset OTPs in addition to operational alerts, hook [Better Auth](https://github.com/better-auth/better-auth) and its [phone number plugin](https://www.better-auth.com/docs/plugins/phone-number) to that same Android sender. Better Auth stays self-hosted in your SQLite database; the Android phone is only the delivery channel.
+
+Full setup — app install, cloud-relay credentials, environment variables, and the Better Auth `sendOTP` hook — is on the [`docs/android-sms-gateway`](https://github.com/SillyHippy/ServeTracker/tree/docs/android-sms-gateway) branch.
+
+---
+
 ## Customizing Your Branding & Logo
 
 ServeTracker is built to be white-labeled for your own process serving agency. To replace the default branding with your own business logo and company name:
@@ -219,6 +242,11 @@ ServeTracker is built to be white-labeled for your own process serving agency. T
 | `SMTP_PORT` | No | `587` | SMTP Port |
 | `SMTP_USER` | No | `""` | SMTP Username |
 | `SMTP_PASSWORD` | No | `""` | SMTP Password (fallback if RESEND_API_KEY not set) |
+| `SMS_GATEWAY_ENABLED` | No | `false` | Set `true` to send field/OTP texts through Android SMS Gateway |
+| `SMS_GATEWAY_API_URL` | No | `https://api.sms-gate.app/3rdparty/v1/messages` | Cloud relay or `http://<phone-ip>:8080/message` |
+| `SMS_GATEWAY_USER` | No | `""` | Username shown in the Android app (Cloud or Local Server) |
+| `SMS_GATEWAY_PASS` | No | `""` | Matching password from the Android app — never commit the real value |
+| `SMS_GATEWAY_DEVICE_ID` | No | `""` | Optional device id when several phones share one cloud account |
 
 ### Auth & legal pages
 
