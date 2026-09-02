@@ -27,7 +27,7 @@ ServeTracker's planned routing module is intended to replace straight-line stop 
 | Component | Purpose | Upstream |
 | :--- | :--- | :--- |
 | **OSRM** | Computes real car-route distance and travel-time matrices from OpenStreetMap road data. | [Project-OSRM/osrm-backend](https://github.com/Project-OSRM/osrm-backend) · [OSRM docs](https://project-osrm.org/) |
-| **VROOM** | Solves the actual vehicle-routing problem: stop order, multiple servers, time windows, priorities, service duration, breaks, and start/end locations. | [VROOM-Project/vroom](https://github.com/VROOM-Project/vroom) · [vroom-docker](https://github.com/VROOM-Project/vroom-docker) |
+| **VROOM** | Solves the actual vehicle-routing problem: stop order, multiple servers, time windows, priorities, service duration, breaks, and start/end locations. It builds and runs natively; Docker is optional and is **not required**. | [VROOM-Project/vroom](https://github.com/VROOM-Project/vroom) · [native build instructions](https://github.com/VROOM-Project/vroom/wiki/Building) · [usage/API](https://github.com/VROOM-Project/vroom/wiki/Usage) |
 | **OpenStreetMap data** | Open road-network source used to build the regional OSRM graph. | [OpenStreetMap](https://www.openstreetmap.org/) · [Geofabrik regional extracts](https://download.geofabrik.de/north-america/us.html) |
 | **Valhalla** *(alternative)* | An alternative self-hostable OpenStreetMap routing engine with matrix and tour-optimization support. Use this **instead of**, not alongside, OSRM for the first deployment. | [valhalla/valhalla](https://github.com/valhalla/valhalla) |
 
