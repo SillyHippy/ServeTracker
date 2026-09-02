@@ -16,6 +16,52 @@
 
 ---
 
+## Road-Based Automatic Route Optimization (Optional / Planned)
+
+ServeTracker's planned routing module is intended to replace straight-line stop clustering with **self-hosted, road-network-based route optimization**. It is designed for a route day: choose the server, work hours, start/end location, assigned stops, service duration, priorities, and optional deadlines; the optimizer returns the best feasible stop order, planned mileage, drive time, ETAs, and any stops that could not fit.
+
+> **Status:** This is an integration roadmap, not a bundled ServeTracker feature yet. It is deliberately self-hosted so an agency can use unlimited road-based optimization without a per-route Google, Mapbox, or SaaS routing bill.
+
+### Recommended self-hosted components
+
+| Component | Purpose | Upstream |
+| :--- | :--- | :--- |
+| **OSRM** | Computes real car-route distance and travel-time matrices from OpenStreetMap road data. | [Project-OSRM/osrm-backend](https://github.com/Project-OSRM/osrm-backend) · [OSRM docs](https://project-osrm.org/) |
+| **VROOM** | Solves the actual vehicle-routing problem: stop order, multiple servers, time windows, priorities, service duration, breaks, and start/end locations. | [VROOM-Project/vroom](https://github.com/VROOM-Project/vroom) · [vroom-docker](https://github.com/VROOM-Project/vroom-docker) |
+| **OpenStreetMap data** | Open road-network source used to build the regional OSRM graph. | [OpenStreetMap](https://www.openstreetmap.org/) · [Geofabrik regional extracts](https://download.geofabrik.de/north-america/us.html) |
+| **Valhalla** *(alternative)* | An alternative self-hostable OpenStreetMap routing engine with matrix and tour-optimization support. Use this **instead of**, not alongside, OSRM for the first deployment. | [valhalla/valhalla](https://github.com/valhalla/valhalla) |
+
+### Planned architecture
+
+```text
+ServeTracker Route Day
+  -> stored/verified latitude + longitude for each serve address
+  -> private OSRM endpoint: real-road duration and distance matrix
+  -> private VROOM endpoint: constrained route optimization
+  -> saved Route Day, ordered stops, planned ETAs/miles, skipped-stop reasons
+```
+
+Keep OSRM and VROOM private to the application network; do not publish either endpoint to the internet. ServeTracker should call its own backend, and the backend should call the routing stack.
+
+### Route constraints to model
+
+- Server start point, optional end point/home, workday start/end, and break(s)
+- Assigned server(s), territory restrictions, and a route-day stop limit
+- Priority/rush jobs and optional appointment/deadline time windows
+- Estimated service duration for each stop and any required stop order
+- Re-optimization after a completed, skipped, failed, or newly added job
+- Manual lock/reorder for field judgment; optimization must never silently overwrite a dispatcher/server's intentional ordering
+
+### Important limitation: road-aware is not live-traffic-aware
+
+OSRM + VROOM routes through actual roads and optimizes by expected road travel time/distance. It does **not** include proprietary real-time traffic or incident feeds like Google Maps/Waze. If live traffic is needed later, add it as an optional, metered/BYO-key refresh layer; do not make the self-hosted route planner depend on it.
+
+### Practical deployment scope
+
+Start with a regional OpenStreetMap extract covering the agency's service territory (for example Oklahoma, then neighboring states only when needed), not the full United States. Regional data keeps graph preparation, storage, and memory use practical. The VROOM project supports OSRM directly and is the recommended first pairing.
+
+---
+
 ## Deployment Options & Free-Tier Guide
 
 ServeTracker is built with standard web technologies (TypeScript, React, Vite, Tailwind CSS, Hono, SQLite) and can be deployed for **$0/month** across several popular platforms.
