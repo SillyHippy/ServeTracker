@@ -143,10 +143,16 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     finally { setIsLoadingCases(false); }
   };
 
-  // New Serve list = ACTIVE cases only (exclude closed/completed)
+  // New Serve list = ACTIVE cases only (exclude closed, completed, served, non-service)
   const isInactiveCase = (c: ClientCase) => {
-    const s = (c.status || "").toLowerCase().trim();
-    return s === "closed" || s === "completed";
+    const s = (c.status || "").toLowerCase().replace(/[\s_]+/g, "-").trim();
+    return (
+      s === "closed" ||
+      s === "completed" ||
+      s === "served" ||
+      s === "non-service" ||
+      s === "nonservice"
+    );
   };
 
   const activeCases = useMemo(
@@ -404,8 +410,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         toast({ title: "Posting location required", description: "Select where copies were posted.", variant: "destructive" });
         return;
       }
-      if (serviceMethod === "corporate" && !corporateAgent.trim()) {
-        toast({ title: "Agent/company required", description: "Enter the registered agent or company name.", variant: "destructive" });
+      const effectiveEntity = (entityName || corporateAgent).trim();
+      if (serviceMethod === "corporate" && !effectiveEntity) {
+        toast({ title: "Entity / Agent required", description: "Enter the entity name or registered agent being served.", variant: "destructive" });
         return;
       }
     }
@@ -434,7 +441,8 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         attempt_type: attemptType,
         gps_source: !isManualLog && location ? "captured" : "manual",
         contact_person: contactPerson, is_manual: isManualLog, photos: photos as any,
-        serviceMethod, service_method: serviceMethod,
+        serviceMethod: data.status === "completed" ? serviceMethod : "",
+        service_method: data.status === "completed" ? serviceMethod : "",
         acceptedBy: refusedToIdentify ? "" : acceptedBy,
         accepted_by: refusedToIdentify ? "" : acceptedBy,
         refusedToIdentify, refused_to_identify: refusedToIdentify,
@@ -452,6 +460,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       }
       form.reset(); setLocation(null); setGpsStatus("idle");
       setSelectedClient(null); setSelectedCase(null); setPhotos([]);
+      setAcceptedBy(""); setRefusedToIdentify(false); setPostingLocation("front_door");
+      setCorporateAgent(""); setEntityName(""); setRecipientTitle("Registered Agent");
+      setServiceMethod("personal");
       setIsManualLog(false); setStep("select");
       if (onComplete) onComplete({ ...serveData, ...(saved || {}), id: (saved as any)?.id || serveData.id });
     } catch (err) {
@@ -852,8 +863,11 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                           <Input
                             className="h-10 text-sm"
                             placeholder="e.g. Acme Corporation, LLC"
-                            value={entityName}
-                            onChange={(e) => setEntityName(e.target.value)}
+                            value={entityName || corporateAgent}
+                            onChange={(e) => {
+                              setEntityName(e.target.value);
+                              setCorporateAgent(e.target.value);
+                            }}
                           />
                         </div>
                         <div>

@@ -16,6 +16,8 @@ export interface AffidavitPayload {
     email?: string;
   };
   recipient?: {
+    /** serve_recipients.id — scopes method resolution to THIS legal recipient. */
+    id?: string;
     full_name: string;
     role?: string;
     home_address?: string;
@@ -46,6 +48,8 @@ export interface AffidavitPayload {
   };
   /** Force Affidavit of Service vs Non-Service. Default: inferred from attempts. */
   affidavitKind?: AffidavitKind;
+  /** Whether to include exhibit photos at the end. Default: true */
+  includeExhibits?: boolean;
 }
 
 function ordinalDay(n: number): string {
@@ -74,69 +78,132 @@ function attemptStatus(att: Pick<ServeAttemptData, "status"> | Record<string, un
   return String((att as ServeAttemptData).status || "").toLowerCase();
 }
 
-function attemptMethod(att: ServeAttemptData | Record<string, unknown>): string {
-  const row = att as ServeAttemptData;
-  return String(row.service_method || row.serviceMethod || "").toLowerCase().trim();
+function attemptOccurredMs(att: ServeAttemptData): number {
+  const raw = (att.occurred_at || att.occurredAt || att.timestamp) as string;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
-export function attemptOccurredMs(att: ServeAttemptData | Record<string, unknown>): number {
-  const row = att as ServeAttemptData;
-  const raw = (row.occurred_at || row.occurredAt || row.timestamp) as string | Date | undefined;
-  const t = raw instanceof Date ? raw.getTime() : new Date(String(raw || "")).getTime();
-  return Number.isNaN(t) ? 0 : t;
+function recipientIdOf(att: ServeAttemptData): string {
+  return String(att.recipient_id || att.recipientId || "").trim();
 }
 
-/** True when the row is a successful serve (not an unsuccessful attempt). */
-export function isSuccessfulServe(att: ServeAttemptData | Record<string, unknown>): boolean {
-  const status = attemptStatus(att);
-  if (status !== "completed" && status !== "served") return false;
-  const method = attemptMethod(att);
-  // Completed-without-a-method is not a successful serve — it used to flip
-  // the affidavit to Service and then warn "METHOD NOT RECORDED".
-  if (!method || method === "non-service") return false;
-  return true;
+function personServedOf(att: ServeAttemptData): string {
+  return String(att.person_being_served || att.personBeingServed || "").trim();
 }
 
-/** Most recent successful serve by occurred_at — never the oldest in an unsorted list. */
-export function latestSuccessfulServe(
-  attempts: Array<ServeAttemptData | Record<string, unknown>>
-): ServeAttemptData | Record<string, unknown> | null {
-  const successful = attempts.filter(isSuccessfulServe);
-  if (successful.length === 0) return null;
-  return [...successful].sort((a, b) => attemptOccurredMs(a) - attemptOccurredMs(b)).at(-1) || null;
+/** Rows captured at one physical encounter share this id. '' means unlinked. */
+function eventIdOf(att: ServeAttemptData): string {
+  return String((att as { event_id?: string; eventId?: string }).event_id ||
+    (att as { event_id?: string; eventId?: string }).eventId || "").trim();
 }
 
-export function inferAffidavitKind(
-  attempts: Array<ServeAttemptData | Record<string, unknown>>,
-  override?: AffidavitKind | string | null
-): AffidavitKind {
-  const forced = String(override || "").toLowerCase();
-  if (forced === "non-service" || forced === "nonservice") return "non-service";
-  if (forced === "service") return "service";
-  return latestSuccessfulServe(attempts) ? "service" : "non-service";
+/** Does this row record a delivery to the recipient the affidavit is about? */
+function servesTargetRecipient(
+  att: ServeAttemptData,
+  targetId: string,
+  targetName: string
+): boolean {
+  const rid = recipientIdOf(att);
+  if (targetId && rid) return rid === targetId;
+  const pbs = personServedOf(att);
+  if (targetName && pbs) return pbs.toLowerCase() === targetName.toLowerCase();
+  return false;
 }
 
-/** Human label for a service_method value ('' = legacy/unknown). */
-export function serviceMethodLabel(method?: string | null): string {
-  const labels: Record<string, string> = {
-    personal: "Personal Service",
-    "substituted-residence": "Substitute (Residence)",
-    "substituted-business": "Substitute (Business)",
-    corporate: "Corporate / Registered Agent",
-    posting: "Posting",
-    "non-service": "Non-Service",
-  };
-  return labels[String(method || "").toLowerCase()] || "";
-}
-
-/** True when this method requires the name of the person who received the papers. */
-export function methodRequiresAcceptedBy(method?: string | null): boolean {
-  return ["substituted-residence", "substituted-business", "corporate"].includes(
-    String(method || "").toLowerCase()
+/**
+ * True when the attempt set distinguishes WHO was served, so an unmatched
+ * target means "not served" rather than "legacy row with no attribution".
+ * Either an explicit recipient_id exists, or the rows name two different
+ * people — the multi-recipient shape that made the old global lookup lie.
+ */
+function attemptsAreRecipientAware(attempts: ServeAttemptData[]): boolean {
+  if (attempts.some((a) => recipientIdOf(a) !== "")) return true;
+  const names = new Set(
+    attempts.map((a) => personServedOf(a).toLowerCase()).filter(Boolean)
   );
+  return names.size > 1;
 }
 
-const esc = (s: string): string =>
+/**
+ * Return the most-recent COMPLETED serve attempt by occurred_at that carries
+ * a service method. If an older completed attempt has no method but a newer
+ * completed attempt does, the newer one wins.
+ *
+ * When a target recipient is supplied the search is scoped to that recipient:
+ * two people served at the same stop each get their own method. The global
+ * newest completed attempt is used ONLY for legacy rows that carry no
+ * recipient attribution at all; on recipient-aware data a target with no
+ * completed attempt returns null so the affidavit prints METHOD NOT RECORDED
+ * instead of inheriting somebody else's method of service.
+ */
+export function latestSuccessfulServe(
+  attempts: ServeAttemptData[],
+  targetRecipientId?: string,
+  targetRecipientName?: string
+): ServeAttemptData | null {
+  const completed = attempts
+    .filter((a) => attemptStatus(a) === "completed")
+    .sort((a, b) => attemptOccurredMs(b) - attemptOccurredMs(a));
+  if (completed.length === 0) return null;
+
+  const pickBest = (rows: ServeAttemptData[]): ServeAttemptData | null => {
+    if (rows.length === 0) return null;
+    const withMethod = rows.find((a) => Boolean(a.service_method || a.serviceMethod));
+    return withMethod || rows[0];
+  };
+
+  const targetId = String(targetRecipientId || "").trim();
+  const targetName = String(targetRecipientName || "").trim();
+
+  if (targetId || targetName) {
+    const scoped = completed.filter((a) => servesTargetRecipient(a, targetId, targetName));
+    if (scoped.length > 0) return pickBest(scoped);
+    if (attemptsAreRecipientAware(attempts)) return null;
+  }
+
+  return pickBest(completed);
+}
+
+/**
+ * Inferred affidavit kind: "service" if at least one completed attempt has
+ * a recorded method of service. If no attempts succeeded (all failed or
+ * completed with no method), it is an Affidavit of Non-Service.
+ */
+export function inferAffidavitKind(
+  attempts: ServeAttemptData[],
+  overrideKind?: AffidavitKind,
+  targetRecipientId?: string,
+  targetRecipientName?: string
+): AffidavitKind {
+  if (overrideKind) return overrideKind;
+  const serve = latestSuccessfulServe(attempts, targetRecipientId, targetRecipientName);
+  if (!serve) return "non-service";
+  const m = String(serve.service_method || serve.serviceMethod || "").trim();
+  return m ? "service" : "non-service";
+}
+
+export function serviceMethodLabel(methodRaw: string): string {
+  const m = methodRaw.toLowerCase().trim();
+  switch (m) {
+    case "personal":
+      return "Personal Delivery";
+    case "substituted-residence":
+      return "Substituted Service (Residence / Usual Place of Abode)";
+    case "substituted-business":
+      return "Substituted Service (Business / Office)";
+    case "corporate":
+      return "Corporate / Registered Agent";
+    case "posting":
+      return "Posting (Premises)";
+    case "non-service":
+      return "Non-Service";
+    default:
+      return m ? `Other (${m})` : "Unspecified";
+  }
+}
+
+const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
@@ -208,13 +275,84 @@ function isPhysicalRow(att: ServeAttemptData): boolean {
   return t === "physical" || t === "other" || t === "";
 }
 
-/** Every physical attempt, oldest first. Do not cap — dropping newest rows hid later serves. */
-export function physicalAttemptsForAffidavit(attempts: ServeAttemptData[]): ServeAttemptData[] {
-  const sorted = [...attempts].sort((a, b) => attemptOccurredMs(a) - attemptOccurredMs(b));
-  return sorted.filter(isPhysicalRow);
+function photoKeyOf(p: { id?: string; imageUrl?: string; image_url?: string }): string {
+  return String(p.imageUrl || p.image_url || p.id || "");
 }
 
-export function generateAffidavitHtml(data: AffidavitPayload): string {
+/**
+ * Fold a sibling row of the same encounter into the representative row.
+ * The representative keeps its own identity and timestamp (it is the oldest
+ * row of the event); only evidence that would otherwise be dropped from the
+ * packet — photos, notes, and a service address — is carried across.
+ */
+function mergeEncounterRow(base: ServeAttemptData, extra: ServeAttemptData): ServeAttemptData {
+  const merged: ServeAttemptData = { ...base };
+
+  const photos = [...(base.photos || [])];
+  for (const p of extra.photos || []) {
+    const key = photoKeyOf(p);
+    if (!key || !photos.some((existing) => photoKeyOf(existing) === key)) photos.push(p);
+  }
+  if (photos.length > 0) merged.photos = photos;
+
+  const baseNotes = String(base.notes || "").trim();
+  const extraNotes = String(extra.notes || "").trim();
+  if (extraNotes && extraNotes !== baseNotes) {
+    merged.notes = baseNotes ? `${baseNotes} ${extraNotes}` : extraNotes;
+  }
+
+  if (!String(base.service_address || "").trim() && extra.service_address) {
+    merged.service_address = extra.service_address;
+  }
+  if (!String(base.address || "").trim() && extra.address) {
+    merged.address = extra.address;
+  }
+
+  return merged;
+}
+
+/**
+ * Every physical attempt, oldest first. Do not cap — dropping newest rows hid later serves.
+ * Rows sharing a non-empty event_id are one physical encounter and collapse to a
+ * single chronology entry, so serving two recipients at one stop cannot print as
+ * two attempts at the same minute.
+ */
+export function physicalAttemptsForAffidavit(attempts: ServeAttemptData[]): ServeAttemptData[] {
+  const sorted = [...attempts].sort((a, b) => attemptOccurredMs(a) - attemptOccurredMs(b));
+  const encounters: ServeAttemptData[] = [];
+  const slotByEvent = new Map<string, number>();
+
+  for (const att of sorted) {
+    if (!isPhysicalRow(att)) continue;
+    const eventId = eventIdOf(att);
+    if (!eventId) {
+      encounters.push(att);
+      continue;
+    }
+    const slot = slotByEvent.get(eventId);
+    if (slot === undefined) {
+      slotByEvent.set(eventId, encounters.length);
+      encounters.push(att);
+      continue;
+    }
+    encounters[slot] = mergeEncounterRow(encounters[slot], att);
+  }
+
+  return encounters;
+}
+
+export interface ExhibitPhotoItem {
+  attemptNum: number;
+  dateStr: string;
+  photoUrl: string;
+  pos: number;
+}
+
+export function buildAffidavitSectionHtml(data: AffidavitPayload): {
+  sectionHtml: string;
+  title: string;
+  exhibits: ExhibitPhotoItem[];
+} {
   const c = data.case;
   const notary = {
     serverName: "Joseph Iannazzi",
@@ -239,11 +377,21 @@ export function generateAffidavitHtml(data: AffidavitPayload): string {
 
   const sortedAttempts = [...data.attempts].sort((a, b) => attemptOccurredMs(a) - attemptOccurredMs(b));
 
-  const kind = inferAffidavitKind(data.attempts, data.affidavitKind);
+  const kind = inferAffidavitKind(
+    data.attempts,
+    data.affidavitKind,
+    data.recipient?.id,
+    data.recipient?.full_name
+  );
   const hasSuccessfulServe = kind === "service";
 
-  // Most-recent successful serve by date carries the method + who accepted.
-  const servedAttempt = (latestSuccessfulServe(sortedAttempts) || null) as ServeAttemptData | null;
+  // Most-recent successful serve by date carries the method + who accepted —
+  // scoped to THIS recipient so a co-served party's method is never borrowed.
+  const servedAttempt = (latestSuccessfulServe(
+    sortedAttempts,
+    data.recipient?.id,
+    data.recipient?.full_name
+  ) || null) as ServeAttemptData | null;
   const serviceMethod = String(
     servedAttempt?.service_method || servedAttempt?.serviceMethod || ""
   ).toLowerCase();
@@ -308,7 +456,7 @@ export function generateAffidavitHtml(data: AffidavitPayload): string {
   });
   const commentsBlock = commentsParts.join("\n");
 
-  const exhibits: { attemptNum: number; dateStr: string; photoUrl: string; pos: number }[] = [];
+  const exhibits: ExhibitPhotoItem[] = [];
   physicalAttempts.forEach((att, idx) => {
     const dStr = fmtAttemptDt(att);
     if (att.photos && att.photos.length > 0) {
@@ -346,167 +494,171 @@ export function generateAffidavitHtml(data: AffidavitPayload): string {
           )
           .join("");
 
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${title} - ${c.case_number}</title>
-  <style>
-    /* COMPACT LAYOUT (2026-08-15): tighter margins/type so the sworn body +
-       signature/notary block fits one letter page with stamp room. */
-    body { font-family: 'Times New Roman', Times, serif; font-size: 10pt; line-height: 1.18; color: #000; margin: 18px; }
-    .header { text-align: center; font-weight: bold; margin-bottom: 6px; text-transform: uppercase; }
-    .caption-box { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
-    .caption-box td { vertical-align: top; padding: 2px; }
-    .caption-left { width: 55%; border-right: 2px solid #000; padding-right: 10px; }
-    .caption-right { width: 45%; padding-left: 10px; }
-    .title { text-align: center; font-weight: bold; font-size: 11.5pt; margin: 6px 0; text-decoration: underline; }
-    .section-title { font-weight: bold; margin-top: 5px; margin-bottom: 2px; text-transform: uppercase; font-size: 9pt; }
-    .addr-line { font-size: 9.5pt; margin: 2px 0 5px 0; }
-    /* Tight date/time bars — same spirit as the AcroForm attempt cards */
-    table.attempts { width: 100%; border-collapse: collapse; margin: 4px 0 6px 0; font-size: 9.5pt; }
-    table.attempts th, table.attempts td { border: 1px solid #333; padding: 2px 6px; text-align: left; vertical-align: middle; }
-    table.attempts th { background-color: #f2f2f2; text-transform: uppercase; font-size: 8pt; }
-    table.attempts td.att-num { width: 28%; font-weight: bold; white-space: nowrap; }
-    table.attempts td.att-dt { width: 72%; }
-    .comments { font-size: 9.5pt; white-space: pre-wrap; border: 1px solid #333; padding: 5px; min-height: 52px; }
-    .sig-block { margin-top: 10px; page-break-inside: avoid; }
-    .sig-line { border-bottom: 1px solid #000; width: 280px; height: 72px; margin-top: 14px; display: flex; align-items: flex-end; }
-    .exhibit-page { page-break-before: always; text-align: center; }
-    .exhibit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
-    .exhibit-card { border: 1px solid #ccc; padding: 6px; background: #fafafa; }
-    .exhibit-card img { max-width: 100%; max-height: 210px; object-fit: contain; }
-    @media print {
-      body { margin: 0.35in; }
-      .exhibit-page { page-break-before: always; }
-    }
-  </style>
-</head>
-<body>
+  const sectionHtml = `
+  <div class="affidavit-packet">
+    <div class="header">
+      ${c.court_name ? esc(String(c.court_name).toUpperCase()) : "IN THE DISTRICT COURT OF OKLAHOMA"}
+    </div>
 
-  <div class="header">
-    ${c.court_name ? String(c.court_name).toUpperCase() : "IN THE DISTRICT COURT OF OKLAHOMA"}
-  </div>
-
-  <table class="caption-box">
-    <tr>
-      <td class="caption-left">
-        <strong>${c.plaintiff_petitioner || "PETITIONER / PLAINTIFF"}</strong>,<br>
-        <em>Plaintiff/Petitioner</em>,<br><br>
-        vs.<br><br>
-        <strong>${c.defendant_respondent || recipientName}</strong>,<br>
-        <em>Defendant/Respondent</em>.
-      </td>
-      <td class="caption-right">
-        <strong>CASE NO. ${c.case_number}</strong><br><br>
-        <strong>PERSON SERVED / ATTEMPTED:</strong><br>${recipientName}
-      </td>
-    </tr>
-  </table>
-
-  <div class="title">${title}</div>
-
-  <p>
-    I, <strong>${notary.serverName}</strong>, being duly sworn, depose and state that I am a duly licensed
-    Private Process Server in the State of ${notary.state}
-    (License No. <strong>${notary.licenseNumber || "PSL-2026-2"}</strong>), over the age of eighteen (18) years,
-    and not a party to nor interested in the outcome of the above-entitled action.
-  </p>
-
-  ${
-    documentsLine
-      ? `<div class="section-title">Documents</div>
-         <p>${documentsLine.replace(/\n/g, "<br>")}</p>`
-      : `<div class="section-title">Documents</div>
-         <p><em>(List documents to serve on the case record — Add/Edit Case → Documents to Serve.)</em></p>`
-  }
-
-  ${
-    serviceAddress
-      ? `<div class="addr-line"><strong>Service Address:</strong> ${serviceAddress}</div>`
-      : ""
-  }
-
-  <div class="section-title">Service Attempts (Physical)</div>
-  <table class="attempts">
-    <thead>
+    <table class="caption-box">
       <tr>
-        <th>Attempt</th>
-        <th>Date &amp; Time</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${attemptRowsHtml}
-    </tbody>
-  </table>
-
-  <div class="section-title">Comments</div>
-  <div class="comments">${
-    commentsBlock
-      ? commentsBlock.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      : "&nbsp;"
-  }</div>
-
-  <p>
-    ${
-      hasSuccessfulServe
-        ? executionSentence(
-            serviceMethod,
-            recipientName,
-            acceptedBy,
-            refusedToIdentify,
-            physicalDescription,
-            documentsLine,
-            {
-              postingLocation: (servedAttempt as any)?.posting_location || (servedAttempt as any)?.postingLocation,
-              entityName: (servedAttempt as any)?.entity_name || (servedAttempt as any)?.entityName,
-              recipientTitle: (servedAttempt as any)?.recipient_title || (servedAttempt as any)?.recipientTitle,
-            }
-          )
-        : `After due diligence at the known address(es), I have been unable to effect personal service upon <strong>${recipientName}</strong> for the reasons in the log above.`
-    }
-  </p>
-
-  <div class="sig-block">
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <!-- Process server LEFT -->
-        <td width="48%" valign="top">
-          ${
-            data.signature
-              ? `<div class="sig-line" style="padding:0 2px 1px 2px;"><img src="${data.signature.dataUrl}" alt="Process Server Signature" style="height:64px;max-width:270px;width:auto;object-fit:contain;object-position:bottom;display:block;"/></div>`
-              : `<div class="sig-line"></div>`
-          }
-          <div style="margin-top:6px;">
-            <strong>${notary.serverName}</strong><br>
-            Private Process Server<br>
-            License No. ${notary.licenseNumber || "PSL-2026-2"}<br>
-            Just Legal Solutions
-          </div>
+        <td class="caption-left">
+          <strong>${esc(c.plaintiff_petitioner || "PETITIONER / PLAINTIFF")}</strong>,<br>
+          <em>Plaintiff/Petitioner</em>,<br><br>
+          vs.<br><br>
+          <strong>${esc(c.defendant_respondent || recipientName)}</strong>,<br>
+          <em>Defendant/Respondent</em>.
         </td>
-        <td width="4%"></td>
-        <!-- Notary RIGHT — wet-ink / stamp only; no typed notary name or commission -->
-        <td width="48%" valign="top">
-          <p style="font-size:10pt;margin:0 0 8px 0;">
-            STATE OF ${notary.state}&nbsp;&nbsp;)<br>
-            COUNTY OF ${notary.county}&nbsp;)&nbsp;ss.
-          </p>
-          <p style="font-size:10pt;margin:0;">
-            Subscribed and sworn to before me ${swornPhrase}.
-          </p>
-          <div class="sig-line"></div>
-          <div style="margin-top:6px;font-size:10pt;">
-            Notary Public
-          </div>
+        <td class="caption-right">
+          <strong>CASE NO. ${esc(c.case_number)}</strong><br><br>
+          <strong>PERSON SERVED / ATTEMPTED:</strong><br>${esc(recipientName)}
         </td>
       </tr>
     </table>
-  </div>
 
-  ${
-    exhibits.length > 0
-      ? `
+    <div class="title">${esc(title)}</div>
+
+    <p>
+      I, <strong>${esc(notary.serverName)}</strong>, being duly sworn, depose and state that I am a duly licensed
+      Private Process Server in the State of ${esc(notary.state)}
+      (License No. <strong>${esc(notary.licenseNumber || "PSL-2026-2")}</strong>), over the age of eighteen (18) years,
+      and not a party to nor interested in the outcome of the above-entitled action.
+    </p>
+
+    ${
+      documentsLine
+        ? `<div class="section-title">Documents</div>
+           <p>${esc(documentsLine).replace(/\n/g, "<br>")}</p>`
+        : `<div class="section-title">Documents</div>
+           <p><em>(List documents to serve on the case record — Add/Edit Case → Documents to Serve.)</em></p>`
+    }
+
+    ${
+      serviceAddress
+        ? `<div class="addr-line"><strong>Service Address:</strong> ${esc(serviceAddress)}</div>`
+        : ""
+    }
+
+    <div class="section-title">Service Attempts (Physical)</div>
+    <table class="attempts">
+      <thead>
+        <tr>
+          <th>Attempt</th>
+          <th>Date &amp; Time</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${attemptRowsHtml}
+      </tbody>
+    </table>
+
+    <div class="section-title">Comments</div>
+    <div class="comments">${
+      commentsBlock
+        ? commentsBlock.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        : "&nbsp;"
+    }</div>
+
+    <p>
+      ${
+        hasSuccessfulServe
+          ? executionSentence(
+              serviceMethod,
+              recipientName,
+              acceptedBy,
+              refusedToIdentify,
+              physicalDescription,
+              documentsLine,
+              {
+                postingLocation: (servedAttempt as any)?.posting_location || (servedAttempt as any)?.postingLocation,
+                entityName: (servedAttempt as any)?.entity_name || (servedAttempt as any)?.entityName || (servedAttempt as any)?.corporate_agent || (servedAttempt as any)?.corporateAgent,
+                recipientTitle: (servedAttempt as any)?.recipient_title || (servedAttempt as any)?.recipientTitle,
+              }
+            )
+          : `After due diligence at the known address(es), I have been unable to effect personal service upon <strong>${recipientName}</strong> for the reasons in the log above.`
+      }
+    </p>
+
+    <div class="sig-block">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <!-- Process server LEFT -->
+          <td width="48%" valign="top">
+            ${
+              data.signature
+                ? `<div class="sig-line" style="padding:0 2px 0 2px;position:relative;overflow:visible;"><img src="${data.signature.dataUrl}" alt="Process Server Signature" style="height:62px;max-width:270px;width:auto;object-fit:contain;object-position:bottom;display:block;margin-bottom:-1px;transform:translateY(1px);"/></div>`
+                : `<div class="sig-line"></div>`
+            }
+            <div style="margin-top:6px;">
+              <strong>${notary.serverName}</strong><br>
+              Private Process Server<br>
+              License No. ${notary.licenseNumber || "PSL-2026-2"}<br>
+              Just Legal Solutions &bull; (539) 367-6832
+            </div>
+          </td>
+          <td width="4%"></td>
+          <!-- Notary RIGHT — wet-ink / stamp only; no typed notary name or commission -->
+          <td width="48%" valign="top">
+            <p style="font-size:10pt;margin:0 0 8px 0;">
+              STATE OF ${notary.state}&nbsp;&nbsp;)<br>
+              COUNTY OF ${notary.county}&nbsp;)&nbsp;ss.
+            </p>
+            <p style="font-size:10pt;margin:0;">
+              Subscribed and sworn to before me ${swornPhrase}.
+            </p>
+            <div class="sig-line"></div>
+            <div style="margin-top:6px;font-size:10pt;">
+              Notary Public
+            </div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>`;
+
+  return { sectionHtml, title, exhibits };
+}
+
+const COMMON_CSS = `
+  body { font-family: 'Times New Roman', Times, serif; font-size: 10pt; line-height: 1.18; color: #000; margin: 18px; }
+  .affidavit-packet { page-break-after: always; break-after: page; }
+  .affidavit-packet:last-of-type { page-break-after: auto; break-after: auto; }
+  .header { text-align: center; font-weight: bold; margin-bottom: 6px; text-transform: uppercase; }
+  .caption-box { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+  .caption-box td { vertical-align: top; padding: 2px; }
+  .caption-left { width: 55%; border-right: 2px solid #000; padding-right: 10px; }
+  .caption-right { width: 45%; padding-left: 10px; }
+  .title { text-align: center; font-weight: bold; font-size: 11.5pt; margin: 6px 0; text-decoration: underline; }
+  .section-title { font-weight: bold; margin-top: 5px; margin-bottom: 2px; text-transform: uppercase; font-size: 9pt; }
+  .addr-line { font-size: 9.5pt; margin: 2px 0 5px 0; }
+  /* Tight date/time bars */
+  table.attempts { width: 100%; border-collapse: collapse; margin: 4px 0 6px 0; font-size: 9.5pt; }
+  table.attempts th, table.attempts td { border: 1px solid #333; padding: 2px 6px; text-align: left; vertical-align: middle; }
+  table.attempts th { background-color: #f2f2f2; text-transform: uppercase; font-size: 8pt; }
+  table.attempts td.att-num { width: 28%; font-weight: bold; white-space: nowrap; }
+  table.attempts td.att-dt { width: 72%; }
+  .comments { font-size: 9.5pt; white-space: pre-wrap; border: 1px solid #333; padding: 5px; min-height: 52px; }
+  .sig-block { margin-top: 10px; page-break-inside: avoid; }
+  .sig-line { border-bottom: 1px solid #000; width: 280px; height: 72px; margin-top: 14px; display: flex; align-items: flex-end; }
+  .exhibit-page { page-break-before: always; break-before: page; text-align: center; }
+  .exhibit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .exhibit-card { border: 1px solid #ccc; padding: 6px; background: #fafafa; break-inside: avoid; page-break-inside: avoid; }
+  .exhibit-card img { max-width: 100%; max-height: 210px; object-fit: contain; }
+  @media print {
+    body { margin: 0.35in; }
+    .exhibit-page { page-break-before: always; break-before: page; }
+    @page {
+      margin: 0.45in;
+    }
+  }
+`;
+
+export function generateAffidavitHtml(data: AffidavitPayload): string {
+  const { sectionHtml, title, exhibits } = buildAffidavitSectionHtml(data);
+  const includeExhibits = data.includeExhibits !== false;
+
+  const exhibitsHtml = (includeExhibits && exhibits.length > 0)
+    ? `
     <div class="exhibit-page">
       <div class="section-title" style="font-size:13pt;margin-top:24px;">EXHIBIT PHOTOS (${exhibits.length})</div>
       <div class="exhibit-grid">
@@ -522,10 +674,95 @@ export function generateAffidavitHtml(data: AffidavitPayload): string {
           .join("")}
       </div>
     </div>`
-      : ""
-  }
+    : "";
 
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${title} - ${data.case.case_number}</title>
+  <style>
+    ${COMMON_CSS}
+  </style>
+</head>
+<body>
+  ${sectionHtml}
+  ${exhibitsHtml}
 </body>
-</html>
-  `;
+</html>`;
+}
+
+/**
+ * Generate a combined batch of affidavits for multiple recipients at the same address.
+ * Each recipient gets their own sworn affidavit section (page-break separated),
+ * followed by the shared case exhibit photos printed once at the very end.
+ * No continuous page numbers are stamped in the footer so each affidavit can be filed cleanly.
+ */
+export function generateBatchAffidavitsHtml(
+  payloads: AffidavitPayload[],
+  options?: boolean | { includeExhibits?: boolean }
+): string {
+  if (payloads.length === 0) return "";
+  const includeExhibits = typeof options === "boolean" ? options : options?.includeExhibits !== false;
+  let sharedExhibits: ExhibitPhotoItem[] = [];
+  const sectionsHtml: string[] = [];
+
+  payloads.forEach((payload, idx) => {
+    const { sectionHtml, exhibits } = buildAffidavitSectionHtml({
+      ...payload,
+      includeExhibits: false, // exhibits rendered once at the end
+    });
+    // Add page break class between packets except the very last one
+    sectionsHtml.push(`
+      <div class="${idx < payloads.length - 1 ? 'affidavit-packet' : ''}">
+        ${sectionHtml}
+      </div>
+    `);
+    if (exhibits.length > 0) {
+      // Deduplicate exhibit photos by URL across all recipient attempts
+      for (const ex of exhibits) {
+        if (!sharedExhibits.some((se) => se.photoUrl === ex.photoUrl)) {
+          sharedExhibits.push(ex);
+        }
+      }
+    }
+  });
+
+  const exhibitsHtml = (includeExhibits && sharedExhibits.length > 0)
+    ? `
+    <div class="exhibit-page">
+      <div class="section-title" style="font-size:13pt;margin-top:24px;">CASE EXHIBIT PHOTOS (${sharedExhibits.length})</div>
+      <div class="exhibit-grid">
+        ${sharedExhibits
+          .map(
+            (ex) => `
+          <div class="exhibit-card">
+            <img src="${ex.photoUrl}" alt="Exhibit" />
+            <div style="font-size:9pt;margin-top:6px;font-weight:bold;">Attempt #${ex.attemptNum} — Photo #${ex.pos}</div>
+            <div style="font-size:8pt;color:#666;">${ex.dateStr}</div>
+          </div>`
+          )
+          .join("")}
+      </div>
+    </div>`
+    : "";
+
+  const caseNumber = payloads[0]?.case?.case_number || "";
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AFFIDAVITS BATCH - ${caseNumber}</title>
+  <style>
+    ${COMMON_CSS}
+  </style>
+</head>
+<body>
+  ${sectionsHtml.join("\n")}
+  ${exhibitsHtml}
+</body>
+</html>`;
 }

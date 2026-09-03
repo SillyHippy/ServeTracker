@@ -6,6 +6,16 @@ import type { Db } from "./db";
 import { UPLOADS_DIR } from "./db";
 import { sendEmail } from "./email";
 import {
+  createHelcimInvoice,
+  persistInvoiceOnCase,
+  maybeEmailInvoice,
+  applyPaidWebhook,
+  fetchHelcimInvoice,
+  findCaseByInvoiceId,
+  attachInvoiceOnCase,
+  buildAttachPreview,
+} from "./helcim";
+import {
   buildServeEmailSubject,
   buildServeNotificationHtml,
   escapeHtml as escapeHtmlServe,
@@ -29,10 +39,14 @@ import {
   methodBlockingError,
   inferAffidavitKind,
   latestSuccessfulServe,
+  ATTEMPTS_FOR_CASE_SQL,
+  attemptsForCaseParams,
+  attemptBelongsToCaseSql,
   newId as exeNewId,
   nowIso as exeNowIso,
   renderExecutionHtml,
   resolveCase,
+  resolveTargetRecipient,
   serverEligibilityError,
   sha256Hex,
   validateSignable,
@@ -144,9 +158,12 @@ function escapeHtml(str: unknown): string {
 }
 
 
-/** Peer scope for attempt numbering: recipient first, else client+case#+PBS. */
+/** Peer scope for attempt numbering: recipient first, else the immutable case UUID.
+ * The case number is a court identifier, not a job identifier: a re-serve may
+ * legitimately reuse it and must begin at Attempt 1. */
 function attemptPeerWhere(opts: {
   recipientId?: string | null;
+  caseId?: string | null;
   clientId?: string | null;
   caseNumber?: string | null;
   personBeingServed?: string | null;
@@ -155,6 +172,11 @@ function attemptPeerWhere(opts: {
   if (recipientId) {
     return { sql: "recipient_id = ?", params: [recipientId] };
   }
+  const caseId = String(opts.caseId || "").trim();
+  if (caseId) {
+    return { sql: "case_id = ?", params: [caseId] };
+  }
+  // Legacy rows without a case UUID retain the narrowest available fallback.
   return {
     sql: "client_id = ? AND case_number = ? AND COALESCE(person_being_served, '') = ?",
     params: [
@@ -170,6 +192,7 @@ function renumberAttemptPeers(
   db: Db,
   opts: {
     recipientId?: string | null;
+    caseId?: string | null;
     clientId?: string | null;
     caseNumber?: string | null;
     personBeingServed?: string | null;
@@ -277,6 +300,15 @@ function caseRow(row: Record<string, unknown>, role: "admin" | "server" = "serve
     status: row.status,
     assigned_to: row.assigned_to || "",
     assigned_name: row.assigned_name || "",
+    quoted_fee: row.quoted_fee || "",
+    invoice_id: row.invoice_id || "",
+    invoice_number: row.invoice_number || "",
+    pay_url: row.pay_url || "",
+    payment_status: row.payment_status || "",
+    paid_at: row.paid_at || "",
+    payment_method: row.payment_method || "",
+    payment_notes: row.payment_notes || "",
+    invoice_email_sent: row.invoice_email_sent || 0,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -365,6 +397,8 @@ function serveRow(row: Record<string, unknown>, db?: Db, role: "admin" | "server
     case_number: row.case_number,
     caseName: row.case_name,
     case_name: row.case_name,
+    eventId: row.event_id || row.id,
+    event_id: row.event_id || row.id,
     recipientId: row.recipient_id || "",
     recipient_id: row.recipient_id || "",
     personBeingServed: row.person_being_served || "",
@@ -403,8 +437,16 @@ function serveRow(row: Record<string, unknown>, db?: Db, role: "admin" | "server
     result_detail: row.result_detail || "",
     physicalDescription: row.physical_description || "",
     physical_description: row.physical_description || "",
-    serviceMethod: row.service_method || "",
-    service_method: row.service_method || "",
+    serviceMethod: (row.service_method as string) || "",
+    service_method: (row.service_method as string) || "",
+    postingLocation: (row.posting_location as string) || "",
+    posting_location: (row.posting_location as string) || "",
+    entityName: (row.entity_name as string) || "",
+    entity_name: (row.entity_name as string) || "",
+    corporateAgent: (row.entity_name as string) || "",
+    corporate_agent: (row.entity_name as string) || "",
+    recipientTitle: (row.recipient_title as string) || "",
+    recipient_title: (row.recipient_title as string) || "",
     attemptHash: row.attempt_hash || "",
     attempt_hash: row.attempt_hash || "",
     accuracyMeters: Number(row.accuracy_meters || 0),
@@ -681,6 +723,15 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       createdAt
     );
     const row = db.query("SELECT * FROM clients WHERE id = ?").get(id) as Record<string, unknown>;
+    logAuditEvent(db, {
+      event_type: "client.create",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+      details: { name: body.name },
+    });
     return c.json(clientRow(row), 201);
   });
 
@@ -710,6 +761,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       name ?? "", email ?? "", additional ?? "[]", phone ?? "", address ?? "", notes ?? "", nowIso(), id
     );
     const row = db.query("SELECT * FROM clients WHERE id = ?").get(id) as Record<string, unknown>;
+    logAuditEvent(db, {
+      event_type: "client.update",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+    });
     return c.json(clientRow(row));
   });
 
@@ -758,6 +817,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     db.query("DELETE FROM clients WHERE id = ?").run(id);
+    logAuditEvent(db, {
+      event_type: "client.delete",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+    });
     return c.json({ success: true });
   });
 
@@ -821,8 +888,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       id = existing.id;
     } else {
       db.query(
-        `INSERT INTO client_cases (id, client_id, case_number, case_name, court_name, plaintiff_petitioner, defendant_respondent, home_address, work_address, documents_to_serve, notes, service_requirements, contact_info, status, assigned_to, assigned_name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO client_cases (id, client_id, case_number, case_name, court_name, plaintiff_petitioner, defendant_respondent, home_address, work_address, documents_to_serve, notes, service_requirements, contact_info, status, assigned_to, assigned_name, quoted_fee, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.client_id,
@@ -840,15 +907,105 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         body.status || "Open",
         assignedTo,
         assignedName,
+        body.quoted_fee ? String(body.quoted_fee) : "",
         ts,
         ts
       );
       // Touch client record so latest_activity updates instantly
       db.query("UPDATE clients SET updated_at = ? WHERE id = ?").run(ts, body.client_id);
+
+      const attachInvoiceId = String(
+        body.attach_invoice_id || body.attachInvoiceId || body.invoice_id || "",
+      ).trim();
+      const attachInvoiceNumber = String(
+        body.attach_invoice_number || body.attachInvoiceNumber || body.invoice_number || "",
+      ).trim();
+      if (body.create_invoice && (attachInvoiceId || attachInvoiceNumber)) {
+        return c.json({
+          error: "Use create_invoice OR attach_invoice_id, not both",
+        }, 400);
+      }
+
+      if (body.create_invoice && body.quoted_fee) {
+        const cl = db.query("SELECT * FROM clients WHERE id = ?").get(body.client_id) as Record<string, unknown> | null;
+        if (cl && cl.email) {
+          try {
+            const inv = await createHelcimInvoice({
+              caseNumber: body.case_number,
+              customerName: String(cl.company_name || cl.contact_name || cl.name || "Client"),
+              customerEmail: String(cl.email),
+              amount: Number(body.quoted_fee),
+              notes: body.notes || "",
+            });
+            persistInvoiceOnCase(db, id, inv, Number(body.quoted_fee));
+            if (body.email_invoice) {
+              await maybeEmailInvoice({
+                to: String(cl.email),
+                caseNumber: body.case_number,
+                amount: Number(body.quoted_fee),
+                payUrl: inv.payUrl,
+                clientName: String(cl.contact_name || cl.company_name || cl.name || "Client"),
+              });
+            }
+          } catch (err) {
+            console.error("Auto invoice creation failed on case create:", err);
+          }
+        }
+      } else if (attachInvoiceId || attachInvoiceNumber) {
+        try {
+          const invoice = await fetchHelcimInvoice({
+            invoiceId: attachInvoiceId,
+            invoiceNumber: attachInvoiceNumber,
+          });
+          if (invoice.status === "CANCELLED") {
+            return c.json({ error: "Cannot attach a cancelled Helcim invoice" }, 400);
+          }
+          const conflictCaseId = findCaseByInvoiceId(db, invoice.invoiceId, id);
+          if (conflictCaseId) {
+            return c.json({
+              error: "Invoice already attached to another case",
+              conflictCaseId,
+            }, 409);
+          }
+          const quotedFee = Number(body.quoted_fee || invoice.amount || 0);
+          if (!quotedFee || quotedFee <= 0) {
+            return c.json({ error: "quoted_fee must be a positive number for invoice attach" }, 400);
+          }
+          attachInvoiceOnCase(db, id, invoice, quotedFee);
+        } catch (err: any) {
+          console.error("Attach invoice on case create failed:", err);
+          return c.json({ error: err.message || "Failed to attach invoice on case create" }, 500);
+        }
+      }
     }
 
-    // Auto-create serve_recipient if defendant_respondent provided
-    if (body.defendant_respondent && body.defendant_respondent.trim()) {
+    // Auto-create or sync serve_recipients if recipients list or defendant_respondent provided
+    if (Array.isArray(body.recipients) && body.recipients.length > 0) {
+      for (const rec of body.recipients) {
+        const name = typeof rec === "string" ? rec.trim() : String(rec?.full_name || rec?.name || "").trim();
+        if (!name) continue;
+        const role = (typeof rec === "object" && rec?.role) ? String(rec.role).trim() : "Defendant / Respondent";
+        const home = (typeof rec === "object" && rec?.home_address) ? String(rec.home_address).trim() : (body.home_address || "");
+        const work = (typeof rec === "object" && rec?.work_address) ? String(rec.work_address).trim() : (body.work_address || "");
+        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name);
+        if (!existingRec) {
+          db.query(
+            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            "rec_" + newId().slice(0, 16),
+            id,
+            body.client_id,
+            name,
+            role,
+            home,
+            work,
+            ts,
+            ts
+          );
+        }
+      }
+    } else if (body.defendant_respondent && body.defendant_respondent.trim()) {
       const recId = "rec_" + id.slice(0, 16);
       const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND full_name = ?").get(id, body.defendant_respondent.trim());
       if (!existingRec) {
@@ -874,7 +1031,16 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     const row = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
-    return c.json(caseRow(row), existing ? 200 : 201);
+    logAuditEvent(db, {
+      event_type: existing ? "case.update" : "case.create",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+      details: { case_number: body.case_number },
+    });
+    return c.json(caseRow(row, user.role === "admin" ? "admin" : "server"), existing ? 200 : 201);
   });
 
   // Case status update (used to open/close cases)
@@ -982,7 +1148,33 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       invalidateExecutionsForCase(db, id, "material_change");
     }
 
-    if (body.defendant_respondent && body.defendant_respondent.trim()) {
+    if (Array.isArray(body.recipients) && body.recipients.length > 0) {
+      for (const rec of body.recipients) {
+        const name = typeof rec === "string" ? rec.trim() : String(rec?.full_name || rec?.name || "").trim();
+        if (!name) continue;
+        const role = (typeof rec === "object" && rec?.role) ? String(rec.role).trim() : "Defendant / Respondent";
+        const home = (typeof rec === "object" && rec?.home_address) ? String(rec.home_address).trim() : (homeAddress || "");
+        const work = (typeof rec === "object" && rec?.work_address) ? String(rec.work_address).trim() : (workAddress || "");
+        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name);
+        if (!existingRec) {
+          const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
+          db.query(
+            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            "rec_" + newId().slice(0, 16),
+            id,
+            caseObj.client_id,
+            name,
+            role,
+            home,
+            work,
+            ts,
+            ts
+          );
+        }
+      }
+    } else if (body.defendant_respondent && body.defendant_respondent.trim()) {
       const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND full_name = ?").get(id, body.defendant_respondent.trim());
       if (!existingRec) {
         const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
@@ -1017,6 +1209,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     db.query("DELETE FROM case_assignment_events WHERE case_id = ?").run(id);
     db.query("DELETE FROM serve_recipients WHERE case_id = ?").run(id);
     db.query("DELETE FROM client_cases WHERE id = ?").run(id);
+    logAuditEvent(db, {
+      event_type: "case.delete",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+    });
     return c.json({ success: true });
   });
 
@@ -1204,15 +1404,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         params.push(recipientId);
       }
       if (caseId) {
-        conditions.push(`(
-          s.case_id = ?
-          OR (
-            (s.case_id IS NULL OR s.case_id = '')
-            AND s.case_number = (SELECT case_number FROM client_cases WHERE id = ?)
-            AND s.client_id = (SELECT client_id FROM client_cases WHERE id = ?)
-          )
-        )`);
-        params.push(caseId, caseId, caseId);
+        conditions.push(attemptBelongsToCaseSql("s."));
+        params.push(caseId, caseId, caseId, caseId);
       }
 
       if (conditions.length > 0) {
@@ -1242,8 +1435,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       params.push(recipientId);
     }
     if (caseId) {
-      conditions.push("(case_number IN (SELECT case_number FROM client_cases WHERE id = ?) OR recipient_id IN (SELECT id FROM serve_recipients WHERE case_id = ?))");
-      params.push(caseId, caseId);
+      conditions.push(attemptBelongsToCaseSql());
+      params.push(caseId, caseId, caseId, caseId);
     }
 
     if (conditions.length > 0) {
@@ -1341,7 +1534,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       // Prefer active case row for this client+case # when caller omitted UUID
       const activeCase = db.query(
         `SELECT id FROM client_cases WHERE client_id = ? AND case_number = ?
-         AND LOWER(COALESCE(status,'')) NOT IN ('closed','completed')
+         AND LOWER(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')
          ORDER BY updated_at DESC, created_at DESC LIMIT 1`
       ).get(clientId, caseNum) as { id: string } | null;
       const anyCase = activeCase || (db.query(
@@ -1394,6 +1587,12 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const accuracyMeters = Number(body.accuracy_meters || body.accuracyMeters || 0);
     const deviceInfo = String(body.device_info || body.deviceInfo || c.req.header("user-agent") || "").slice(0, 255);
     const attemptHash = createHash("sha256").update(`${id}|${caseNum}|${timestamp}|${coordinates}|${user.id}|${serveStatus}`).digest("hex");
+    const postingLocation = String(body.postingLocation || body.posting_location || "");
+    const entityName = String(body.entityName || body.entity_name || body.corporateAgent || body.corporate_agent || "");
+    const recipientTitle = String(body.recipientTitle || body.recipient_title || "");
+    // Siblings of one physical encounter pass the same eventId. Unset means
+    // this row is its own encounter, matching the self-event backfill.
+    const eventId = String(body.eventId || body.event_id || "").trim() || id;
 
     db.query(
       `INSERT INTO serve_attempts (
@@ -1401,8 +1600,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         status, notes, address, service_address, coordinates, image_url, image_file_id,
         thumbnail_url, thumbnail_file_id, image_data, timestamp, occurred_at, entered_at,
         attempt_number, attempt_type, gps_source, contact_person, is_manual, result_detail, physical_description, case_id,
-        service_method, accepted_by, logged_by, logged_by_name, attempt_hash, accuracy_meters, device_info
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        service_method, accepted_by, logged_by, logged_by_name, attempt_hash, accuracy_meters, device_info,
+        posting_location, entity_name, recipient_title, event_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       clientId,
@@ -1438,12 +1638,17 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       user.displayName || user.username || "",
       attemptHash,
       accuracyMeters,
-      deviceInfo
+      deviceInfo,
+      postingLocation,
+      entityName,
+      recipientTitle,
+      eventId
     );
 
     // Assign sequential attempt_number for this person/job (ignore client-supplied number)
     renumberAttemptPeers(db, {
       recipientId,
+      caseId,
       clientId,
       caseNumber: caseNum,
       personBeingServed,
@@ -1454,8 +1659,19 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       invalidateExecutionsForCase(db, caseId, "material_change");
     }
 
-    // Auto-update case status to 'Served' when a successful serve is recorded
-    const isSuccessful = serveStatus === "served" || attemptType === "served" || Boolean(body.serviceMethod || body.service_method);
+    // Auto-update case status to 'Served' only for an actual successful serve.
+    // The capture form defaults serviceMethod to "personal" even when Result is
+    // Unsuccessful (status=failed). Presence of a method is NOT success.
+    const statusNorm = String(serveStatus || "").toLowerCase().trim();
+    const isUnsuccessful = [
+      "failed",
+      "unsuccessful",
+      "attempted",
+      "in progress",
+      "in-progress",
+      "unknown",
+    ].includes(statusNorm);
+    const isSuccessful = !isUnsuccessful && (statusNorm === "served" || statusNorm === "completed");
     if (caseId && isSuccessful) {
       db.query("UPDATE client_cases SET status = 'Served', updated_at = ? WHERE id = ?").run(nowIso(), caseId);
     }
@@ -1549,6 +1765,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           caseName: String(response.case_name || response.caseName || ""),
           status: String(response.status || ""),
           attemptType: String(response.attempt_type || response.attemptType || "physical"),
+          serviceMethod: String(response.service_method || response.serviceMethod || ""),
+          acceptedBy: String(response.accepted_by || response.acceptedBy || ""),
+          entityName: String(response.entity_name || response.entityName || response.corporate_agent || response.corporateAgent || ""),
+          recipientTitle: String(response.recipient_title || response.recipientTitle || ""),
+          postingLocation: String(response.posting_location || response.postingLocation || ""),
           occurredAt: String(response.occurred_at || response.occurredAt || response.timestamp || ""),
           serviceAddress: String(response.service_address || response.serviceAddress || ""),
           address: String(response.address || ""),
@@ -1563,6 +1784,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           personBeingServed: String(response.person_being_served || ""),
           caseName: String(response.case_name || ""),
           caseNumber: String(response.case_number || ""),
+          status: String(response.status || ""),
         });
 
         await sendEmail({
@@ -1618,6 +1840,16 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }).catch(() => {});
     });
 
+    logAuditEvent(db, {
+      event_type: "serve.create",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: String(id),
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+      details: { case_id: String(response.case_id || response.caseId || ""), case_number: String(response.case_number || "") },
+    });
+
     return c.json(response, 201);
   });
 
@@ -1649,6 +1881,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       caseName: String(response.case_name || ""),
       status: String(response.status || ""),
       attemptType: String(response.attempt_type || "physical"),
+      serviceMethod: String(response.service_method || response.serviceMethod || ""),
+      acceptedBy: String(response.accepted_by || response.acceptedBy || ""),
+      entityName: String(response.entity_name || response.entityName || response.corporate_agent || response.corporateAgent || ""),
+      recipientTitle: String(response.recipient_title || response.recipientTitle || ""),
+      postingLocation: String(response.posting_location || response.postingLocation || ""),
       occurredAt: String(response.occurred_at || response.timestamp || ""),
       serviceAddress: String(response.service_address || ""),
       address: String(response.address || ""),
@@ -1666,6 +1903,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         personBeingServed: String(response.person_being_served || ""),
         caseName: String(response.case_name || ""),
         caseNumber: String(response.case_number || ""),
+        status: String(response.status || ""),
       }),
       html: emailHtml,
     });
@@ -1689,12 +1927,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       return c.json({ error: "Serve attempt not found" }, 404);
     }
 
-    // Field servers can only edit attempts on their assigned cases
     if (user.role === "server") {
-      const caseObj = db.query("SELECT assigned_to FROM client_cases WHERE id = ?").get(existing.case_id) as { assigned_to?: string } | null;
-      if (!caseObj || (String(caseObj.assigned_to || "") !== user.id && String(caseObj.assigned_to || "") !== user.username)) {
-        return c.json({ error: "Forbidden: you can only edit attempts on your assigned cases" }, 403);
-      }
+      return c.json({ error: "Forbidden: Field servers cannot edit serve attempts" }, 403);
     }
 
     const updates: string[] = [];
@@ -1728,6 +1962,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       service_method: "service_method",
       acceptedBy: "accepted_by",
       accepted_by: "accepted_by",
+      postingLocation: "posting_location",
+      posting_location: "posting_location",
+      entityName: "entity_name",
+      entity_name: "entity_name",
+      corporateAgent: "entity_name",
+      corporate_agent: "entity_name",
+      recipientTitle: "recipient_title",
+      recipient_title: "recipient_title",
       address: "address",
       serviceAddress: "service_address",
       service_address: "service_address",
@@ -1771,6 +2013,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     // Renumber if peer scope keys or occurred_at may have changed
     renumberAttemptPeers(db, {
       recipientId: row.recipient_id as string,
+      caseId: row.case_id as string,
       clientId: row.client_id as string,
       caseNumber: row.case_number as string,
       personBeingServed: row.person_being_served as string,
@@ -1783,6 +2026,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     const refreshed = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown>;
+    logAuditEvent(db, {
+      event_type: "serve.update",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+    });
     return c.json(serveRow(refreshed, db, user.role === "server" ? "server" : "admin"));
   });
 
@@ -1826,6 +2077,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       clientId: row.client_id,
       caseNumber: row.case_number,
       personBeingServed: row.person_being_served,
+    });
+    logAuditEvent(db, {
+      event_type: "serve.delete",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
     });
     return c.json({ success: true });
   });
@@ -2078,18 +2337,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const role = user.role === "admin" ? "admin" : "server";
     const clientObj = db.query("SELECT * FROM clients WHERE id = ?").get(caseObj.client_id) as Record<string, unknown> | null;
     const recipients = db.query("SELECT * FROM serve_recipients WHERE case_id = ?").all(caseObj.id) as Record<string, unknown>[];
-    // Prefer this case UUID; fall back to same client+case # for legacy rows with empty case_id.
     const serves = db
-      .query(
-        `SELECT * FROM serve_attempts
-         WHERE id IN (
-           SELECT id FROM serve_attempts WHERE case_id != '' AND case_id = ?
-           UNION
-           SELECT id FROM serve_attempts WHERE case_number = ? AND client_id = ?
-         )
-         ORDER BY COALESCE(occurred_at, timestamp) ASC`
-      )
-      .all(String(caseObj.id), caseObj.case_number, caseObj.client_id) as Record<string, unknown>[];
+      .query(ATTEMPTS_FOR_CASE_SQL)
+      .all(...attemptsForCaseParams(String(caseObj.id))) as Record<string, unknown>[];
 
     // Assigned server identity is authoritative for the left signature block.
     let assignedServer: Record<string, unknown> | null = null;
@@ -2183,7 +2433,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       const activeCases = db
         .query(
           `SELECT id, updated_at, created_at FROM client_cases
-           WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed')`
+           WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')`
         )
         .all(id) as { id: string; updated_at?: string; created_at?: string }[];
 
@@ -2272,7 +2522,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       (db
         .query(
           `SELECT COUNT(*) as c FROM client_cases
-           WHERE (assigned_to = '' OR assigned_to IS NULL) AND lower(COALESCE(status,'')) NOT IN ('closed','completed')`
+           WHERE (assigned_to = '' OR assigned_to IS NULL) AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')`
         )
         .get() as { c: number }).c || 0
     );
@@ -2420,26 +2670,49 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     const requestedKind = String(body.affidavitKind || body.affidavit_kind || "").trim();
+    const recipientId = String(body.recipientId || body.recipient_id || "").trim();
     const kind = inferAffidavitKind(bundle.attempts, requestedKind);
 
-    const v = validateSignable(db, String(bundle.caseObj.id), undefined, kind);
+    // With more than one legal recipient there is no safe default: silently
+    // picking the first is what let an LLC inherit its agent's personal serve.
+    if (!recipientId && bundle.recipients.length > 1) {
+      return c.json(
+        {
+          error: "recipientId is required: this case has multiple recipients — choose who this affidavit is for",
+          ready: false,
+          recipientRequired: true,
+          recipients: bundle.recipients.map((r) => ({ id: r.id, full_name: r.full_name, role: r.role || "" })),
+        },
+        400
+      );
+    }
+
+    const targetRec = resolveTargetRecipient(bundle, recipientId);
+    if (recipientId && !targetRec) {
+      return c.json({ error: "Recipient does not belong to this case", ready: false }, 404);
+    }
+
+    const v = validateSignable(db, String(bundle.caseObj.id), undefined, kind, recipientId || undefined);
     if (!v.ok) return c.json({ error: v.error, ready: false }, 400);
 
     const sig = activeSignature(db, String(bundle.assignedServer!.id));
-    const snapshot = buildSourceSnapshot(bundle, sig, kind);
+    const snapshot = buildSourceSnapshot(bundle, sig, kind, undefined, recipientId || undefined);
     const sourceHash = sha256Hex(snapshot);
 
-    const lastSuccessful = latestSuccessfulServe(bundle.attempts) as
-      | { service_method?: string; accepted_by?: string }
-      | null;
+    const lastSuccessful = latestSuccessfulServe(
+      bundle.attempts,
+      String(targetRec?.id || ""),
+      String(targetRec?.full_name || "")
+    ) as { service_method?: string; accepted_by?: string } | null;
     const assigned = bundle.assignedServer!;
-    const active = activeExecution(db, String(bundle.caseObj.id));
+    const active = activeExecution(db, String(bundle.caseObj.id), String(targetRec?.id || "") || undefined);
 
     return c.json({
       ready: true,
       caseId: bundle.caseObj.id,
       caseNumber: bundle.caseObj.case_number,
       sourceHash,
+      recipientId: targetRec?.id || null,
       assignedServer: {
         id: assigned.id,
         legalName: assigned.legal_name || "",
@@ -2454,12 +2727,17 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         caseNumber: String(bundle.caseObj.case_number || ""),
         caseName: String(bundle.caseObj.case_name || ""),
         personServed: String(
-          bundle.recipients[0]?.full_name || bundle.caseObj.defendant_respondent || bundle.caseObj.case_name || ""
+          targetRec?.full_name || bundle.recipients[0]?.full_name || bundle.caseObj.defendant_respondent || bundle.caseObj.case_name || ""
         ),
         documents: String(bundle.caseObj.documents_to_serve || ""),
         attemptsCount: bundle.attempts.length,
         method: String(lastSuccessful?.service_method || ""),
-        methodRecorded: !methodBlockingError(bundle.attempts, kind),
+        methodRecorded: !methodBlockingError(
+          bundle.attempts,
+          kind,
+          String(targetRec?.id || ""),
+          String(targetRec?.full_name || "")
+        ),
         acceptedBy: String(lastSuccessful?.accepted_by || ""),
       },
       executionStatus: active ? "signed_not_notarized" : "none",
@@ -2472,6 +2750,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const caseKey = c.req.param("id");
     const body = await c.req.json().catch(() => ({}));
     const requestedKind = String(body.affidavitKind || body.affidavit_kind || "").trim();
+    const recipientId = String(body.recipientId || body.recipient_id || "").trim();
     const venueCounty = String(body.notaryCounty || body.notary_county || "").trim().toUpperCase();
     const venueState = String(body.notaryState || body.notary_state || "OKLAHOMA").trim().toUpperCase() || "OKLAHOMA";
 
@@ -2488,18 +2767,36 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       return c.json({ error: "Forbidden: you can only sign affidavits assigned to you" }, 403);
     }
 
-    const v = validateSignable(db, String(bundle.caseObj.id), undefined, kind);
+    // A sworn statement names one recipient. Refuse to guess which one.
+    if (!recipientId && bundle.recipients.length > 1) {
+      return c.json(
+        {
+          error: "recipientId is required: this case has multiple recipients — choose who this affidavit is for",
+          recipientRequired: true,
+          recipients: bundle.recipients.map((r) => ({ id: r.id, full_name: r.full_name, role: r.role || "" })),
+        },
+        400
+      );
+    }
+    const targetRec = resolveTargetRecipient(bundle, recipientId);
+    if (recipientId && !targetRec) {
+      return c.json({ error: "Recipient does not belong to this case" }, 404);
+    }
+
+    const v = validateSignable(db, String(bundle.caseObj.id), undefined, kind, recipientId || undefined);
     if (!v.ok) return c.json({ error: v.error }, 400);
 
     const sig = v.signature!;
     const snapshot = buildSourceSnapshot(v.bundle!, sig, kind, {
       state: venueState || "OKLAHOMA",
       county: venueCounty,
-    });
+    }, recipientId || undefined);
     const sourceHash = sha256Hex(snapshot);
     const mode: "server_self" | "admin_on_behalf" =
       user.role === "admin" && !isSelf ? "admin_on_behalf" : "server_self";
-    const prev = latestExecution(db, String(bundle.caseObj.id));
+    // Version chains are per recipient: signing the LLC does not supersede the
+    // affidavit already sworn for the individual.
+    const prev = latestExecution(db, String(bundle.caseObj.id), String(targetRec?.id || "") || undefined);
 
     // First create a temporary execution record so renderExecutionHtml can read it
     const tempExecution = createExecution(db, {
@@ -2527,6 +2824,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
   app.get("/api/affidavits/:id/render", async (c: Context) => {
     const user = getUserOrAdmin(c);
     const caseKey = c.req.param("id");
+    const recipientId = c.req.query("recipientId") || c.req.query("recipient_id") || "";
     const bundle = loadCaseBundle(db, caseKey);
     if (!bundle) return c.json({ error: "Case not found" }, 404);
 
@@ -2537,10 +2835,22 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       return c.json({ error: "Forbidden: only the assigned server or an administrator can render this affidavit" }, 403);
     }
 
-    const exec = activeExecution(db, String(bundle.caseObj.id));
+    const targetRec = resolveTargetRecipient(bundle, recipientId);
+    if (recipientId && !targetRec) {
+      return c.json({ error: "Recipient does not belong to this case" }, 404);
+    }
+
+    // Strict: with a recipient named, only that recipient's own signed
+    // execution may be returned — never a co-recipient's affidavit.
+    const exec = activeExecution(db, String(bundle.caseObj.id), recipientId || undefined);
     if (!exec) {
+      const who = recipientId ? ` for ${String(targetRec?.full_name || "this recipient")}` : "";
       return c.json(
-        { error: "No active signed affidavit for this case — sign the affidavit first", status: "none" },
+        {
+          error: `No active signed affidavit${who} — sign the affidavit first`,
+          status: "none",
+          recipientId: recipientId || null,
+        },
         409
       );
     }
@@ -2596,13 +2906,19 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         .query(`${casesQuery} WHERE (c.assigned_to = ? OR c.assigned_to = ?) ORDER BY c.created_at DESC`)
         .all(user.id, user.username) as Record<string, unknown>[];
     } else {
-      rows = db.query(`${casesQuery} ORDER BY c.created_at DESC`).all() as Record<string, unknown>[];
+      rows = db
+        .query(
+          `${casesQuery} WHERE c.assigned_to IS NOT NULL AND TRIM(c.assigned_to) != '' ORDER BY c.created_at DESC`
+        )
+        .all() as Record<string, unknown>[];
     }
 
     const queue: Array<Record<string, unknown>> = [];
     for (const r of rows) {
       const caseId = String(r.id);
       if (signedCaseIds.has(caseId)) continue;
+      const assignedTo = String(r.assigned_to || "").trim();
+      if (!assignedTo) continue;
 
       const status = String(r.status || "").toLowerCase();
       const lastType = String(r.last_service_type || "").toLowerCase();
@@ -2794,6 +3110,15 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     );
 
     const row = db.query("SELECT * FROM client_documents WHERE id = ?").get(id) as Record<string, unknown>;
+    logAuditEvent(db, {
+      event_type: "docs.upload",
+      actor_user_id: user.id,
+      actor_role: user.role,
+      target_resource_id: id,
+      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+      user_agent: c.req.header("user-agent") || "",
+      details: { case_id: String(caseObj.id), file_name: cleanFileName },
+    });
     return c.json(documentRow(row), 201);
   });
 
@@ -3204,6 +3529,198 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       db.query("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?").run(endpoint, user.id);
     }
     return c.json({ success: true });
+  });
+
+  // --- Payment & Helcim Invoice Routes ---
+  app.post("/api/cases/:id/invoice", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user || user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => ({}));
+    const caseRowDb = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown> | null;
+    if (!caseRowDb) {
+      return c.json({ error: "Case not found" }, 404);
+    }
+    if (caseRowDb.invoice_id) {
+      return c.json({ error: "Conflict: Invoice already attached to this case" }, 409);
+    }
+    const quotedFee = Number(body.quoted_fee || caseRowDb.quoted_fee || 0);
+    if (!quotedFee || quotedFee <= 0) {
+      return c.json({ error: "quoted_fee must be a positive number" }, 400);
+    }
+    const cl = db.query("SELECT * FROM clients WHERE id = ?").get(caseRowDb.client_id as string) as Record<string, unknown> | null;
+    if (!cl || !cl.email) {
+      return c.json({ error: "Client email is required for invoice creation" }, 400);
+    }
+    try {
+      const inv = await createHelcimInvoice({
+        caseNumber: String(caseRowDb.case_number),
+        customerName: String(cl.company_name || cl.contact_name || cl.name || "Client"),
+        customerEmail: String(cl.email),
+        amount: quotedFee,
+        notes: String(body.notes || caseRowDb.notes || ""),
+      });
+      persistInvoiceOnCase(db, id, inv, quotedFee);
+      if (body.email_invoice) {
+        await maybeEmailInvoice({
+          to: String(cl.email),
+          caseNumber: String(caseRowDb.case_number),
+          amount: quotedFee,
+          payUrl: inv.payUrl,
+          clientName: String(cl.contact_name || cl.company_name || cl.name || "Client"),
+        });
+      }
+      const updated = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
+      return c.json(caseRow(updated, "admin"), 200);
+    } catch (err: any) {
+      return c.json({ error: err.message || "Failed to create invoice" }, 500);
+    }
+  });
+
+  app.post("/api/cases/:id/invoice/attach", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user || user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => ({}));
+    const caseRowDb = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown> | null;
+    if (!caseRowDb) {
+      return c.json({ error: "Case not found" }, 404);
+    }
+    if (caseRowDb.invoice_id) {
+      return c.json({ error: "Conflict: Invoice already attached to this case" }, 409);
+    }
+
+    const invoiceId = String(body.invoice_id || body.invoiceId || "").trim();
+    const invoiceNumber = String(body.invoice_number || body.invoiceNumber || "").trim();
+    if (!invoiceId && !invoiceNumber) {
+      return c.json({ error: "invoice_id or invoice_number is required" }, 400);
+    }
+
+    try {
+      const invoice = await fetchHelcimInvoice({ invoiceId, invoiceNumber });
+      if (invoice.status === "CANCELLED") {
+        return c.json({ error: "Cannot attach a cancelled Helcim invoice" }, 400);
+      }
+
+      const conflictCaseId = findCaseByInvoiceId(db, invoice.invoiceId, id);
+      const quotedFee = Number(body.quoted_fee || invoice.amount || caseRowDb.quoted_fee || 0);
+
+      if (body.preview === true) {
+        return c.json({
+          preview: true,
+          ...buildAttachPreview(db, id, invoice, quotedFee > 0 ? quotedFee : undefined),
+          blocked: conflictCaseId ? "invoice_on_another_case" : null,
+        }, conflictCaseId ? 409 : 200);
+      }
+
+      if (conflictCaseId) {
+        return c.json({
+          error: "Invoice already attached to another case",
+          conflictCaseId,
+        }, 409);
+      }
+
+      if (!quotedFee || quotedFee <= 0) {
+        return c.json({ error: "quoted_fee must be a positive number" }, 400);
+      }
+
+      attachInvoiceOnCase(db, id, invoice, quotedFee);
+      const updated = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
+      return c.json(caseRow(updated, "admin"), 200);
+    } catch (err: any) {
+      return c.json({ error: err.message || "Failed to attach invoice" }, 500);
+    }
+  });
+
+  app.post("/api/cases/:id/invoice/resend-email", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user || user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const id = c.req.param("id");
+    const caseRowDb = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown> | null;
+    if (!caseRowDb) {
+      return c.json({ error: "Case not found" }, 404);
+    }
+    if (!caseRowDb.pay_url) {
+      return c.json({ error: "No invoice exists for this case" }, 400);
+    }
+    const cl = db.query("SELECT * FROM clients WHERE id = ?").get(caseRowDb.client_id as string) as Record<string, unknown> | null;
+    if (!cl || !cl.email) {
+      return c.json({ error: "Client email required" }, 400);
+    }
+    const res = await maybeEmailInvoice({
+      to: String(cl.email),
+      caseNumber: String(caseRowDb.case_number),
+      amount: Number(caseRowDb.quoted_fee || 0),
+      payUrl: String(caseRowDb.pay_url),
+      clientName: String(cl.contact_name || cl.company_name || cl.name || "Client"),
+    });
+    return c.json({ ok: true, success: true, sent: res.sent, skipped: res.skipped });
+  });
+
+  app.post("/api/cases/:id/mark-paid", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user || user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => ({}));
+    const caseRowDb = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown> | null;
+    if (!caseRowDb) {
+      return c.json({ error: "Case not found" }, 404);
+    }
+    const paidAt = body.paid_at || nowIso();
+    const method = body.payment_method || "manual";
+    const notes = body.payment_notes || "";
+    db.query(
+      `UPDATE client_cases
+       SET payment_status = 'PAID', paid_at = ?, payment_method = ?, payment_notes = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(paidAt, method, notes, nowIso(), id);
+    const updated = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
+    return c.json(caseRow(updated, "admin"), 200);
+  });
+
+  app.post("/api/cases/:id/mark-unpaid", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (!user || user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const id = c.req.param("id");
+    const caseRowDb = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown> | null;
+    if (!caseRowDb) {
+      return c.json({ error: "Case not found" }, 404);
+    }
+    db.query(
+      `UPDATE client_cases
+       SET payment_status = 'UNPAID', paid_at = '', payment_method = '', payment_notes = '', updated_at = ?
+       WHERE id = ?`
+    ).run(nowIso(), id);
+    const updated = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
+    return c.json(caseRow(updated, "admin"), 200);
+  });
+
+  app.post("/api/webhooks/helcim", async (c: Context) => {
+    const secret = c.req.header("x-helcim-webhook-secret");
+    const expectedSecret = process.env.HELCIM_WEBHOOK_SECRET || "staging-helcim-webhook-secret";
+    if (!secret || secret !== expectedSecret) {
+      return c.json({ error: "Unauthorized: Invalid webhook secret" }, 401);
+    }
+    const body = await c.req.json();
+    const invoiceId = body.invoice_id || body.invoiceId;
+    if (!invoiceId) {
+      return c.json({ error: "Missing invoice_id" }, 400);
+    }
+    const res = applyPaidWebhook(db, String(invoiceId), body.paid_at);
+    if (!res.ok) {
+      return c.json({ error: "Invoice not found on any case" }, 404);
+    }
+    return c.json({ ok: true, caseId: res.caseId, alreadyPaid: res.alreadyPaid });
   });
 }
 

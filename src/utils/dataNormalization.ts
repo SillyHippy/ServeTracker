@@ -51,7 +51,9 @@ export function normalizeServeData(serve: any): ServeAttemptData | null {
     accepted_by: serve.accepted_by || serve.acceptedBy || "",
     refused_to_identify: serve.refused_to_identify ?? serve.refusedToIdentify ?? false,
     posting_location: serve.posting_location || serve.postingLocation || "",
-    corporate_agent: serve.corporate_agent || serve.corporateAgent || "",
+    corporate_agent: serve.corporate_agent || serve.corporateAgent || serve.entity_name || serve.entityName || "",
+    entity_name: serve.entity_name || serve.entityName || serve.corporate_agent || serve.corporateAgent || "",
+    recipient_title: serve.recipient_title || serve.recipientTitle || "",
     original_filename: serve.original_filename || serve.originalFilename || "",
     photos: serve.photos || [],
     edits: serve.edits || [],
@@ -91,7 +93,9 @@ export function normalizeServeData(serve: any): ServeAttemptData | null {
     acceptedBy: serve.acceptedBy || serve.accepted_by || "",
     refusedToIdentify: serve.refusedToIdentify ?? serve.refused_to_identify ?? false,
     postingLocation: serve.postingLocation || serve.posting_location || "",
-    corporateAgent: serve.corporateAgent || serve.corporate_agent || "",
+    corporateAgent: serve.corporateAgent || serve.corporate_agent || serve.entityName || serve.entity_name || "",
+    entityName: serve.entityName || serve.entity_name || serve.corporateAgent || serve.corporate_agent || "",
+    recipientTitle: serve.recipientTitle || serve.recipient_title || "",
     personEntityBeingServed: serve.personEntityBeingServed || serve.person_entity_being_served || serve.person_being_served || serve.personBeingServed || "",
   };
 }

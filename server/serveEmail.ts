@@ -51,6 +51,11 @@ export interface ServeEmailInput {
   caseName?: string;
   status?: string;
   attemptType?: string;
+  serviceMethod?: string;
+  acceptedBy?: string;
+  entityName?: string;
+  recipientTitle?: string;
+  postingLocation?: string;
   occurredAt?: string;
   serviceAddress?: string;
   address?: string;
@@ -71,9 +76,21 @@ export interface ServeEmailInput {
   publicBase: string;
 }
 
+function methodLabel(method?: string): string {
+  if (!method) return "";
+  const m = method.toLowerCase().trim();
+  if (m === "personal") return "Personal Service";
+  if (m === "substituted-residence") return "Substitute (Residence)";
+  if (m === "substituted-business") return "Substitute (Business)";
+  if (m === "corporate") return "Corporate / Registered Agent";
+  if (m === "posting") return "Posting";
+  if (m === "non-service") return "Non-Service";
+  return method;
+}
+
 export function buildServeNotificationHtml(input: ServeEmailInput): string {
-  const statusText = String(input.status || "unknown").toUpperCase();
-  const typeText = String(input.attemptType || "physical").toUpperCase();
+  const isServed = String(input.status || "").toLowerCase() === "completed" || String(input.status || "").toLowerCase() === "served";
+  const statusText = isServed ? "SERVICE COMPLETE" : String(input.status || "ATTEMPT").toUpperCase();
   const occurredText = input.occurredAt
     ? new Date(String(input.occurredAt)).toLocaleString("en-US", { timeZone: "America/Chicago" })
     : new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
@@ -142,16 +159,19 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
   return `
           <div style="font-family:sans-serif;max-width:600px;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;padding:24px;background:#ffffff;">
             <div style="background:#1e293b;color:#ffffff;padding:16px;border-radius:6px;margin-bottom:20px;">
-              <h2 style="margin:0;font-size:20px;">${escapeHtml(statusText)} ATTEMPT</h2>
+              <h2 style="margin:0;font-size:20px;">${escapeHtml(statusText)}</h2>
               <p style="margin:4px 0 0 0;font-size:14px;color:#94a3b8;">Process Server Notification · Just Legal Solutions</p>
             </div>
 
             <div style="margin-bottom:20px;padding:16px;background:#f8fafc;border-radius:6px;">
-              <p style="margin:0 0 8px 0;"><strong>Recipient / Serving:</strong> <span style="font-size:16px;color:#0f172a;">${escapeHtml(input.personBeingServed) || "N/A"}</span></p>
+              <p style="margin:0 0 8px 0;"><strong>Recipient / Serving:</strong> <span style="font-size:16px;color:#0f172a;font-weight:bold;">${escapeHtml(input.personBeingServed) || "N/A"}</span></p>
+              ${input.entityName ? `<p style="margin:0 0 8px 0;"><strong>Entity Served:</strong> <strong>${escapeHtml(input.entityName)}</strong></p>` : ""}
+              ${input.acceptedBy ? `<p style="margin:0 0 8px 0;"><strong>Accepted By:</strong> <span style="color:#0f172a;font-weight:bold;">${escapeHtml(input.acceptedBy)}${input.recipientTitle ? ` (${escapeHtml(input.recipientTitle)})` : ""}</span></p>` : ""}
+              ${input.serviceMethod ? `<p style="margin:0 0 8px 0;"><strong>Method of Service:</strong> ${escapeHtml(methodLabel(input.serviceMethod))}</p>` : ""}
+              ${input.postingLocation ? `<p style="margin:0 0 8px 0;"><strong>Posting Location:</strong> ${escapeHtml(input.postingLocation)}</p>` : ""}
               <p style="margin:0 0 8px 0;"><strong>Case Number:</strong> ${escapeHtml(input.caseNumber)}</p>
               <p style="margin:0 0 8px 0;"><strong>Person / Matter:</strong> ${escapeHtml(input.caseName)}</p>
               <p style="margin:0 0 8px 0;"><strong>Date & Time:</strong> ${escapeHtml(occurredText)} CT</p>
-              <p style="margin:0 0 8px 0;"><strong>Attempt Type:</strong> ${escapeHtml(typeText)}</p>
               <p style="margin:0 0 8px 0;"><strong>Service Address:</strong> ${escapeHtml(input.serviceAddress) || escapeHtml(input.address) || "N/A"}</p>
               ${input.contactPerson ? `<p style="margin:0 0 8px 0;"><strong>Person Contacted:</strong> ${escapeHtml(input.contactPerson)}</p>` : ""}
               ${input.gpsSource === "captured" && coords ? `<p style="margin:0;"><strong>GPS:</strong> Hardware verified</p>${mapsHtml}` : mapsHtml}
@@ -177,8 +197,10 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
         `;
 }
 
-export function buildServeEmailSubject(input: { personBeingServed?: string; caseName?: string; caseNumber?: string }): string {
+export function buildServeEmailSubject(input: { personBeingServed?: string; caseName?: string; caseNumber?: string; status?: string }): string {
+  const isServed = String(input.status || "").toLowerCase() === "completed" || String(input.status || "").toLowerCase() === "served";
+  const prefix = isServed ? "Service Complete" : "Attempted Serve";
   const who = input.personBeingServed || input.caseName || "Serve Attempt";
   const caseNum = input.caseNumber || "";
-  return `Attempted Serve — ${who}${caseNum ? ` — ${caseNum}` : ""}`;
+  return `${prefix} — ${who}${caseNum ? ` — ${caseNum}` : ""}`;
 }

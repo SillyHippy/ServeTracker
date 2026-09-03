@@ -29,6 +29,10 @@ import ServerWorkloadCard from "@/components/ServerWorkloadCard";
 import SignatureEnrollmentDialog from "@/components/SignatureEnrollmentDialog";
 import SignatureStatusBadge from "@/components/SignatureStatusBadge";
 import FieldSheetButton from "@/components/FieldSheetButton";
+import { CaseDocumentsDialog } from "@/components/CaseDocumentsDialog";
+import { AffidavitSignatureQueue } from "@/components/AffidavitSignatureQueue";
+import AffidavitGenerator from "@/components/AffidavitGenerator";
+import NudgeServerDialog from "@/components/NudgeServerDialog";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { normalizeServeDataArray } from "@/utils/dataNormalization";
@@ -64,6 +68,12 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
   
   const [recentServes, setRecentServes] = useState<ServeAttemptData[]>([]);
   const [assignedCases, setAssignedCases] = useState<AssignedCase[]>([]);
+  const [activeDocCase, setActiveDocCase] = useState<{
+    caseId: string;
+    caseNumber: string;
+    defendantName?: string;
+    fieldSheetData?: any;
+  } | null>(null);
   const [editingServe, setEditingServe] = useState<ServeAttemptData | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -71,6 +81,10 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
   const [completedCount, setCompletedCount] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
   const [todayCount, setTodayCount] = useState(0);
+  const [unpaidSum, setUnpaidSum] = useState(0);
+  const [unpaidCount, setUnpaidCount] = useState(0);
+  const [paidSum, setPaidSum] = useState(0);
+  const [paidCount, setPaidCount] = useState(0);
   const [signatureEnrolled, setSignatureEnrolled] = useState(false);
   const [sigOpen, setSigOpen] = useState(false);
 
@@ -110,12 +124,38 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
           );
         }
       } else {
-        // Admin: fetch total clients
+        // Admin: fetch total clients & calculate A/R stats
         if (!propClients || propClients.length === 0) {
           const clientsRes = await api.getClients();
           if (clientsRes) setClientsCount(clientsRes.length);
         } else {
           setClientsCount(propClients.length);
+        }
+        try {
+          const allCases = await api.getCases();
+          if (Array.isArray(allCases)) {
+            let unSum = 0;
+            let unCnt = 0;
+            let pdSum = 0;
+            let pdCnt = 0;
+            for (const c of allCases) {
+              const fee = Number((c as any).quoted_fee || 0);
+              const pStatus = String((c as any).payment_status || "").toUpperCase();
+              if (pStatus === "UNPAID") {
+                unSum += fee;
+                unCnt += 1;
+              } else if (pStatus === "PAID") {
+                pdSum += fee;
+                pdCnt += 1;
+              }
+            }
+            setUnpaidSum(unSum);
+            setUnpaidCount(unCnt);
+            setPaidSum(pdSum);
+            setPaidCount(pdCnt);
+          }
+        } catch (cErr) {
+          console.error("Dashboard: Error fetching case financials:", cErr);
         }
       }
 
@@ -163,6 +203,14 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
         service_method: updatedServe.serviceMethod || updatedServe.service_method || "",
         acceptedBy: updatedServe.acceptedBy || updatedServe.accepted_by || "",
         accepted_by: updatedServe.acceptedBy || updatedServe.accepted_by || "",
+        postingLocation: updatedServe.postingLocation || updatedServe.posting_location || "",
+        posting_location: updatedServe.postingLocation || updatedServe.posting_location || "",
+        corporateAgent: updatedServe.corporateAgent || updatedServe.corporate_agent || updatedServe.entityName || updatedServe.entity_name || "",
+        corporate_agent: updatedServe.corporateAgent || updatedServe.corporate_agent || updatedServe.entityName || updatedServe.entity_name || "",
+        entityName: updatedServe.entityName || updatedServe.entity_name || updatedServe.corporateAgent || updatedServe.corporate_agent || "",
+        entity_name: updatedServe.entityName || updatedServe.entity_name || updatedServe.corporateAgent || updatedServe.corporate_agent || "",
+        recipientTitle: updatedServe.recipientTitle || updatedServe.recipient_title || "",
+        recipient_title: updatedServe.recipientTitle || updatedServe.recipient_title || "",
       });
       toast({ title: "Serve updated", description: "Attempt details updated successfully" });
       fetchDashboardData();
@@ -190,9 +238,16 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
   // FIELD SERVER VIEW (Restricted Mode)
   // ==========================================
   if (isServer) {
-    const activeAssigned = assignedCases.filter(
-      (c) => (c.status || "").toLowerCase() !== "closed" && (c.status || "").toLowerCase() !== "completed"
-    );
+    const activeAssigned = assignedCases.filter((c) => {
+      const s = (c.status || "").toLowerCase().replace(/[\s_]+/g, "-").trim();
+      return (
+        s !== "closed" &&
+        s !== "completed" &&
+        s !== "served" &&
+        s !== "non-service" &&
+        s !== "nonservice"
+      );
+    });
 
     return (
       <div className="w-full pb-16 touch-pan-y space-y-6">
@@ -236,6 +291,9 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Affidavits Awaiting Signature Queue */}
+        <AffidavitSignatureQueue />
 
         {/* Assigned Cases List */}
         <div>
@@ -282,7 +340,16 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                         <div className="flex items-start gap-1.5 text-slate-700">
                           <MapPin className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
                           <div>
-                            <span className="font-semibold text-slate-900">Service Address:</span> {c.home_address}
+                            <span className="font-semibold text-slate-900">Service Address:</span>{" "}
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.home_address)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:text-blue-800 underline font-medium"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {c.home_address}
+                            </a>
                           </div>
                         </div>
                       )}
@@ -290,7 +357,16 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                         <div className="flex items-start gap-1.5 text-slate-700">
                           <Navigation className="h-3.5 w-3.5 text-blue-500 shrink-0 mt-0.5" />
                           <div>
-                            <span className="font-semibold text-slate-900">Work/Alt:</span> {c.work_address}
+                            <span className="font-semibold text-slate-900">Work/Alt:</span>{" "}
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.work_address)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:text-blue-800 underline font-medium"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {c.work_address}
+                            </a>
                           </div>
                         </div>
                       )}
@@ -318,42 +394,108 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                         </p>
                       )}
                     </CardContent>
-                    <div className="p-3 border-t bg-white flex flex-col sm:flex-row justify-end gap-2">
-                      <FieldSheetButton
-                        className="w-full sm:w-auto h-10"
-                        data={{
-                          caseId: c.id,
-                          caseNumber: c.case_number,
-                          caseName: c.case_name,
-                          courtName: c.court_name,
-                          plaintiff: c.plaintiff_petitioner,
-                          defendant: c.defendant_respondent,
-                          documents: c.documents_to_serve,
-                          requirements: (c as any).service_requirements,
-                          contactInfo: (c as any).contact_info,
-                          notes: c.notes,
-                          homeAddress: c.home_address,
-                          workAddress: c.work_address,
-                          personToServe: targetName,
-                          assignedServer: isServer ? (user?.displayName || user?.username || "") : "",
-                          hideClient: isServer,
-                        }}
-                      />
-                      <Button
-                        size="sm"
-                        className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold h-10 px-4 flex items-center justify-center gap-1.5"
-                        onClick={() => {
-                          const params = new URLSearchParams();
-                          params.set("caseId", c.id);
-                          params.set("caseNumber", c.case_number);
-                          params.set("person", targetName);
-                          if (c.home_address) params.set("address", c.home_address);
-                          params.set("step", "confirm");
-                          navigate(`/new-serve?${params.toString()}`);
-                        }}
-                      >
-                        <Camera className="w-4 h-4" /> Log Attempt
-                      </Button>
+                    <div className="p-3 border-t bg-slate-50/60 dark:bg-slate-900/60 space-y-2">
+                      <div className="flex items-center gap-1.5 w-full min-w-0">
+                        <div className="flex-1 min-w-0">
+                          <FieldSheetButton
+                            label="Field Sheet"
+                            className="h-8.5 w-full justify-center px-1 text-[11px] font-semibold"
+                            data={{
+                              caseId: c.id,
+                              caseNumber: c.case_number,
+                              caseName: c.case_name,
+                              courtName: c.court_name,
+                              plaintiff: c.plaintiff_petitioner,
+                              defendant: c.defendant_respondent,
+                              documents: c.documents_to_serve,
+                              requirements: (c as any).service_requirements,
+                              contactInfo: (c as any).contact_info,
+                              notes: c.notes,
+                              homeAddress: c.home_address,
+                              workAddress: c.work_address,
+                              personToServe: targetName,
+                              assignedServer: isServer ? (user?.displayName || user?.username || "") : "",
+                              hideClient: isServer,
+                            }}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 min-w-0 h-8.5 justify-center px-1 text-[11px] font-semibold text-blue-700 bg-blue-50/70 hover:bg-blue-100 border-blue-200"
+                          onClick={() =>
+                            setActiveDocCase({
+                              caseId: c.id,
+                              caseNumber: c.case_number,
+                              defendantName: targetName,
+                              fieldSheetData: {
+                                caseId: c.id,
+                                caseNumber: c.case_number,
+                                caseName: c.case_name,
+                                courtName: c.court_name,
+                                plaintiff: c.plaintiff_petitioner,
+                                defendant: c.defendant_respondent,
+                                documents: c.documents_to_serve,
+                                requirements: (c as any).service_requirements,
+                                contactInfo: (c as any).contact_info,
+                                notes: c.notes,
+                                homeAddress: c.home_address,
+                                workAddress: c.work_address,
+                                personToServe: targetName,
+                                assignedServer: isServer ? (user?.displayName || user?.username || "") : "",
+                                hideClient: isServer,
+                              },
+                            })
+                          }
+                        >
+                          <FileText className="h-3.5 w-3.5 mr-1 text-blue-600 shrink-0" />
+                          <span className="truncate">Service Docs</span>
+                        </Button>
+                        <div className="flex-1 min-w-0">
+                          <AffidavitGenerator
+                            buttonClassName="h-8.5 w-full justify-center px-1 text-[11px] font-semibold"
+                            caseRecordId={c.id}
+                            client={{ id: "", name: "Client", email: "", phone: "", address: "", notes: "" }}
+                            serves={recentServes.filter(
+                              (s) => String(s.caseNumber || s.case_number || "") === String(c.case_number)
+                            )}
+                            caseNumber={c.case_number}
+                            caseName={c.case_name}
+                            courtName={c.court_name}
+                            plaintiffPetitioner={c.plaintiff_petitioner}
+                            defendantRespondent={c.defendant_respondent}
+                            homeAddress={c.home_address}
+                            workAddress={c.work_address}
+                            personBeingServed={targetName}
+                            documentsToServe={c.documents_to_serve || ""}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isAdmin && (
+                          <NudgeServerDialog
+                            caseId={c.id}
+                            caseNumber={c.case_number}
+                            serverName={(c as any).assigned_server_name || (c as any).assignedServerName || (c as any).assigned_to_name}
+                          />
+                        )}
+                        <Button
+                          size="sm"
+                          className="flex-1 h-11 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm flex items-center justify-center gap-1.5 shadow-xs"
+                          onClick={() => {
+                            const params = new URLSearchParams();
+                            params.set("caseId", c.id);
+                            params.set("caseNumber", c.case_number);
+                            params.set("person", targetName);
+                            if (c.home_address) params.set("address", c.home_address);
+                            params.set("step", "confirm");
+                            navigate(`/new-serve?${params.toString()}`);
+                          }}
+                        >
+                          <Camera className="w-4 h-4" /> Log Attempt
+                        </Button>
+                      </div>
                     </div>
                   </Card>
                 );
@@ -402,6 +544,19 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
             onSave={handleSaveServe}
           />
         )}
+
+        {activeDocCase && (
+          <CaseDocumentsDialog
+            caseId={activeDocCase.caseId}
+            caseNumber={activeDocCase.caseNumber}
+            defendantName={activeDocCase.defendantName}
+            fieldSheetData={activeDocCase.fieldSheetData}
+            open={Boolean(activeDocCase)}
+            onOpenChange={(open) => {
+              if (!open) setActiveDocCase(null);
+            }}
+          />
+        )}
       </div>
     );
   }
@@ -437,7 +592,7 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
       </div>
 
       {/* Top Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-6 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6">
         <Card className="border border-slate-200 dark:border-slate-800 shadow-xs">
           <CardContent className="pt-4 pb-4">
             <div className="flex items-center justify-between">
@@ -454,6 +609,32 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                 Manage Clients <ChevronRight className="ml-1 h-3 w-3" />
               </Button>
             </Link>
+          </CardContent>
+        </Card>
+
+        <Card className={`border shadow-xs ${unpaidCount > 0 ? "border-amber-300 bg-amber-50/40 dark:bg-amber-950/20" : "border-slate-200 dark:border-slate-800"}`}>
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-slate-500 text-xs font-semibold">Unpaid Invoices (A/R)</p>
+                <h2 className="text-2xl md:text-3xl font-bold text-amber-700 dark:text-amber-400 mt-0.5">
+                  ${unpaidSum.toFixed(2)}
+                </h2>
+              </div>
+              <div className="p-2.5 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300">
+                <AlertCircle className="h-5 w-5" />
+              </div>
+            </div>
+            <div className="flex items-center justify-between mt-2 pt-1 border-t border-amber-200/60 dark:border-amber-900/60">
+              <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                {unpaidCount} case{unpaidCount === 1 ? "" : "s"} awaiting payment
+              </span>
+              <Link to="/billing?filter=unpaid">
+                <Button variant="ghost" className="text-xs h-6 px-1.5 text-amber-800 font-bold hover:bg-amber-100">
+                  View Unpaid <ChevronRight className="h-3 w-3 ml-0.5" />
+                </Button>
+              </Link>
+            </div>
           </CardContent>
         </Card>
 
@@ -478,20 +659,24 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
           <CardContent className="pt-4 pb-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-slate-500 text-xs font-semibold">Recent Activity Loaded</p>
-                <h2 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-slate-100 mt-0.5">{recentServes.length}</h2>
+                <p className="text-slate-500 text-xs font-semibold">Total Collected</p>
+                <h2 className="text-2xl md:text-3xl font-bold text-emerald-700 dark:text-emerald-400 mt-0.5">
+                  ${paidSum.toFixed(2)}
+                </h2>
               </div>
               <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400">
-                <ClipboardList className="h-5 w-5" />
+                <CheckCircle className="h-5 w-5" />
               </div>
             </div>
-            <div className="mt-2 flex gap-2">
-              <div className="flex-1 flex items-center justify-center gap-1 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 p-1 text-[11px] font-semibold">
-                <CheckCircle className="h-3 w-3" /> {completedCount} Served
-              </div>
-              <div className="flex-1 flex items-center justify-center gap-1 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 p-1 text-[11px] font-semibold">
-                <AlertCircle className="h-3 w-3" /> {pendingCount} Failed
-              </div>
+            <div className="flex items-center justify-between mt-2 pt-1 border-t border-emerald-200/60 dark:border-emerald-900/60">
+              <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                {paidCount} paid invoice{paidCount === 1 ? "" : "s"} recorded
+              </span>
+              <Link to="/billing?filter=paid">
+                <Button variant="ghost" className="text-xs h-6 px-1.5 text-emerald-800 font-bold hover:bg-emerald-50">
+                  View Paid <ChevronRight className="h-3 w-3 ml-0.5" />
+                </Button>
+              </Link>
             </div>
           </CardContent>
         </Card>
@@ -499,6 +684,10 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
 
       {/* Field Server Workload (admin only) */}
       <ServerWorkloadCard />
+
+      <div className="mb-6">
+        <AffidavitSignatureQueue />
+      </div>
 
       {/* Recent Activity List */}
       <div className="space-y-4">
@@ -547,6 +736,19 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
             if (!open) setEditingServe(null);
           }}
           onSave={handleSaveServe}
+        />
+      )}
+
+      {activeDocCase && (
+        <CaseDocumentsDialog
+          caseId={activeDocCase.caseId}
+          caseNumber={activeDocCase.caseNumber}
+          defendantName={activeDocCase.defendantName}
+          fieldSheetData={activeDocCase.fieldSheetData}
+          open={Boolean(activeDocCase)}
+          onOpenChange={(open) => {
+            if (!open) setActiveDocCase(null);
+          }}
         />
       )}
     </div>

@@ -20,6 +20,8 @@ export interface AuthUser {
   displayName: string;
   role: "admin" | "server";
   mustChangePassword?: boolean;
+  onboardingStatus?: string;
+  signatureEnrolled?: boolean;
 }
 
 function hashToken(token: string) {
@@ -91,8 +93,88 @@ export function getUserRow(userId: string): Record<string, unknown> | null {
 
 const LAST_SEEN_THROTTLE_MS = 15 * 60 * 1000;
 
+export function extractTokenFromContext(c: Context): string | undefined {
+  let token = getCookie(c, SESSION_COOKIE);
+  if (!token) {
+    token = getCookie(c, "__Secure-better-auth.session_token");
+  }
+  if (!token) {
+    token = getCookie(c, "better-auth.session_token");
+  }
+  if (!token) {
+    const auth = c.req.header("Authorization");
+    if (auth?.startsWith("Bearer ")) {
+      token = auth.slice(7);
+    }
+  }
+  return token;
+}
+
 export function getSessionUser(token: string | undefined): AuthUser | null {
   if (!token || !db) return null;
+
+  // Better-Auth tokens in cookies are signed (token.signature)
+  const cleanBetterToken = token.split(".")[0];
+
+  // 1. Check Better-Auth session table
+  try {
+    const betterSessionRow = db
+      .query(
+        "SELECT s.userId, s.expiresAt, u.name, u.email, u.role FROM session s JOIN user u ON s.userId = u.id WHERE (s.token = ? OR s.token = ?) AND s.expiresAt > ?"
+      )
+      .get(cleanBetterToken, token, new Date().toISOString()) as {
+        userId?: string;
+        expiresAt?: string;
+        name?: string;
+        email?: string;
+        role?: string;
+      } | null;
+
+    if (betterSessionRow && betterSessionRow.userId) {
+      let existingLegacyUser = db
+        .query("SELECT id, is_active, must_change_password, onboarding_status, signature_asset_id FROM users WHERE id = ?")
+        .get(betterSessionRow.userId) as {
+          id: string;
+          is_active: number;
+          must_change_password: number;
+          onboarding_status: string;
+          signature_asset_id: string;
+        } | null;
+
+      if (existingLegacyUser && existingLegacyUser.is_active === 0) return null;
+
+      if (!existingLegacyUser) {
+        const now = new Date().toISOString();
+        db.run(
+          "INSERT OR IGNORE INTO users (id, username, password_hash, display_name, role, is_active, must_change_password, email, onboarding_status, created_at, updated_at) VALUES (?, ?, 'oauth_user', ?, ?, 1, 0, ?, 'pending', ?, ?)",
+          [
+            betterSessionRow.userId,
+            betterSessionRow.email || betterSessionRow.userId,
+            betterSessionRow.name || "User",
+            betterSessionRow.role || "server",
+            betterSessionRow.email || "",
+            now,
+            now,
+          ]
+        );
+        existingLegacyUser = db
+          .query("SELECT id, is_active, must_change_password, onboarding_status, signature_asset_id FROM users WHERE id = ?")
+          .get(betterSessionRow.userId) as any;
+      }
+
+      return {
+        id: betterSessionRow.userId,
+        username: betterSessionRow.email || betterSessionRow.userId,
+        displayName: betterSessionRow.name || "User",
+        role: (betterSessionRow.role as "admin" | "server") || "server",
+        mustChangePassword: existingLegacyUser?.must_change_password === 1,
+        onboardingStatus: existingLegacyUser?.onboarding_status || "pending",
+        signatureEnrolled: !!existingLegacyUser?.signature_asset_id,
+      };
+    }
+  } catch {
+    // If better-auth tables don't exist yet, continue to legacy sessions check
+  }
 
   const sessionRow = db
     .query(
@@ -115,7 +197,7 @@ export function getSessionUser(token: string | undefined): AuthUser | null {
   // Prefer the live users row (enforces is_active + must_change_password).
   if (sessionRow.user_id) {
     const userRow = db
-      .query("SELECT id, username, display_name, role, is_active, must_change_password FROM users WHERE id = ?")
+      .query("SELECT id, username, display_name, role, is_active, must_change_password, onboarding_status, signature_asset_id FROM users WHERE id = ?")
       .get(sessionRow.user_id) as {
         id: string;
         username: string;
@@ -123,6 +205,8 @@ export function getSessionUser(token: string | undefined): AuthUser | null {
         role: string;
         is_active: number;
         must_change_password: number;
+        onboarding_status: string;
+        signature_asset_id: string;
       } | null;
 
     if (userRow) {
@@ -133,6 +217,8 @@ export function getSessionUser(token: string | undefined): AuthUser | null {
         displayName: userRow.display_name,
         role: (userRow.role as "admin" | "server") || "server",
         mustChangePassword: userRow.must_change_password === 1,
+        onboardingStatus: userRow.onboarding_status || "pending",
+        signatureEnrolled: !!userRow.signature_asset_id,
       };
     }
   }
@@ -168,13 +254,7 @@ export function getAuthUser(c: Context): AuthUser | null {
   const fromContext = c.get("user") as AuthUser | undefined;
   if (fromContext) return fromContext;
 
-  let token = getCookie(c, SESSION_COOKIE);
-  if (!token) {
-    const auth = c.req.header("Authorization");
-    if (auth?.startsWith("Bearer ")) {
-      token = auth.slice(7);
-    }
-  }
+  const token = extractTokenFromContext(c);
   return getSessionUser(token);
 }
 
@@ -190,20 +270,15 @@ export function authMiddleware() {
       path === "/api/auth/verify-reset-token" ||
       path === "/api/auth/reset-password" ||
       path === "/api/push/vapid-public-key" ||
-      path.startsWith("/uploads/serves/")
+      path.startsWith("/api/auth/") ||
+      path.startsWith("/uploads/serves/") ||
+      path === "/api/webhooks/helcim"
     ) {
       return next();
     }
 
     if (path.startsWith("/api/")) {
-      let token = getCookie(c, SESSION_COOKIE);
-      if (!token) {
-        const auth = c.req.header("Authorization");
-        if (auth?.startsWith("Bearer ")) {
-          token = auth.slice(7);
-        }
-      }
-
+      const token = extractTokenFromContext(c);
       const user = getSessionUser(token);
       if (!user) {
         return c.json({ error: "Unauthorized" }, 401);
@@ -215,6 +290,7 @@ export function authMiddleware() {
           path === "/api/auth/me" ||
           path === "/api/auth/logout" ||
           path === "/api/me/change-password" ||
+          path === "/api/me/complete-onboarding" ||
           (path === "/api/me/profile" && c.req.method === "GET");
         if (!allowed) {
           return c.json(
@@ -464,14 +540,7 @@ export function handleLogout(c: Context) {
 }
 
 export function handleAuthMe(c: Context) {
-  let token = getCookie(c, SESSION_COOKIE);
-  if (!token) {
-    const auth = c.req.header("Authorization");
-    if (auth?.startsWith("Bearer ")) {
-      token = auth.slice(7);
-    }
-  }
-
+  const token = extractTokenFromContext(c);
   const user = getSessionUser(token);
   if (!user) {
     // A dead/revoked/expired session is an authentication failure, same as
@@ -538,7 +607,7 @@ function activeCaseCountFor(db: Database, userId: string): number {
   const row = db
     .query(
       `SELECT COUNT(*) as c FROM client_cases
-       WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed')`
+       WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')`
     )
     .get(userId) as { c: number };
   return Number(row?.c || 0);
@@ -583,6 +652,19 @@ function adminUserRow(db: Database, row: Record<string, unknown>) {
 
 function selfUserRow(db: Database, row: Record<string, unknown>) {
   const sig = signatureStatusFor(db, row);
+  let googleLinked = false;
+  let googleEmail = "";
+  try {
+    const acc = db.query("SELECT * FROM account WHERE userId = ? AND providerId = 'google'").get(String(row.id)) as any;
+    if (acc) {
+      googleLinked = true;
+    }
+    const uRow = db.query("SELECT email, image FROM user WHERE id = ?").get(String(row.id)) as any;
+    if (uRow?.email) {
+      googleEmail = uRow.email;
+    }
+  } catch {}
+
   return {
     id: row.id,
     username: row.username,
@@ -590,7 +672,8 @@ function selfUserRow(db: Database, row: Record<string, unknown>) {
     legalName: row.legal_name || "",
     role: row.role,
     email: row.email || "",
-    phone: row.phone || "",
+    phone: row.phone || row.phone_number || "",
+    phoneSmsEnabled: row.phone_sms_enabled !== 0,
     licenseNumber: row.license_number || "",
     licenseJurisdiction: row.license_jurisdiction || "",
     licenseExpiresAt: row.license_expires_at || "",
@@ -600,6 +683,8 @@ function selfUserRow(db: Database, row: Record<string, unknown>) {
     onboardingStatus: row.onboarding_status || "pending",
     mustChangePassword: row.must_change_password === 1 || row.must_change_password === true,
     signatureStatus: sig,
+    googleLinked,
+    googleEmail,
     lastLoginAt: row.last_login_at || "",
     lastActivityAt: row.last_activity_at || "",
     createdAt: row.created_at,
@@ -846,15 +931,15 @@ export function registerUserRoutes(app: any, database: Database) {
     return c.json({ success: true });
   });
 
-  // DELETE /api/users/:id - Delete a user (also cleans assignments + signature assets)
+  // DELETE /api/users/:id — hard-delete only if they never signed. Signed servers deactivate instead.
   app.delete("/api/users/:id", async (c: Context) => {
     const authUser = getAuthUser(c);
     if (!authUser || authUser.role !== "admin") {
       return c.json({ error: "Forbidden: Admin access required" }, 403);
     }
 
-    const id = c.req.param("id");
-    if (id === "usr_admin_default" || id === authUser.id) {
+    const id = String(c.req.param("id") || "");
+    if (!id || id === "usr_admin_default" || id === authUser.id) {
       return c.json({ error: "Cannot delete current or primary admin account" }, 400);
     }
 
@@ -863,7 +948,34 @@ export function registerUserRoutes(app: any, database: Database) {
       | null;
     if (!userRow) return c.json({ error: "User not found" }, 404);
 
-    // Release assigned cases and void signed affidavits.
+    const signedCountRow = database
+      .query(
+        `SELECT COUNT(*) AS c FROM affidavit_executions
+         WHERE assigned_server_id = ? OR signed_by_user_id = ? OR applied_by_user_id = ?`
+      )
+      .get(id, id, id) as { c: number };
+    const signedCount = Number(signedCountRow?.c || 0);
+
+    if (signedCount > 0) {
+      revokeSessionsForUser(id, String(authUser.id));
+      invalidateForServerChanges(database, id, "server_deactivated");
+      const cases = database.query("SELECT id FROM client_cases WHERE assigned_to = ?").all(id) as { id: string }[];
+      for (const cse of cases) {
+        database
+          .query("UPDATE client_cases SET assigned_to = '', assigned_name = '', updated_at = ? WHERE id = ?")
+          .run(nowIso(), cse.id);
+      }
+      try { database.query("DELETE FROM session WHERE userId = ?").run(id); } catch {}
+      database.query("UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?").run(nowIso(), id);
+      return c.json({
+        success: true,
+        deactivated: true,
+        signedAffidavits: signedCount,
+        message: "Server has signed affidavits and has been moved to deactivated status",
+      });
+    }
+
+    // Never signed: safe to remove login, assets, and the users row.
     const cases = database.query("SELECT id FROM client_cases WHERE assigned_to = ?").all(id) as { id: string }[];
     for (const cse of cases) {
       invalidateExecutionsForCase(database, cse.id, "server_removed");
@@ -888,11 +1000,13 @@ export function registerUserRoutes(app: any, database: Database) {
     database.query("DELETE FROM notifications WHERE user_id = ?").run(id);
     database.query("DELETE FROM password_reset_tokens WHERE user_id = ?").run(id);
     database.query("DELETE FROM user_signature_assets WHERE user_id = ?").run(id);
-    database.query("UPDATE affidavit_executions SET signed_by_user_id = '', applied_by_user_id = '' WHERE signed_by_user_id = ? OR applied_by_user_id = ?").run(id, id);
     database.query("UPDATE serve_attempts SET logged_by = '' WHERE logged_by = ?").run(id);
+    try { database.query("DELETE FROM session WHERE userId = ?").run(id); } catch {}
+    try { database.query("DELETE FROM account WHERE userId = ?").run(id); } catch {}
+    try { database.query("DELETE FROM user WHERE id = ?").run(id); } catch {}
     database.query("DELETE FROM users WHERE id = ?").run(id);
 
-    return c.json({ success: true });
+    return c.json({ success: true, deactivated: false });
   });
 
   // ---------- Self-service endpoints ----------
@@ -925,9 +1039,15 @@ export function registerUserRoutes(app: any, database: Database) {
       updates.push("email = ?");
       values.push(v);
     }
-    if (body.phone !== undefined) {
+    if (body.phone !== undefined || body.phoneNumber !== undefined || body.phone_number !== undefined) {
+      const p = String(body.phone || body.phoneNumber || body.phone_number || "").trim();
       updates.push("phone = ?");
-      values.push(String(body.phone).trim());
+      values.push(p);
+    }
+    if (body.phoneSmsEnabled !== undefined || body.phone_sms_enabled !== undefined) {
+      const enabled = body.phoneSmsEnabled === true || body.phone_sms_enabled === 1 || body.phone_sms_enabled === true ? 1 : 0;
+      updates.push("phone_sms_enabled = ?");
+      values.push(enabled);
     }
     if (body.serviceTerritory !== undefined || body.service_territory !== undefined) {
       const raw = body.serviceTerritory || body.service_territory;
@@ -942,6 +1062,21 @@ export function registerUserRoutes(app: any, database: Database) {
     if (body.profileNotes !== undefined || body.profile_notes !== undefined) {
       updates.push("profile_notes = ?");
       values.push(String(body.profileNotes || body.profile_notes || "").trim());
+    }
+    // Admins can also self-manage their own process server license details
+    if (authUser.role === "admin") {
+      if (body.licenseNumber !== undefined || body.license_number !== undefined) {
+        updates.push("license_number = ?");
+        values.push(String(body.licenseNumber ?? body.license_number ?? "").trim());
+      }
+      if (body.licenseJurisdiction !== undefined || body.license_jurisdiction !== undefined) {
+        updates.push("license_jurisdiction = ?");
+        values.push(String(body.licenseJurisdiction ?? body.license_jurisdiction ?? "").trim());
+      }
+      if (body.licenseExpiresAt !== undefined || body.license_expires_at !== undefined) {
+        updates.push("license_expires_at = ?");
+        values.push(String(body.licenseExpiresAt ?? body.license_expires_at ?? "").trim());
+      }
     }
     if (updates.length === 0) {
       return c.json({ error: "No editable fields provided (displayName, email, phone, serviceTerritory, profileNotes)" }, 400);
@@ -988,10 +1123,11 @@ export function registerUserRoutes(app: any, database: Database) {
       .run(pwdHash, nowIso(), authUser.id);
 
     // Revoke all OTHER sessions; current device stays logged in.
-    const token = getCookie(c, SESSION_COOKIE);
+    // Bearer clients have no cookie — except the token from Authorization too.
+    const token = extractTokenFromContext(c);
     revokeSessionsForUser(authUser.id, authUser.id, token ? hashToken(token) : undefined);
 
-    return c.json({ success: true, mustChangePassword: false });
+    return c.json({ success: true, mustChangePassword: false, token: token || undefined });
   });
 
   // GET /api/me/sessions - list own sessions (session ids, never tokens)
@@ -1092,6 +1228,155 @@ export function registerUserRoutes(app: any, database: Database) {
   // =========================================================================
   // PUBLIC FIELD SERVER REGISTRATION & PASSWORD RESET
   // =========================================================================
+
+  // POST /api/me/complete-onboarding - Google OAuth users finalize license, phone, signature
+  app.post("/api/me/complete-onboarding", async (c: Context) => {
+    const authUser = getAuthUser(c);
+    if (!authUser) return c.json({ error: "Unauthorized" }, 401);
+
+    const body = await c.req.json().catch(() => ({}));
+    const displayName = String(body.displayName || body.display_name || authUser.displayName || "").trim();
+    const legalName = String(body.legalName || body.legal_name || displayName).trim();
+    const email = validEmail(body.email || authUser.username);
+    const phone = String(body.phone || body.phone_number || "").trim();
+    const licenseNumber = String(body.licenseNumber || body.license_number || "").trim();
+    const licenseJurisdiction = String(body.licenseJurisdiction || body.license_jurisdiction || "Oklahoma").trim();
+    const licenseExpiresAt = String(body.licenseExpiresAt || body.license_expires_at || "").trim();
+    const territoryRaw = body.serviceTerritory || body.service_territory || [];
+    const territory = Array.isArray(territoryRaw)
+      ? territoryRaw.map((s: unknown) => String(s).trim()).filter(Boolean)
+      : typeof territoryRaw === "string"
+      ? territoryRaw.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : [];
+
+    const standardRate = String(body.standardRate || body.standard_rate || "").trim();
+    const rushRate = String(body.rushRate || body.rush_rate || "").trim();
+    const rateNotes = String(body.rateNotes || body.rate_notes || "").trim();
+    const customNotes = String(body.profileNotes || body.profile_notes || "").trim();
+
+    let combinedNotes = "";
+    if (standardRate || rushRate) {
+      combinedNotes += `Rates: Standard ${standardRate ? `$${standardRate.replace(/^\$/, '')}` : 'N/A'} | Rush ${rushRate ? `$${rushRate.replace(/^\$/, '')}` : 'N/A'}\n`;
+    }
+    if (rateNotes) {
+      combinedNotes += `Pricing Details: ${rateNotes}\n`;
+    }
+    if (customNotes) {
+      combinedNotes += `Notes: ${customNotes}`;
+    }
+    combinedNotes = combinedNotes.trim();
+
+    if (licenseExpiresAt && !isValidLicenseDate(licenseExpiresAt)) {
+      return c.json({ error: "Invalid license expiration date" }, 400);
+    }
+
+    const ts = nowIso();
+    const userId = authUser.id;
+
+    // Update user profile and activate onboarding
+    database.query(
+      `UPDATE users SET
+        display_name = COALESCE(NULLIF(?, ''), display_name),
+        legal_name = ?,
+        email = COALESCE(NULLIF(?, ''), email),
+        phone = ?,
+        phone_sms_enabled = 1,
+        license_number = ?,
+        license_jurisdiction = ?,
+        license_expires_at = ?,
+        service_territory_json = ?,
+        profile_notes = CASE WHEN ? != '' THEN ? ELSE profile_notes END,
+        onboarding_status = 'active',
+        updated_at = ?
+       WHERE id = ?`
+    ).run(
+      displayName,
+      legalName,
+      email,
+      phone,
+      licenseNumber,
+      licenseJurisdiction,
+      licenseExpiresAt,
+      JSON.stringify(territory),
+      combinedNotes,
+      combinedNotes,
+      ts,
+      userId
+    );
+
+    // Save e-signature if provided
+    const signatureData = body.signatureData || body.signature_data;
+    if (typeof signatureData === "string" && signatureData.startsWith("data:image/png;base64,")) {
+      try {
+        const { SIGNATURES_DIR } = await import("./signatures");
+        const b64 = signatureData.replace(/^data:image\/png;base64,/, "");
+        const buf = Buffer.from(b64, "base64");
+        if (buf.length >= 200) {
+          const sha = createHash("sha256").update(buf).digest("hex");
+          const assetId = "sig_" + randomUUID().replace(/-/g, "").slice(0, 20);
+          const storageKey = `${assetId}.png`;
+          const filePath = `${SIGNATURES_DIR}/${storageKey}`;
+          await Bun.write(filePath, buf);
+
+          database.query(
+            `INSERT INTO user_signature_assets (
+              id, user_id, storage_key, mime_type, sha256, width, height, status, created_at, updated_at, revoked_at
+            ) VALUES (?, ?, ?, 'image/png', ?, 800, 200, 'active', ?, ?, '')`
+          ).run(assetId, userId, storageKey, sha, ts, ts);
+
+          database.query("UPDATE users SET signature_asset_id = ?, signature_updated_at = ? WHERE id = ?").run(assetId, ts, userId);
+        }
+      } catch (err) {
+        console.warn("Could not save signature during google onboarding:", err);
+      }
+    }
+
+    // Record consent
+    try {
+      recordUserConsent(database, {
+        userId,
+        documentType: "tos",
+        version: "2026.1",
+        ip: clientIp(c),
+        userAgent: c.req.header("user-agent") || "",
+      });
+    } catch {}
+
+    // Send Welcome & PWA Setup Email to the Google OAuth user
+    const onboardUsername = String(email || authUser.username || "");
+    if (email && email.includes("@")) {
+      try {
+        const { sendWelcomeOnboardingEmail } = await import("./email");
+        await sendWelcomeOnboardingEmail(email, displayName, onboardUsername);
+      } catch (err) {
+        console.warn("Could not dispatch welcome email to Google OAuth server:", err);
+      }
+    }
+
+    // Create Admin Notification (in-app) for new Google OAuth server
+    try {
+      const { createNotification } = await import("./notifications");
+      const adminUsers = database.query("SELECT id FROM users WHERE role = 'admin'").all() as { id: string }[];
+      for (const admin of adminUsers) {
+        await createNotification(database as any, {
+          userId: admin.id,
+          type: "broadcast",
+          priority: "normal",
+          title: `New Field Server (Google): ${displayName}`,
+          body: `${displayName} (${licenseNumber || 'No PSL'}) completed Google sign-up. Territory: ${territory.join(', ') || 'None stated'}.`,
+          actionUrl: "/servers",
+        });
+      }
+    } catch {
+      // ignore
+    }
+
+    const row = database.query("SELECT * FROM users WHERE id = ?").get(userId) as Record<string, unknown>;
+    return c.json({
+      success: true,
+      user: selfUserRow(database, row),
+    });
+  });
 
   // POST /api/auth/register-server - Public field server self-onboarding
   app.post("/api/auth/register-server", async (c: Context) => {

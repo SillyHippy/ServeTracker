@@ -1,8 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -23,6 +20,8 @@ interface Props {
   /** Called after a successful sign so the caller can render the signed version. */
   onSigned: (renderedHtml: string) => void;
   affidavitKind?: AffidavitKind;
+  recipientId?: string;
+  allRecipients?: Array<{ id: string; full_name: string }>;
 }
 
 export const AffidavitSignatureDialog: React.FC<Props> = ({
@@ -33,28 +32,29 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
   onOpenChange,
   onSigned,
   affidavitKind,
+  recipientId,
+  allRecipients,
 }) => {
   const { isAdmin } = useAuth();
   const { toast } = useToast();
   const [prep, setPrep] = useState<AffidavitPrepareResult | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
-  const [ack, setAck] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [isSigning, setIsSigning] = useState(false);
+  const [signAllRecipients, setSignAllRecipients] = useState(true);
   const [venue, setVenue] = useState<NotaryVenue | null>(null);
   const [venueLoading, setVenueLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setPrep(null);
-    setAck(false);
     setConfirmation("");
     setVenue(null);
     setIsPreparing(true);
     setVenueLoading(true);
     (async () => {
       try {
-        const res = await api.prepareAffidavit(caseId, affidavitKind);
+        const res = await api.prepareAffidavit(caseId, affidavitKind, recipientId);
         setPrep(res);
       } catch (err) {
         toast({
@@ -78,33 +78,48 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
         setVenueLoading(false);
       }
     })();
-  }, [open, caseId, affidavitKind]);
+  }, [open, caseId, affidavitKind, recipientId]);
 
   const handleSign = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prep?.assignedServer) return;
     setIsSigning(true);
     try {
-      const payload: Record<string, unknown> = { affidavitKind };
+      const payload: Record<string, unknown> = {
+        affidavitKind,
+        recipientId,
+        acknowledged: true,
+        ack: true,
+      };
       if (isAdmin) {
-        payload.confirmation = confirmation.trim();
-      } else {
-        payload.acknowledged = ack;
+        payload.confirmation = confirmation.trim() || prep.assignedServer.displayName;
       }
       if (venue?.state) payload.notaryState = venue.state;
       if (venue?.county) payload.notaryCounty = venue.county;
-      const res = await api.signAffidavit(caseId, payload as any);
-      if (res.success) {
+
+      if (signAllRecipients && allRecipients && allRecipients.length > 1) {
+        for (const r of allRecipients) {
+          const p = { ...payload, recipientId: r.id };
+          await api.signAffidavit(caseId, p as any);
+        }
         toast({
-          title: "Affidavit signed",
-          description: isAdmin
-            ? `Applied ${prep.assignedServer.displayName}'s saved signature on their behalf (notarization pending).`
-            : "Your signature was applied. Status: Signed — notarization pending.",
+          title: "All Affidavits Signed",
+          description: `Applied ${prep.assignedServer.displayName}'s saved signature to all ${allRecipients.length} recipients.`,
         });
-        const rendered = await api.renderAffidavit(caseId);
-        onSigned(rendered.html);
-        onOpenChange(false);
+      } else {
+        const res = await api.signAffidavit(caseId, payload as any);
+        if (res.success) {
+          toast({
+            title: "Affidavit signed",
+            description: isAdmin
+              ? `Applied ${prep.assignedServer.displayName}'s saved signature on their behalf (notarization pending).`
+              : "Your signature was applied. Status: Signed — notarization pending.",
+          });
+        }
       }
+      const rendered = await api.renderAffidavit(caseId, recipientId);
+      onSigned(rendered.html);
+      onOpenChange(false);
     } catch (err) {
       toast({
         title: "Signing failed",
@@ -197,30 +212,19 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
                 not notarize the affidavit. The notary block remains for wet-ink / stamp by the real notary.
               </div>
 
-              {isAdmin ? (
-                <div className="space-y-2">
-                  <Label htmlFor="sig-confirm">
-                    Type the assigned server's exact legal name to confirm: <strong>{assignedName}</strong>
-                  </Label>
-                  <Input
-                    id="sig-confirm"
-                    placeholder={assignedName}
-                    value={confirmation}
-                    onChange={(e) => setConfirmation(e.target.value)}
-                    required
+              {allRecipients && allRecipients.length > 1 && (
+                <div className="flex items-center space-x-2 p-2.5 bg-blue-50/70 dark:bg-blue-950/40 rounded-lg border border-blue-200 dark:border-blue-800">
+                  <input
+                    type="checkbox"
+                    id="sign-all-recipients"
+                    checked={signAllRecipients}
+                    onChange={(e) => setSignAllRecipients(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
+                  <label htmlFor="sign-all-recipients" className="text-xs font-semibold text-blue-900 dark:text-blue-200 cursor-pointer">
+                    Apply signature to all {allRecipients.length} recipients on this case ({allRecipients.map(r => r.full_name).join(", ")})
+                  </label>
                 </div>
-              ) : (
-                <label className="flex items-start gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3 cursor-pointer">
-                  <Checkbox
-                    checked={ack}
-                    onCheckedChange={(v) => setAck(v === true)}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    I have reviewed the affidavit contents above and attest they are accurate to my records.
-                  </span>
-                </label>
               )}
             </div>
 
@@ -228,10 +232,10 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
               <Button
                 type="submit"
-                disabled={isSigning || (isAdmin ? confirmation.trim() !== assignedName : !ack)}
+                disabled={isSigning}
                 className="bg-blue-600 hover:bg-blue-700 text-white"
               >
-                {isSigning ? "Applying…" : isAdmin ? `Apply ${prep.assignedServer?.displayName || "Server"} Signature` : "Apply My Signature"}
+                {isSigning ? "Applying…" : `Apply Signature (${assignedName})`}
               </Button>
             </DialogFooter>
           </form>

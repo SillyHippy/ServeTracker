@@ -43,6 +43,9 @@ export interface ServerProfile {
   signatureStatus?: SignatureStatus;
   profileComplete?: boolean;
   licenseComplete?: boolean;
+  phoneSmsEnabled?: boolean;
+  googleLinked?: boolean;
+  googleEmail?: string;
 }
 
 export interface WorkloadServer {

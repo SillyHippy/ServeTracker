@@ -11,6 +11,7 @@ export type FieldSheetPayload = {
   homeAddress?: string;
   workAddress?: string;
   personToServe?: string;
+  recipients?: Array<{ full_name: string; role?: string }>;
   assignedServer?: string;
   clientName?: string;
   clientPhone?: string;
@@ -63,6 +64,9 @@ function splitRules(value: unknown): string[] {
 }
 
 function person(data: FieldSheetPayload): string {
+  if (Array.isArray(data.recipients) && data.recipients.length > 1) {
+    return data.recipients.map((r) => r.full_name).filter(Boolean).join(" & ");
+  }
   return text(data.personToServe) || text(data.defendant) || text(data.caseName);
 }
 

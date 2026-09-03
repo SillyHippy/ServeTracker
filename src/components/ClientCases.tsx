@@ -7,17 +7,21 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Plus, FileText, Edit, Trash2, Upload, FolderOpen } from "lucide-react";
-import { api } from "@/lib/api";
+import { Plus, FileText, Edit, Trash2, Upload, FolderOpen, MapPin, Navigation, Copy, Mail, Users } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { api, API_BASE } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { ClientData } from "./ClientForm";
 import ClientDocuments from "./ClientDocuments";
+import { CaseDocumentsDialog } from "./CaseDocumentsDialog";
 import ServeHistory from "./ServeHistory";
 import AffidavitGenerator from "./AffidavitGenerator";
 import FieldSheetButton from "./FieldSheetButton";
 import NudgeServerDialog from "./NudgeServerDialog";
 import EditCaseDialog from "./EditCaseDialog";
 import ServerAssignmentPanel from "./ServerAssignmentPanel";
+import MarkPaidDialog from "./MarkPaidDialog";
 import { mergeServeAndCaseData } from "@/utils/dataNormalization";
 import { ServeAttemptData } from "@/types/ServeAttemptData";
 
@@ -40,6 +44,14 @@ interface ClientCase {
   assigned_name?: string;
   service_requirements?: string;
   contact_info?: string;
+  quoted_fee?: string | number;
+  invoice_id?: string;
+  invoice_number?: string;
+  pay_url?: string;
+  payment_status?: string;
+  paid_at?: string;
+  payment_method?: string;
+  payment_notes?: string;
 }
 
 interface ClientCasesProps {
@@ -51,7 +63,9 @@ interface ClientCasesProps {
 
 export default function ClientCases({ client, onUpdate, clientCases = [], setClientCases }: ClientCasesProps) {
   const [serves, setServes] = useState<ServeAttemptData[]>([]);
+  const [activeDocCase, setActiveDocCase] = useState<{ caseId: string; caseNumber: string; defendantName: string } | null>(null);
   const [assignOptions, setAssignOptions] = useState<Array<{ id: string; label: string; ineligible?: string }>>([]);
+  const [markPaidTarget, setMarkPaidTarget] = useState<ClientCase | null>(null);
   const [newCase, setNewCase] = useState({
     case_number: "",
     case_name: "",
@@ -67,20 +81,33 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
     status: "active",
     assigned_to: "",
     assigned_name: "",
+    quoted_fee: "",
+    create_invoice: false,
+    email_invoice: false,
   });
+  const [newCaseFiles, setNewCaseFiles] = useState<File[]>([]);
+  const [additionalRecipients, setAdditionalRecipients] = useState<string[]>([]);
   const [isAddingCase, setIsAddingCase] = useState(false);
+  const [isSubmittingCase, setIsSubmittingCase] = useState(false);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
     api.getServerWorkload()
       .then((res) => {
-        const opts = (res.servers || []).map((s) => {
+        const opts = (res.servers || [])
+          .filter((s) => s.isActive !== false)
+          .map((s) => {
           let ineligible: string | undefined;
-          if (!s.isActive) ineligible = "inactive";
-          else if (s.onboardingStatus !== "active") ineligible = s.onboardingStatus;
-          else if (s.licenseStatus === "expired") ineligible = "license expired";
-          return { id: s.id, label: `${s.displayName} (@${s.username})`, ineligible };
+          if (s.role !== "admin") {
+            if (!s.isActive) ineligible = "inactive";
+            else if (s.onboardingStatus !== "active") ineligible = s.onboardingStatus;
+            else if (s.licenseStatus === "expired") ineligible = "license expired";
+          }
+          const label = s.role === "admin"
+            ? `${s.displayName} (Admin @${s.username})`
+            : `${s.displayName} (@${s.username})`;
+          return { id: s.id, label, ineligible };
         });
         setAssignOptions(opts);
       })
@@ -108,22 +135,60 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
   }, [client.id]);
 
   const handleCreateCase = async () => {
+    setIsSubmittingCase(true);
     try {
       console.log("Creating new case:", newCase);
       // case_name = Person Being Served (legacy field name kept for DB)
       const personBeingServed = (newCase.case_name || newCase.defendant_respondent || "").trim();
+      const validAdditional = additionalRecipients.map((s) => s.trim()).filter(Boolean);
+      const allRecipients = [personBeingServed, ...validAdditional].filter(Boolean).map((name) => ({
+        full_name: name,
+        role: "Defendant / Respondent",
+      }));
+      const combinedDefendants = allRecipients.length > 1
+        ? allRecipients.map((r) => r.full_name).join(" & ")
+        : (newCase.defendant_respondent || personBeingServed).trim();
+
       const caseData = {
         client_id: client.id,
         ...newCase,
         case_name: personBeingServed,
         // Keep defendant in sync when blank so New Serve defaults correctly
-        defendant_respondent: (newCase.defendant_respondent || personBeingServed).trim(),
+        defendant_respondent: combinedDefendants,
+        recipients: allRecipients,
         status: newCase.status || "active",
       };
       
       const createdCase = await api.createCase(caseData);
       console.log("Case created:", createdCase);
       
+      // If files were selected, upload them now
+      const cId = (createdCase as any)?.id || (createdCase as any)?.$id;
+      if (newCaseFiles.length > 0 && cId) {
+        let uploadedCount = 0;
+        for (const file of newCaseFiles) {
+          const form = new FormData();
+          form.append("file", file);
+          form.append("description", newCase.documents_to_serve || "Court Document");
+          const uploadRes = await fetch(`${API_BASE}/api/cases/${cId}/documents`, {
+            method: "POST",
+            body: form,
+            credentials: "include",
+          });
+          if (uploadRes.ok) uploadedCount++;
+        }
+        toast({
+          title: "Case & Documents Created 📄",
+          description: `Case added with ${uploadedCount} attached court document(s).`,
+        });
+      } else {
+        toast({
+          title: "Case created",
+          description: "New case has been added successfully",
+          variant: "default",
+        });
+      }
+
       if (setClientCases) {
         setClientCases([...clientCases, createdCase]);
       }
@@ -143,21 +208,22 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
         status: "active",
         assigned_to: "",
         assigned_name: "",
+        quoted_fee: "",
+        create_invoice: false,
+        email_invoice: false,
       });
+      setNewCaseFiles([]);
       setIsAddingCase(false);
-      
-      toast({
-        title: "Case created",
-        description: "New case has been added successfully",
-        variant: "default",
-      });
+      onUpdate();
     } catch (error) {
       console.error("Error creating case:", error);
       toast({
-        title: "Error creating case",
-        description: error instanceof Error ? error.message : "Unknown error",
+        title: "Error",
+        description: "Failed to create case. Please check required fields.",
         variant: "destructive",
       });
+    } finally {
+      setIsSubmittingCase(false);
     }
   };
 
@@ -283,27 +349,74 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                       placeholder="e.g. PG-26-22"
                     />
                   </div>
-                  <div>
-                    <Label htmlFor="case_name">Person Being Served</Label>
-                    <Input
-                      id="case_name"
-                      value={newCase.case_name}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setNewCase(prev => ({
-                          ...prev,
-                          case_name: v,
-                          // Keep defendant caption aligned unless user already typed a different one
-                          defendant_respondent:
-                            !prev.defendant_respondent || prev.defendant_respondent === prev.case_name
-                              ? v
-                              : prev.defendant_respondent,
-                        }));
-                      }}
-                      placeholder="Who are you serving? (full name)"
-                    />
-                    <p className="text-[11px] text-muted-foreground mt-1">
-                      This is the default name shown on New Serve attempts.
+                  {/* Person(s) Being Served Section */}
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <Label htmlFor="case_name" className="font-semibold text-xs flex items-center gap-1.5 text-slate-900 dark:text-slate-100">
+                        <Users className="w-4 h-4 text-blue-600" />
+                        People Being Served at this Address ({additionalRecipients.length + 1})
+                      </Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs flex items-center gap-1 border-blue-200 text-blue-700 hover:bg-blue-50"
+                        onClick={() => setAdditionalRecipients(prev => [...prev, ""])}
+                      >
+                        <Plus className="w-3 h-3" />
+                        Add Person
+                      </Button>
+                    </div>
+                    <div>
+                      <Input
+                        id="case_name"
+                        value={newCase.case_name}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setNewCase(prev => ({
+                            ...prev,
+                            case_name: v,
+                            defendant_respondent:
+                              !prev.defendant_respondent || prev.defendant_respondent === prev.case_name
+                                ? v
+                                : prev.defendant_respondent,
+                          }));
+                        }}
+                        placeholder="Primary Person Being Served (full name)"
+                        className="h-9 text-xs"
+                      />
+                    </div>
+                    {additionalRecipients.map((recName, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <div className="flex-1">
+                          <Input
+                            value={recName}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setAdditionalRecipients(prev => {
+                                const copy = [...prev];
+                                copy[idx] = v;
+                                return copy;
+                              });
+                            }}
+                            placeholder={`Person #${idx + 2} (e.g. spouse, co-defendant)`}
+                            className="h-9 text-xs"
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-9 w-9 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 shrink-0"
+                          onClick={() => setAdditionalRecipients(prev => prev.filter((_, i) => i !== idx))}
+                          title="Remove person"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))}
+                    <p className="text-[11px] text-muted-foreground">
+                      Each person added at this address will get their own separate selectable Affidavit upon completion or non-service.
                     </p>
                   </div>
                   <div>
@@ -391,8 +504,60 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                       placeholder="Enter case notes"
                     />
                   </div>
-                  <Button onClick={handleCreateCase} className="w-full">
-                    Create Case
+                  <div>
+                    <Label htmlFor="quoted_fee">Quoted fee (optional)</Label>
+                    <Input
+                      id="quoted_fee"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={newCase.quoted_fee}
+                      onChange={(e) => setNewCase(prev => ({ ...prev, quoted_fee: e.target.value }))}
+                      placeholder="e.g. 110"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={!!newCase.create_invoice}
+                      onCheckedChange={(v) => setNewCase(prev => ({ ...prev, create_invoice: v === true }))}
+                    />
+                    Create Helcim invoice
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={!!newCase.email_invoice}
+                      onCheckedChange={(v) => setNewCase(prev => ({ ...prev, email_invoice: v === true }))}
+                    />
+                    Email invoice link to client
+                  </label>
+
+                  {/* Multi-File Document Upload */}
+                  <div className="p-3 bg-blue-50/70 dark:bg-blue-950/40 rounded-lg border border-blue-200 dark:border-blue-800 space-y-2">
+                    <Label htmlFor="new_case_docs" className="text-xs font-semibold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
+                      <FileText className="h-4 w-4 text-blue-600" />
+                      Attach Court Documents / Summons (Multi-file allowed)
+                    </Label>
+                    <Input
+                      id="new_case_docs"
+                      type="file"
+                      multiple
+                      accept=".pdf,.png,.jpg,.jpeg,.doc,.docx"
+                      onChange={(e) => {
+                        if (e.target.files) {
+                          setNewCaseFiles(Array.from(e.target.files));
+                        }
+                      }}
+                      className="bg-white dark:bg-slate-900 text-xs h-9 file:text-xs file:py-0"
+                    />
+                    {newCaseFiles.length > 0 && (
+                      <p className="text-[11px] text-blue-700 dark:text-blue-300 font-medium">
+                        ✓ {newCaseFiles.length} document(s) ready to upload: {newCaseFiles.map((f) => f.name).join(", ")}
+                      </p>
+                    )}
+                  </div>
+
+                  <Button onClick={handleCreateCase} disabled={isSubmittingCase} className="w-full bg-blue-600 hover:bg-blue-700 font-semibold">
+                    {isSubmittingCase ? "Creating Case & Uploading..." : "Create Case"}
                   </Button>
                 </div>
               </DialogContent>
@@ -405,14 +570,21 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
               const caseServes = serves.filter(serve => serve.caseNumber === clientCase.case_number);
               
               return (
-                <Card key={clientCase.$id}>
-                  <CardHeader className="space-y-3">
-                    <CardTitle className="text-base leading-snug pr-1">
+                <Card key={clientCase.$id} className="w-full min-w-0 overflow-hidden shadow-sm">
+                  <CardHeader className="space-y-3 p-3.5 sm:p-5">
+                    <CardTitle className="text-base font-bold leading-snug pr-1 break-words flex items-center gap-2 flex-wrap">
                       {clientCase.case_name}
+                      {clientCase.payment_status === "UNPAID" && (
+                        <Badge className="bg-yellow-400 text-yellow-950 hover:bg-yellow-400">UNPAID</Badge>
+                      )}
+                      {clientCase.payment_status === "PAID" && (
+                        <Badge className="bg-green-600 text-white hover:bg-green-600">PAID</Badge>
+                      )}
                     </CardTitle>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 w-full min-w-0">
                       <FieldSheetButton
-                        className="h-10"
+                        label="Field Sheet"
+                        className="h-9 w-full justify-center px-1 text-[11px] font-semibold"
                         data={{
                           caseId: clientCase.$id || (clientCase as any).id,
                           caseNumber: clientCase.case_number,
@@ -433,46 +605,115 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                           clientId: client.id,
                         }}
                       />
-                      {caseServes.length > 0 && (
-                        <AffidavitGenerator
-                          client={client}
-                          serves={caseServes}
-                          caseNumber={clientCase.case_number}
-                          caseName={clientCase.case_name}
-                          courtName={clientCase.court_name}
-                          plaintiffPetitioner={clientCase.plaintiff_petitioner}
-                          defendantRespondent={clientCase.defendant_respondent}
-                          homeAddress={clientCase.home_address}
-                          workAddress={clientCase.work_address}
-                          personBeingServed={clientCase.defendant_respondent || clientCase.case_name}
-                          documentsToServe={clientCase.documents_to_serve || ""}
-                        />
-                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-9 w-full justify-center px-1 text-[11px] font-semibold text-blue-700 bg-blue-50/60 hover:bg-blue-100 border-blue-200"
+                        onClick={() =>
+                          setActiveDocCase({
+                            caseId: clientCase.$id || (clientCase as any).id,
+                            caseNumber: clientCase.case_number,
+                            defendantName: clientCase.defendant_respondent || clientCase.case_name,
+                          })
+                        }
+                      >
+                        <FileText className="h-3.5 w-3.5 mr-1 text-blue-600 shrink-0" />
+                        <span className="truncate">Case Documents</span>
+                      </Button>
+                      <AffidavitGenerator
+                        buttonClassName="h-9 w-full justify-center px-1 text-[11px] font-semibold"
+                        caseRecordId={clientCase.$id || (clientCase as any).id}
+                        client={client}
+                        serves={caseServes}
+                        caseNumber={clientCase.case_number}
+                        caseName={clientCase.case_name}
+                        courtName={clientCase.court_name}
+                        plaintiffPetitioner={clientCase.plaintiff_petitioner}
+                        defendantRespondent={clientCase.defendant_respondent}
+                        homeAddress={clientCase.home_address}
+                        workAddress={clientCase.work_address}
+                        personBeingServed={clientCase.defendant_respondent || clientCase.case_name}
+                        documentsToServe={clientCase.documents_to_serve || ""}
+                      />
                       <EditCaseDialog
                         clientCase={clientCase}
                         onUpdate={updateCase}
+                        className="h-9 w-full justify-center px-1 text-[11px] font-semibold"
                       />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => deleteCase(clientCase.$id)}
+                        className="h-9 w-full justify-center px-1 text-[11px] font-semibold hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 mr-1 shrink-0" />
+                        <span className="truncate">Delete</span>
+                      </Button>
+                      {clientCase.pay_url && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 w-full justify-center px-1 text-[11px] font-semibold"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(String(clientCase.pay_url));
+                              toast({ title: "Payment link copied" });
+                            } catch {
+                              toast({ title: "Copy failed", variant: "destructive" });
+                            }
+                          }}
+                        >
+                          <Copy className="h-3.5 w-3.5 mr-1 shrink-0" />
+                          Copy pay link
+                        </Button>
+                      )}
+                      {clientCase.pay_url && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 w-full justify-center px-1 text-[11px] font-semibold"
+                          onClick={async () => {
+                            try {
+                              await api.resendCaseInvoiceEmail(clientCase.$id || (clientCase as any).id);
+                              toast({ title: "Invoice email queued (staging skips live send)" });
+                            } catch (e) {
+                              toast({ title: "Send failed", description: e instanceof Error ? e.message : "", variant: "destructive" });
+                            }
+                          }}
+                        >
+                          <Mail className="h-3.5 w-3.5 mr-1 shrink-0" />
+                          Send invoice email
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className={`h-9 w-full justify-center px-1 text-[11px] font-semibold ${
+                          clientCase.payment_status === "PAID"
+                            ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                            : "border-amber-300 text-amber-800 hover:bg-amber-50"
+                        }`}
+                        onClick={() => setMarkPaidTarget(clientCase)}
+                      >
+                        {clientCase.payment_status === "PAID" ? "Payment Details" : "Record Payment"}
+                      </Button>
                       {clientCase.assigned_to && (
                         <NudgeServerDialog
                           caseId={clientCase.$id || (clientCase as any).id}
                           caseNumber={clientCase.case_number}
                           serverName={clientCase.assigned_name}
+                          compact
                         />
                       )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => deleteCase(clientCase.$id)}
-                        className="h-10 px-3 hover:text-destructive"
-                      >
-                        <Trash2 className="h-4 w-4 mr-1" />
-                        Delete
-                      </Button>
                     </div>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="p-3.5 sm:p-5 pt-0">
                     <div className="space-y-4">
-                      <div className="space-y-2 text-sm">
+                      <div className="space-y-2 text-sm break-words">
                         <p><strong>Case Number:</strong> {clientCase.case_number}</p>
                         {clientCase.court_name && (
                           <p><strong>Court:</strong> {clientCase.court_name}</p>
@@ -482,6 +723,40 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                         )}
                         {clientCase.defendant_respondent && (
                           <p><strong>Defendant/Respondent:</strong> {clientCase.defendant_respondent}</p>
+                        )}
+                        {clientCase.home_address && (
+                          <p className="flex items-start gap-1.5 text-slate-800">
+                            <MapPin className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                            <span>
+                              <strong>Service Address:</strong>{" "}
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(clientCase.home_address)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:text-blue-800 underline font-medium"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {clientCase.home_address}
+                              </a>
+                            </span>
+                          </p>
+                        )}
+                        {clientCase.work_address && (
+                          <p className="flex items-start gap-1.5 text-slate-800">
+                            <Navigation className="h-4 w-4 text-blue-500 shrink-0 mt-0.5" />
+                            <span>
+                              <strong>Work/Alt Address:</strong>{" "}
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(clientCase.work_address)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:text-blue-800 underline font-medium"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {clientCase.work_address}
+                              </a>
+                            </span>
+                          </p>
                         )}
                         {clientCase.documents_to_serve && (
                           <p><strong>Documents to Serve:</strong> {clientCase.documents_to_serve}</p>
@@ -511,28 +786,6 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                           />
                         </div>
                       </div>
-                      
-                      {/* Case-specific documents section */}
-                      <Accordion type="single" collapsible className="w-full">
-                        <AccordionItem value="case-documents" className="border rounded-lg px-4">
-                          <AccordionTrigger className="hover:no-underline">
-                            <div className="flex items-center gap-2">
-                              <FolderOpen className="h-4 w-4" />
-                              <span>Case Documents</span>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent>
-                            <div className="pt-2">
-                              <ClientDocuments 
-                                clientId={client.id}
-                                clientName={client.name}
-                                caseNumber={clientCase.case_number}
-                                hideHeader={true}
-                              />
-                            </div>
-                          </AccordionContent>
-                        </AccordionItem>
-                      </Accordion>
                     </div>
                   </CardContent>
                 </Card>
@@ -570,6 +823,34 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
           <ClientDocuments clientId={client.id} clientName={client.name} />
         </TabsContent>
       </Tabs>
+
+      {activeDocCase && (
+        <CaseDocumentsDialog
+          caseId={activeDocCase.caseId}
+          caseNumber={activeDocCase.caseNumber}
+          defendantName={activeDocCase.defendantName}
+          open={Boolean(activeDocCase)}
+          onOpenChange={(open) => {
+            if (!open) setActiveDocCase(null);
+          }}
+        />
+      )}
+
+      <MarkPaidDialog
+        open={Boolean(markPaidTarget)}
+        onOpenChange={(open) => !open && setMarkPaidTarget(null)}
+        caseItem={markPaidTarget ? {
+          id: markPaidTarget.$id || (markPaidTarget as any).id,
+          case_number: markPaidTarget.case_number,
+          case_name: markPaidTarget.case_name,
+          defendant_respondent: markPaidTarget.defendant_respondent,
+          quoted_fee: markPaidTarget.quoted_fee,
+          payment_status: markPaidTarget.payment_status,
+          payment_method: markPaidTarget.payment_method,
+          payment_notes: markPaidTarget.payment_notes,
+        } : null}
+        onSuccess={onUpdate}
+      />
     </div>
   );
 }

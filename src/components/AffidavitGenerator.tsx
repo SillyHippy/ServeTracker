@@ -4,11 +4,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { FileText, Printer, PenLine, Loader2 } from 'lucide-react';
 import {
   generateAffidavitHtml,
+  generateBatchAffidavitsHtml,
   inferAffidavitKind,
   latestSuccessfulServe,
   serviceMethodLabel,
   type AffidavitKind,
 } from '@/utils/affidavitEngine';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ServeAttemptData } from '@/types/ServeAttemptData';
 import { ClientData } from '@/components/ClientForm';
 import { useToast } from '@/hooks/use-toast';
@@ -34,6 +36,45 @@ function coordsFromAttempts(attempts: ServeAttemptData[]): Array<{ latitude: num
   return out;
 }
 
+function printHtmlWithImages(html: string): boolean {
+  const printWin = window.open('', '_blank');
+  if (!printWin) return false;
+  printWin.document.write(html);
+  printWin.document.close();
+  printWin.focus();
+
+  const triggerPrint = () => {
+    try {
+      printWin.focus();
+      printWin.print();
+    } catch {
+      // ignore
+    }
+  };
+
+  const imgs = Array.from(printWin.document.images);
+  if (imgs.length === 0) {
+    setTimeout(triggerPrint, 300);
+  } else {
+    let remaining = imgs.length;
+    const done = () => {
+      remaining--;
+      if (remaining <= 0) setTimeout(triggerPrint, 200);
+    };
+    imgs.forEach((img) => {
+      if (img.complete) {
+        done();
+      } else {
+        img.addEventListener('load', done);
+        img.addEventListener('error', done);
+      }
+    });
+    // Fallback safety timeout so print triggers even on slow connections
+    setTimeout(triggerPrint, 3000);
+  }
+  return true;
+}
+
 interface AffidavitGeneratorProps {
   client: ClientData;
   serves: ServeAttemptData[];
@@ -49,6 +90,8 @@ interface AffidavitGeneratorProps {
   personBeingServed?: string;
   /** Exact document titles for the affidavit Documents line */
   documentsToServe?: string;
+  className?: string;
+  buttonClassName?: string;
 }
 
 interface AssignedServerInfo {
@@ -72,6 +115,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   workAddress,
   personBeingServed,
   documentsToServe,
+  className,
+  buttonClassName,
 }) => {
   const { isAdmin } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
@@ -84,6 +129,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const [isLoadingCase, setIsLoadingCase] = useState(false);
   const [caseId, setCaseId] = useState(caseRecordId || '');
   const [resolvedAttempts, setResolvedAttempts] = useState<ServeAttemptData[]>(serves);
+  const [recipientsList, setRecipientsList] = useState<Array<{ id: string; full_name: string; role?: string }>>([]);
+  const [selectedRecipientId, setSelectedRecipientId] = useState<string>('');
   const [assignedServer, setAssignedServer] = useState<AssignedServerInfo | null>(null);
   const [notaryInfo, setNotaryInfo] = useState<{ notaryName?: string; commissionExpiration?: string } | null>(null);
   const [hasActiveSigned, setHasActiveSigned] = useState(false);
@@ -122,6 +169,17 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
         if (c.defendant_respondent) setResolvedDefendant(String(c.defendant_respondent));
         if (c.home_address) setResolvedHome(String(c.home_address));
         if (c.work_address) setResolvedWork(String(c.work_address));
+        if (Array.isArray(data.recipients) && data.recipients.length > 0) {
+          const mapped = data.recipients.map((r: any) => ({
+            id: String(r.id || r.$id || ''),
+            full_name: String(r.full_name || r.fullName || ''),
+            role: String(r.role || ''),
+          })).filter((r: any) => Boolean(r.full_name));
+          setRecipientsList(mapped);
+          if (mapped.length > 0) {
+            setSelectedRecipientId((prev) => (mapped.some((m: any) => m.id === prev) ? prev : mapped[0].id));
+          }
+        }
         if (Array.isArray(data.attempts) && data.attempts.length > 0) {
           setResolvedAttempts(data.attempts as ServeAttemptData[]);
         } else {
@@ -217,7 +275,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
         email: client.email,
       },
       recipient: {
-        full_name: personBeingServed || defendant || caseName || 'TARGET RECIPIENT',
+        id: selectedRecipientId || undefined,
+        full_name: activeRecipientName || 'TARGET RECIPIENT',
         home_address: home,
         work_address: work,
       },
@@ -232,19 +291,12 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
       },
     });
 
-    const printWin = window.open('', '_blank');
-    if (printWin) {
-      printWin.document.write(html);
-      printWin.document.close();
-      printWin.focus();
-      setTimeout(() => {
-        printWin.print();
-      }, 500);
-
+    const printSuccess = printHtmlWithImages(html);
+    if (printSuccess) {
       toast({
         title: 'Affidavit Document Ready',
         description: docs
-          ? 'Print window opened — documents loaded from case. Wet-ink: server (left), notary (right).'
+          ? 'Print window opened — all exhibit photos loaded. Wet-ink: server (left), notary (right).'
           : 'Print opened — no Documents to Serve on this case yet (Edit Case to add them).',
       });
       setIsOpen(false);
@@ -257,18 +309,125 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
     }
   };
 
+  // Print all recipient affidavits in a single continuous stream with exhibits once at the end
+  const handlePrintAll = async () => {
+    let docs = resolvedDocs;
+    let court = resolvedCourt;
+    let plaintiff = resolvedPlaintiff;
+    let defendant = resolvedDefendant;
+    let home = resolvedHome;
+    let work = resolvedWork;
+    let attemptsForPrint = resolvedAttempts;
+
+    if (lookupKey) {
+      try {
+        const clientId = String(client.id || (client as any).$id || '').trim();
+        const data = await api.getAffidavitData(lookupKey, clientId || undefined);
+        if (data?.case) {
+          const c = data.case;
+          docs = String(c.documents_to_serve || c.documentsToServe || docs || '').trim();
+          if (c.court_name) court = String(c.court_name);
+          if (c.plaintiff_petitioner) plaintiff = String(c.plaintiff_petitioner);
+          if (c.defendant_respondent) defendant = String(c.defendant_respondent);
+          if (c.home_address) home = String(c.home_address);
+          if (c.work_address) work = String(c.work_address);
+          if (c.id) setCaseId(String(c.id));
+          if (data.assignedServer) setAssignedServer(data.assignedServer);
+          if (data.notaryBlock) setNotaryInfo(data.notaryBlock);
+          setResolvedDocs(docs);
+          if (Array.isArray(data.attempts) && data.attempts.length > 0) {
+            attemptsForPrint = data.attempts as ServeAttemptData[];
+            setResolvedAttempts(attemptsForPrint);
+          }
+        }
+      } catch {
+        // keep already-resolved values
+      }
+    }
+
+    const serverName = assignedServer?.legalName || 'Joseph Iannazzi';
+    const licenseNumber = assignedServer?.licenseNumber || 'PSL-2026-2';
+
+    const venue = await detectNotaryVenue({
+      fallbackTexts: [court, caseName, home, work],
+      fallbackCoords: coordsFromAttempts(attemptsForPrint),
+    });
+
+    // Check if signed versions exist for any recipients to embed signatures
+    const payloads = await Promise.all(
+      recipientsList.map(async (rec) => {
+        let sig: { dataUrl: string; mimeType: string } | undefined;
+        if (caseId) {
+          try {
+            const rend = await api.renderAffidavit(caseId, rec.id);
+            if (rend?.html) {
+              const sigMatch = rend.html.match(/src="(data:image\/[^;]+;base64,[^"]+)"/);
+              if (sigMatch) {
+                sig = { dataUrl: sigMatch[1], mimeType: "image/png" };
+              }
+            }
+          } catch {}
+        }
+
+        return {
+          case: {
+            case_number: caseNumber || '',
+            case_name: caseName || '',
+            court_name: court || '',
+            plaintiff_petitioner: plaintiff || '',
+            defendant_respondent: defendant || personBeingServed || '',
+            documents_to_serve: docs || '',
+          },
+          client: {
+            name: client.name,
+            email: client.email,
+          },
+          recipient: {
+            id: rec.id,
+            full_name: rec.full_name,
+            role: rec.role,
+            home_address: home,
+            work_address: work,
+          },
+          attempts: attemptsForPrint,
+          swornDate: new Date(),
+          signature: sig,
+          affidavitKind,
+          notaryBlock: {
+            serverName,
+            licenseNumber,
+            state: venue.state,
+            county: venue.county,
+          },
+        };
+      })
+    );
+
+    const html = generateBatchAffidavitsHtml(payloads, true);
+    const printSuccess = printHtmlWithImages(html);
+    if (printSuccess) {
+      toast({
+        title: 'Batch Affidavits Ready',
+        description: `Print window opened with ${recipientsList.length} individual affidavits (exhibits once at end).`,
+      });
+      setIsOpen(false);
+    } else {
+      toast({
+        title: 'Pop-up Blocked',
+        description: 'Please allow pop-ups to open and save the batch affidavits.',
+        variant: 'destructive',
+      });
+    }
+  };
+
   // Print the server-rendered SIGNED version (render endpoint embeds signature).
   const handlePrintSigned = async () => {
     if (!caseId) return;
     setIsRenderingSigned(true);
     try {
-      const res = await api.renderAffidavit(caseId);
-      const printWin = window.open('', '_blank');
-      if (printWin) {
-        printWin.document.write(res.html);
-        printWin.document.close();
-        printWin.focus();
-        setTimeout(() => printWin.print(), 500);
+      const res = await api.renderAffidavit(caseId, selectedRecipientId || undefined);
+      const printSuccess = printHtmlWithImages(res.html);
+      if (printSuccess) {
         toast({
           title: 'Signed Affidavit Ready',
           description: 'Signed version printed — electronic signature applied (left). Notarization pending: notary wet-ink/stamp (right).',
@@ -290,18 +449,14 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
 
   const handleSigned = (renderedHtml: string) => {
     setHasActiveSigned(true);
-    const printWin = window.open('', '_blank');
-    if (printWin) {
-      printWin.document.write(renderedHtml);
-      printWin.document.close();
-      printWin.focus();
-      setTimeout(() => printWin.print(), 500);
-    }
+    printHtmlWithImages(renderedHtml);
   };
 
   const pbsName = personBeingServed || resolvedDefendant || defendantRespondent || caseName || 'Target Recipient';
-  const inferredKind = inferAffidavitKind(resolvedAttempts);
-  const servedAttempt = latestSuccessfulServe(resolvedAttempts);
+  const activeRecipientObj = recipientsList.find((r) => String(r.id) === selectedRecipientId);
+  const activeRecipientName = activeRecipientObj?.full_name || pbsName;
+  const inferredKind = inferAffidavitKind(resolvedAttempts, undefined, activeRecipientObj?.id, activeRecipientName);
+  const servedAttempt = latestSuccessfulServe(resolvedAttempts, activeRecipientObj?.id, activeRecipientName);
   const methodRaw = String((servedAttempt as any)?.service_method || (servedAttempt as any)?.serviceMethod || '').toLowerCase();
   const acceptedRaw = String((servedAttempt as any)?.accepted_by || (servedAttempt as any)?.acceptedBy || '').trim();
   const methodLabelText = serviceMethodLabel(methodRaw);
@@ -312,9 +467,17 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="h-10 px-3 w-full sm:w-auto justify-center flex items-center gap-1.5 text-xs font-semibold">
-          <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-          <span>Affidavit</span>
+        <Button
+          variant="outline"
+          size="sm"
+          className={
+            buttonClassName ||
+            className ||
+            "h-10 px-3 w-full sm:w-auto justify-center flex items-center gap-1.5 text-xs font-semibold"
+          }
+        >
+          <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+          <span className="truncate">Affidavit</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -361,10 +524,50 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
                 <p className="text-[11px] text-slate-500">A completed serve exists; this will print as Affidavit of Non-Service.</p>
               )}
             </div>
-            <div className="flex justify-between gap-2">
-              <span className="text-slate-500 font-medium">Serving:</span>
-              <span className="font-semibold text-right">{pbsName}</span>
-            </div>
+            {recipientsList.length > 1 ? (
+              <div className="space-y-2 pt-1 border-t border-slate-200 dark:border-slate-700">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-500 font-medium">Affidavit For:</span>
+                  <span className="font-semibold text-blue-600 dark:text-blue-400">
+                    {activeRecipientObj?.full_name || pbsName}
+                  </span>
+                </div>
+                {recipientsList.length <= 2 ? (
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {recipientsList.map((rec) => (
+                      <Button
+                        key={rec.id}
+                        type="button"
+                        size="sm"
+                        variant={selectedRecipientId === rec.id ? "default" : "outline"}
+                        className="h-7 text-xs flex-1 min-w-[120px]"
+                        onClick={() => setSelectedRecipientId(rec.id)}
+                      >
+                        {rec.full_name}
+                      </Button>
+                    ))}
+                  </div>
+                ) : (
+                  <Select value={selectedRecipientId} onValueChange={setSelectedRecipientId}>
+                    <SelectTrigger className="h-8 text-xs w-full mt-1">
+                      <SelectValue placeholder="Select Recipient" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {recipientsList.map((rec, idx) => (
+                        <SelectItem key={rec.id} value={rec.id}>
+                          {rec.full_name} {idx === 0 ? "(Primary)" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            ) : (
+              <div className="flex justify-between gap-2">
+                <span className="text-slate-500 font-medium">Serving:</span>
+                <span className="font-semibold text-right">{pbsName}</span>
+              </div>
+            )}
             <div className="flex justify-between gap-2">
               <span className="text-slate-500 font-medium">Case No:</span>
               <span className="font-semibold">{caseNumber || 'N/A'}</span>
@@ -414,6 +617,18 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           <Button variant="outline" onClick={() => setIsOpen(false)}>
             Cancel
           </Button>
+          {recipientsList.length > 1 && (
+            <Button
+              onClick={handlePrintAll}
+              variant="outline"
+              className="border-blue-600 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center gap-1.5"
+              disabled={isLoadingCase}
+              title="Prints all recipient affidavits in one continuous job, with exhibits once at the end"
+            >
+              <Printer className="w-4 h-4 text-blue-600" />
+              <span>Print All ({recipientsList.length} Packets)</span>
+            </Button>
+          )}
           {hasActiveSigned && caseId ? (
             <Button
               onClick={handlePrintSigned}
@@ -430,7 +645,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
               disabled={isLoadingCase}
             >
               <Printer className="w-4 h-4" />
-              <span>Print / Save PDF</span>
+              <span>{recipientsList.length > 1 ? `Print ${activeRecipientName.split(' ')[0]}` : "Print / Save PDF"}</span>
             </Button>
           )}
           {caseId && (isAdmin || assignedServer) && (
@@ -457,11 +672,13 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
         <AffidavitSignatureDialog
           caseId={caseId}
           caseNumber={caseNumber || ''}
-          personBeingServed={pbsName}
+          personBeingServed={activeRecipientName}
           open={signOpen}
           onOpenChange={setSignOpen}
           onSigned={handleSigned}
           affidavitKind={affidavitKind}
+          recipientId={selectedRecipientId}
+          allRecipients={recipientsList}
         />
       )}
     </Dialog>

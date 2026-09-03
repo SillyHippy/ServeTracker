@@ -10,6 +10,8 @@ export interface EmailPayload {
   imageUrl?: string;
   /** Only attach binary image when explicitly requested. Default: links-only. */
   attachImage?: boolean;
+  /** Skip auto-adding business email as recipient. Use for welcome/onboarding emails. */
+  skipBusinessCopy?: boolean;
 }
 
 function getTransporter() {
@@ -39,9 +41,13 @@ function getBackupTransporter() {
 }
 
 export async function sendEmail(payload: EmailPayload) {
-  const { to, subject, html, imageData, imageUrl, attachImage } = payload;
+  const { to, subject, html, imageData, imageUrl, attachImage, skipBusinessCopy } = payload;
   if (!to || !subject || !html) {
     throw new Error("Missing required fields: to, subject, html");
+  }
+
+  if (process.env.DISABLE_EMAIL === "true" || process.env.MOCK_EMAIL === "true") {
+    return { messageId: "disabled_email" };
   }
 
   // ABSOLUTE SAFETY GUARD: Block any email with test/probe markers or sent during tests
@@ -58,7 +64,7 @@ export async function sendEmail(payload: EmailPayload) {
   }
 
   const recipients = Array.isArray(to) ? [...to] : [to];
-  if (!recipients.some((email) => email.toLowerCase() === BUSINESS_EMAIL.toLowerCase())) {
+  if (!skipBusinessCopy && !recipients.some((email) => email.toLowerCase() === BUSINESS_EMAIL.toLowerCase())) {
     recipients.push(BUSINESS_EMAIL);
   }
 
@@ -313,6 +319,7 @@ export async function sendWelcomeOnboardingEmail(email: string, displayName: str
       to: email,
       subject: `Welcome to ServeTracker: Account Confirmation & App Setup`,
       html,
+      skipBusinessCopy: true,
     });
     return true;
   } catch (err) {

@@ -12,7 +12,8 @@ import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { ServerProfile } from "@/types/ServerProfile";
 import SignatureStatusBadge from "@/components/SignatureStatusBadge";
-import { KeyRound, LogOut, RefreshCw, ShieldX, UserX, UserCheck, Loader2 } from "lucide-react";
+import { KeyRound, LogOut, RefreshCw, ShieldX, UserX, UserCheck, Loader2, PenLine } from "lucide-react";
+import { AdminServerSignatureDialog } from "@/components/AdminServerSignatureDialog";
 
 interface Props {
   userId: string;
@@ -30,6 +31,7 @@ export const ServerProfileDialog: React.FC<Props> = ({ userId, open, onOpenChang
   const [isSaving, setIsSaving] = useState(false);
   const [resetPassword, setResetPassword] = useState("");
   const [sessions, setSessions] = useState<any[]>([]);
+  const [isSigModalOpen, setIsSigModalOpen] = useState(false);
   const { toast } = useToast();
 
   const load = async () => {
@@ -98,6 +100,7 @@ export const ServerProfileDialog: React.FC<Props> = ({ userId, open, onOpenChang
       });
       toast({ title: "Profile saved", description: "Server profile updated successfully." });
       onChanged();
+      onOpenChange(false);
     } catch (err) {
       toast({ title: "Save failed", description: err instanceof Error ? err.message : "Could not save", variant: "destructive" });
     } finally {
@@ -287,6 +290,9 @@ export const ServerProfileDialog: React.FC<Props> = ({ userId, open, onOpenChang
                   <Button variant="outline" size="sm" onClick={revokeSessions}>
                     <RefreshCw className="h-4 w-4 mr-1" /> Revoke all sessions
                   </Button>
+                  <Button variant="outline" size="sm" className="text-blue-600 hover:text-blue-700 bg-blue-50/50" onClick={() => setIsSigModalOpen(true)}>
+                    <PenLine className="h-4 w-4 mr-1" /> {profile.signatureStatus?.enrolled ? "Replace signature" : "Upload signature"}
+                  </Button>
                   {profile.signatureStatus?.enrolled && (
                     <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700" onClick={revokeSignature}>
                       <ShieldX className="h-4 w-4 mr-1" /> Revoke signature
@@ -334,6 +340,19 @@ export const ServerProfileDialog: React.FC<Props> = ({ userId, open, onOpenChang
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {profile && (
+        <AdminServerSignatureDialog
+          userId={profile.id}
+          serverName={profile.displayName || profile.username}
+          open={isSigModalOpen}
+          onOpenChange={setIsSigModalOpen}
+          onChanged={() => {
+            void load();
+            onChanged();
+          }}
+        />
+      )}
     </Dialog>
   );
 };

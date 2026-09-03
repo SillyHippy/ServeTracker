@@ -9,6 +9,28 @@ beforeAll(async () => {
   expectStatus(r, 200, "admin login");
 });
 
+test("Better-Auth social sign-in route still reaches Better-Auth", async () => {
+  const publicClient = new Client();
+  const res = await publicClient.post("/api/auth/sign-in/social", { provider: "google", callbackURL: "https://servetracker.justlegalsolutions.org/dashboard" });
+  // Better-Auth may 200/400/500 depending on OAuth tables; it must not be the empty 404
+  // that used to swallow /register-server.
+  expect(res.status).not.toBe(404);
+});
+
+test("empty register-server hits ServeTracker handler, not Better-Auth 404", async () => {
+  const publicClient = new Client();
+  const res = await publicClient.post("/api/auth/register-server", {});
+  expectStatus(res, 400, "empty register-server must not be swallowed by /api/auth/*");
+  expect(String(res.data?.error || "")).toMatch(/Username/i);
+});
+
+test("empty forgot-password hits ServeTracker handler, not Better-Auth 404", async () => {
+  const publicClient = new Client();
+  const res = await publicClient.post("/api/auth/forgot-password", {});
+  expectStatus(res, 400, "empty forgot-password must not be swallowed by /api/auth/*");
+  expect(String(res.data?.error || "")).toMatch(/Email or username/i);
+});
+
 test("public server registration creates active server with territory and rates", async () => {
   const publicClient = new Client();
   const username = "newserver_" + Math.random().toString(36).slice(2, 8);

@@ -16,7 +16,8 @@ import {
   Settings,
   UserCircle,
   CloudOff,
-  ClipboardList
+  ClipboardList,
+  DollarSign
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -88,7 +89,7 @@ export function Header() {
           <div className="border-b p-4 flex items-center justify-between">
             <div>
               <Link to="/dashboard" className="font-bold text-lg flex items-center gap-2" onClick={() => setIsMenuOpen(false)}>
-                <img src="/logo.webp" alt="JLS Logo" className="h-6 w-auto object-contain rounded" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
+                <img src="/logo-master.png" alt="JLS Logo" className="h-7 w-7 object-contain rounded" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
                 <span>ServeTracker</span>
               </Link>
               {user && (
@@ -114,6 +115,12 @@ export function Header() {
               <NavLink to="/active-cases" className={mobileNavLink} onClick={() => setIsMenuOpen(false)}>
                 <ClipboardList className="h-5 w-5" />
                 Active Cases
+              </NavLink>
+            )}
+            {isAdmin && (
+              <NavLink to="/billing" className={mobileNavLink} onClick={() => setIsMenuOpen(false)}>
+                <DollarSign className="h-5 w-5" />
+                Billing
               </NavLink>
             )}
             <NavLink to="/new-serve" className={mobileNavLink} onClick={() => setIsMenuOpen(false)}>
@@ -187,35 +194,38 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-40 w-full border-b bg-background shadow-xs">
-      <div className="flex h-14 items-center px-4">
+      <div className="flex h-14 items-center px-3 sm:px-4">
         {isMobile ? (
           <>
             {mobileMenu}
-            <div className="flex-1 flex flex-col items-center justify-center">
-              <Link to="/dashboard" className="font-bold text-base leading-tight">
+            <div className="flex-1 flex flex-col items-center justify-center min-w-0 px-1">
+              <Link to="/dashboard" className="font-bold text-base leading-tight truncate">
                 ServeTracker
               </Link>
               {user && (
-                <span className="text-[11px] text-muted-foreground leading-tight">
-                  {user.displayName || user.username} @{user.username} ({user.role})
+                <span className="text-[10px] text-muted-foreground leading-tight truncate">
+                  {user.displayName || user.username} (@{user.username})
                 </span>
               )}
             </div>
-            <Button 
-              variant="default" 
-              size="sm" 
-              onClick={() => navigate('/new-serve')}
-              className="flex items-center rounded-full min-h-10 h-10 px-3"
-            >
-              <Plus className="h-4 w-4" />
-              <span className="ml-1 hidden sm:inline">Attempt</span>
-            </Button>
+            <div className="flex items-center gap-3 shrink-0 pl-1.5">
+              <NotificationBell />
+              <Button 
+                variant="default" 
+                size="sm" 
+                onClick={() => navigate('/new-serve')}
+                className="flex items-center rounded-full min-h-10 h-10 px-3.5 shadow-2xs font-semibold text-xs"
+              >
+                <Plus className="h-4 w-4" />
+                <span className="ml-1 hidden xs:inline">Attempt</span>
+              </Button>
+            </div>
           </>
         ) : (
           <>
             <div className="mr-6 flex items-center gap-2">
               <Link to="/dashboard" className="font-bold text-lg flex items-center gap-2">
-                <img src="/logo.webp" alt="JLS Logo" className="h-6 w-auto object-contain rounded" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
+                <img src="/logo-master.png" alt="JLS Logo" className="h-7 w-7 object-contain rounded" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
                 <span>ServeTracker</span>
               </Link>
               {user && (
@@ -244,6 +254,15 @@ export function Header() {
                 >
                   <ClipboardList className="h-4 w-4" />
                   Active Cases
+                </NavLink>
+              )}
+              {isAdmin && (
+                <NavLink
+                  to="/billing"
+                  className={desktopNavLink}
+                >
+                  <DollarSign className="h-4 w-4" />
+                  Billing
                 </NavLink>
               )}
               {isAdmin && (

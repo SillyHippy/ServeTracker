@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Edit, UserCheck } from "lucide-react";
+import { Edit, UserCheck, Plus, Trash2, Users } from "lucide-react";
 import { api } from "@/lib/api";
 
 interface ClientCase {
@@ -33,6 +33,7 @@ interface EditCaseDialogProps {
   clientCase: ClientCase;
   onUpdate: (caseData: any) => Promise<void>;
   isLoading?: boolean;
+  className?: string;
 }
 
 interface UserOption {
@@ -42,9 +43,16 @@ interface UserOption {
   role: string;
 }
 
-export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: EditCaseDialogProps) {
+interface RecipientEntry {
+  id?: string;
+  full_name: string;
+  role: string;
+}
+
+export default function EditCaseDialog({ clientCase, onUpdate, isLoading, className }: EditCaseDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [availableServers, setAvailableServers] = useState<UserOption[]>([]);
+  const [recipients, setRecipients] = useState<RecipientEntry[]>([]);
   const [caseData, setCaseData] = useState({
     case_number: clientCase.case_number || "",
     case_name: clientCase.case_name || "",
@@ -84,10 +92,34 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: Edit
         contact_info: clientCase.contact_info || "",
       });
       setAssignmentChanged(false);
+
+      const caseId = clientCase.$id || (clientCase as any).id;
+      if (caseId) {
+        api.getRecipients(caseId)
+          .then((recs) => {
+            if (Array.isArray(recs) && recs.length > 0) {
+              setRecipients(recs.map((r: any) => ({
+                id: r.id || r.$id,
+                full_name: r.full_name || r.fullName || "",
+                role: r.role || "Defendant / Respondent",
+              })));
+            } else {
+              setRecipients([
+                { full_name: clientCase.case_name || clientCase.defendant_respondent || "", role: "Defendant / Respondent" }
+              ]);
+            }
+          })
+          .catch(() => {
+            setRecipients([
+              { full_name: clientCase.case_name || clientCase.defendant_respondent || "", role: "Defendant / Respondent" }
+            ]);
+          });
+      }
+
       api.getUsers()
         .then((users) => {
           if (Array.isArray(users)) {
-            setAvailableServers(users.filter((u) => u.role === "server"));
+            setAvailableServers(users.filter((u) => u.isActive !== false));
           }
         })
         .catch(() => {});
@@ -96,13 +128,23 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: Edit
 
   const handleSave = async () => {
     try {
+      const validRecipients = recipients
+        .map((r) => ({ ...r, full_name: r.full_name.trim() }))
+        .filter((r) => Boolean(r.full_name));
+
+      const primaryRecipient = validRecipients[0]?.full_name || caseData.case_name || "";
+      const combinedDefendants = validRecipients.length > 1
+        ? validRecipients.map((r) => r.full_name).join(" & ")
+        : (caseData.defendant_respondent || primaryRecipient);
+
       const payload: Record<string, unknown> = {
         id: clientCase.$id,
         case_number: caseData.case_number,
-        case_name: caseData.case_name,
+        case_name: primaryRecipient,
         court_name: caseData.court_name,
         plaintiff_petitioner: caseData.plaintiff_petitioner,
-        defendant_respondent: caseData.defendant_respondent,
+        defendant_respondent: combinedDefendants,
+        recipients: validRecipients,
         notes: caseData.notes,
         status: caseData.status,
         home_address: caseData.home_address,
@@ -137,23 +179,40 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: Edit
     }));
   };
 
+  const addRecipient = () => {
+    setRecipients((prev) => [...prev, { full_name: "", role: "Defendant / Respondent" }]);
+  };
+
+  const updateRecipient = (index: number, field: keyof RecipientEntry, value: string) => {
+    setRecipients((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
+  };
+
+  const removeRecipient = (index: number) => {
+    setRecipients((prev) => prev.filter((_, i) => i !== index));
+  };
+
   return (
     <>
       <Button
         variant="outline"
         size="sm"
         onClick={() => setIsOpen(true)}
-        className="h-10 px-3"
+        className={className || "h-10 px-3"}
       >
-        <Edit className="h-4 w-4 mr-1" />
+        <Edit className="h-3.5 w-3.5 mr-1 shrink-0" />
         Edit
       </Button>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Case</DialogTitle>
+            <DialogTitle>Edit Case {caseData.case_number}</DialogTitle>
           </DialogHeader>
+
           <div className="space-y-4">
             <div>
               <Label htmlFor="case_number">Case Number</Label>
@@ -166,15 +225,13 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: Edit
             </div>
 
             <div>
-              <Label htmlFor="assigned_server" className="flex items-center gap-1">
-                <UserCheck className="h-4 w-4 text-primary" /> Assign Field Process Server
-              </Label>
+              <Label htmlFor="assigned_server">Assign Field Process Server</Label>
               <Select
                 value={caseData.assigned_to || "unassigned"}
                 onValueChange={handleServerChange}
               >
-                <SelectTrigger id="assigned_server" className="w-full mt-1">
-                  <SelectValue placeholder="Select server to assign" />
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Unassigned (Admin only)" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="unassigned">Unassigned (Admin only)</SelectItem>
@@ -190,25 +247,69 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: Edit
               </p>
             </div>
 
-            <div>
-              <Label htmlFor="case_name">Person Being Served</Label>
-              <Input
-                id="case_name"
-                value={caseData.case_name}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setCaseData((prev) => ({
-                    ...prev,
-                    case_name: v,
-                    defendant_respondent:
-                      !prev.defendant_respondent || prev.defendant_respondent === prev.case_name
-                        ? v
-                        : prev.defendant_respondent,
-                  }));
-                }}
-                placeholder="Who are you serving? (full name)"
-              />
+            {/* Person(s) Being Served Section */}
+            <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="flex justify-between items-center">
+                <Label className="font-semibold text-xs flex items-center gap-1.5 text-slate-900 dark:text-slate-100">
+                  <Users className="w-4 h-4 text-blue-600" />
+                  People Being Served at this Address ({recipients.length || 1})
+                </Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs flex items-center gap-1 border-blue-200 text-blue-700 hover:bg-blue-50"
+                  onClick={addRecipient}
+                >
+                  <Plus className="w-3 h-3" />
+                  Add Person
+                </Button>
+              </div>
+
+              {recipients.length === 0 ? (
+                <div>
+                  <Input
+                    value={caseData.case_name}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCaseData((prev) => ({ ...prev, case_name: v }));
+                    }}
+                    placeholder="Who are you serving? (full name)"
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {recipients.map((rec, idx) => (
+                    <div key={idx} className="flex gap-2 items-center">
+                      <div className="flex-1">
+                        <Input
+                          value={rec.full_name}
+                          onChange={(e) => updateRecipient(idx, "full_name", e.target.value)}
+                          placeholder={idx === 0 ? "Primary Person Being Served" : `Person #${idx + 1} (e.g. spouse, co-defendant)`}
+                          className="h-9 text-xs"
+                        />
+                      </div>
+                      {recipients.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-9 w-9 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 shrink-0"
+                          onClick={() => removeRecipient(idx)}
+                          title="Remove recipient"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-muted-foreground">
+                Multiple people at the same address will each get their own separate selectable Affidavit upon completion or non-service.
+              </p>
             </div>
+
             <div>
               <Label htmlFor="court_name">Court Name (full caption)</Label>
               <Input
@@ -278,7 +379,9 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading }: Edit
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="served">Served</SelectItem>
+                  <SelectItem value="non-service">Non-Service</SelectItem>
+                  <SelectItem value="on-hold">On Hold</SelectItem>
                   <SelectItem value="closed">Closed</SelectItem>
                 </SelectContent>
               </Select>

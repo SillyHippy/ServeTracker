@@ -114,6 +114,40 @@ export function resolveCase(
   return caseObj;
 }
 
+/**
+ * Attempts that belong to this case row only.
+ * Rows with case_id set match this UUID. Empty-case_id legacy rows match only
+ * if they share this case's number+client AND occurred on/after this case was
+ * created — a re-serve under the same court number must not inherit the prior job.
+ */
+export const ATTEMPTS_FOR_CASE_SQL = `SELECT * FROM serve_attempts
+         WHERE case_id = ?
+            OR (
+              (case_id IS NULL OR case_id = '')
+              AND case_number = (SELECT case_number FROM client_cases WHERE id = ?)
+              AND client_id = (SELECT client_id FROM client_cases WHERE id = ?)
+              AND COALESCE(occurred_at, timestamp) >= COALESCE((SELECT created_at FROM client_cases WHERE id = ?), '')
+            )
+         ORDER BY COALESCE(occurred_at, timestamp) ASC`;
+
+export function attemptsForCaseParams(caseId: string): [string, string, string, string] {
+  return [caseId, caseId, caseId, caseId];
+}
+
+/** WHERE fragment for listing serves scoped to one case (optional table prefix). */
+export function attemptBelongsToCaseSql(colPrefix = ""): string {
+  const p = colPrefix;
+  return `(
+          ${p}case_id = ?
+          OR (
+            (${p}case_id IS NULL OR ${p}case_id = '')
+            AND ${p}case_number = (SELECT case_number FROM client_cases WHERE id = ?)
+            AND ${p}client_id = (SELECT client_id FROM client_cases WHERE id = ?)
+            AND COALESCE(${p}occurred_at, ${p}timestamp) >= COALESCE((SELECT created_at FROM client_cases WHERE id = ?), '')
+          )
+        )`;
+}
+
 /** Active signature asset for a user (status active, not revoked). */
 export function activeSignature(db: Db, userId: string): Record<string, unknown> | null {
   return (db
@@ -145,15 +179,52 @@ export function invalidateForServerChanges(db: Db, serverId: string, reason: str
   return n;
 }
 
-/** The latest execution row for a case (any status). */
-export function latestExecution(db: Db, caseId: string): Record<string, unknown> | null {
+/** The recipient an execution was sworn against, from its frozen snapshot. */
+export function executionTargetRecipientId(row: Record<string, unknown>): string {
+  try {
+    const snap = JSON.parse(String(row.source_snapshot_json || "{}"));
+    return String(snap?.targetRecipient?.id || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The latest execution row for a case (any status). When a recipient is given
+ * the search is confined to that recipient's executions — one recipient's
+ * affidavit must never be recorded as superseding another's.
+ */
+export function latestExecution(
+  db: Db,
+  caseId: string,
+  recipientId?: string
+): Record<string, unknown> | null {
+  if (recipientId) {
+    const rows = db
+      .query("SELECT * FROM affidavit_executions WHERE case_id = ? ORDER BY created_at DESC")
+      .all(caseId) as Record<string, unknown>[];
+    return rows.find((r) => executionTargetRecipientId(r) === String(recipientId)) || null;
+  }
   return (db
     .query("SELECT * FROM affidavit_executions WHERE case_id = ? ORDER BY created_at DESC LIMIT 1")
     .get(caseId) as Record<string, unknown> | null);
 }
 
-/** The current usable signed execution for a case (not invalidated). */
-export function activeExecution(db: Db, caseId: string): Record<string, unknown> | null {
+/**
+ * The current usable signed execution for a case (not invalidated).
+ * When a recipient is given this is STRICT: a case where Rebecca is signed and
+ * the LLC is not must report "none" for the LLC rather than serving up
+ * Rebecca's signed affidavit under the LLC's name.
+ */
+export function activeExecution(db: Db, caseId: string, recipientId?: string): Record<string, unknown> | null {
+  if (recipientId) {
+    const rows = db
+      .query(
+        "SELECT * FROM affidavit_executions WHERE case_id = ? AND status = 'signed_not_notarized' AND (invalidated_at = '' OR invalidated_at IS NULL) ORDER BY created_at DESC"
+      )
+      .all(caseId) as Record<string, unknown>[];
+    return rows.find((r) => executionTargetRecipientId(r) === String(recipientId)) || null;
+  }
   return (db
     .query(
       "SELECT * FROM affidavit_executions WHERE case_id = ? AND status = 'signed_not_notarized' AND (invalidated_at = '' OR invalidated_at IS NULL) ORDER BY created_at DESC LIMIT 1"
@@ -179,35 +250,51 @@ export function loadCaseBundle(db: Db, caseIdOrNumber: string, clientIdFilter = 
   const recipients = db
     .query("SELECT * FROM serve_recipients WHERE case_id = ?")
     .all(caseObj.id) as Record<string, unknown>[];
-  const attempts = db
-    .query(
-      `SELECT * FROM serve_attempts
-       WHERE id IN (
-         SELECT id FROM serve_attempts WHERE case_id != '' AND case_id = ?
-         UNION
-         SELECT id FROM serve_attempts WHERE case_number = ? AND client_id = ?
-       )
-       ORDER BY COALESCE(occurred_at, timestamp) ASC`
-    )
-    .all(String(caseObj.id), caseObj.case_number, caseObj.client_id) as Record<string, unknown>[];
+  const rawAttempts = db
+    .query(ATTEMPTS_FOR_CASE_SQL)
+    .all(...attemptsForCaseParams(String(caseObj.id))) as Record<string, unknown>[];
 
   let assignedServer: Record<string, unknown> | null = null;
   const assignedTo = String(caseObj.assigned_to || "");
   if (assignedTo) {
-    assignedServer = db.query("SELECT * FROM users WHERE id = ?").get(assignedTo) as Record<string, unknown> | null;
+    assignedServer = db.query("SELECT * FROM users WHERE id = ? OR username = ?").get(assignedTo, assignedTo) as Record<string, unknown> | null;
   }
 
   // Photos per attempt (material exhibits must be part of the hashed snapshot).
   const photoCache: Record<string, Record<string, unknown>[]> = {};
-  for (const a of attempts) {
-    photoCache[String(a.id)] = db
+  const attempts: Record<string, unknown>[] = [];
+  for (const a of rawAttempts) {
+    const photos = db
       .query(
         "SELECT id, position, image_url, image_file_id, thumbnail_url, label, captured_at, coordinates FROM serve_attempt_photos WHERE serve_id = ? ORDER BY position ASC"
       )
       .all(a.id) as Record<string, unknown>[];
+    photoCache[String(a.id)] = photos;
+    attempts.push({
+      ...a,
+      photos: photos.map((p, idx) => ({
+        ...p,
+        imageUrl: p.image_url,
+        position: Number(p.position) || idx + 1,
+      })),
+    });
   }
 
   return { caseObj, client, recipients, attempts, assignedServer, photoCache };
+}
+
+/**
+ * The single rule for "who is this affidavit about". Prepare, sign, snapshot
+ * and render all call this so they can never disagree about the target.
+ * An explicit recipientId that does not belong to the case resolves to null.
+ */
+export function resolveTargetRecipient(
+  bundle: CaseBundle,
+  recipientId?: string | null
+): Record<string, unknown> | null {
+  const wanted = String(recipientId || "").trim();
+  if (wanted) return bundle.recipients.find((r) => String(r.id) === wanted) || null;
+  return bundle.recipients[0] || null;
 }
 
 /** Canonical sorted-key snapshot of every material fact on the affidavit. */
@@ -215,9 +302,11 @@ export function buildSourceSnapshot(
   bundle: CaseBundle,
   signatureAsset: Record<string, unknown> | null,
   affidavitKind?: AffidavitKind | string | null,
-  venue?: { state?: string; county?: string } | null
+  venue?: { state?: string; county?: string } | null,
+  recipientId?: string | null
 ): string {
   const c = bundle.caseObj;
+  const targetRec = resolveTargetRecipient(bundle, recipientId) || bundle.recipients[0] || null;
   const snapshot = {
     case: {
       id: c.id,
@@ -243,6 +332,15 @@ export function buildSourceSnapshot(
           address: bundle.client.address,
         }
       : null,
+    targetRecipient: targetRec
+      ? {
+          id: targetRec.id,
+          full_name: targetRec.full_name,
+          role: targetRec.role,
+          home_address: targetRec.home_address,
+          work_address: targetRec.work_address,
+        }
+      : null,
     recipients: bundle.recipients.map((r) => ({
       id: r.id,
       full_name: r.full_name,
@@ -255,6 +353,10 @@ export function buildSourceSnapshot(
     })),
     attempts: bundle.attempts.map((a) => ({
       id: a.id,
+      // Encounter grouping changes the printed chronology, so it is a material
+      // fact and belongs inside the tamper-evident hash.
+      event_id: a.event_id || a.id,
+      recipient_id: a.recipient_id || "",
       case_number: a.case_number,
       person_being_served: a.person_being_served,
       status: a.status,
@@ -306,14 +408,20 @@ export function buildSourceSnapshot(
   return canonicalize(snapshot);
 }
 
-/** True when a Service affidavit would assert a method that was never recorded. */
+/**
+ * True when a Service affidavit would assert a method that was never recorded.
+ * Scoped to the target recipient: a stop that personally served Rebecca but
+ * recorded nothing against the LLC must block the LLC's affidavit.
+ */
 export function methodBlockingError(
   attempts: Record<string, unknown>[],
-  kind?: AffidavitKind | string | null
+  kind?: AffidavitKind | string | null,
+  targetRecipientId?: string,
+  targetRecipientName?: string
 ): string | null {
   const resolved = inferAffidavitKind(attempts, kind);
   if (resolved === "non-service") return null;
-  const last = latestSuccessfulServe(attempts);
+  const last = latestSuccessfulServe(attempts, targetRecipientId, targetRecipientName);
   if (!last) {
     return "METHOD NOT RECORDED — verify the method of service before signing.";
   }
@@ -329,30 +437,47 @@ export interface SignValidation {
   error?: string;
   bundle?: CaseBundle;
   signature?: Record<string, unknown> | null;
+  targetRecipient?: Record<string, unknown> | null;
 }
 
-/** All checks that must pass before a signature can be applied. */
+/**
+ * All checks that must pass before a signature can be applied.
+ * `recipientId` scopes the method gate to one legal recipient; omitted, it
+ * falls back to the case's first recipient exactly as the snapshot does.
+ */
 export function validateSignable(
   db: Db,
   caseIdOrNumber: string,
   _actorRole?: "admin" | "server",
-  affidavitKind?: AffidavitKind | string | null
+  affidavitKind?: AffidavitKind | string | null,
+  recipientId?: string | null
 ): SignValidation {
   const bundle = loadCaseBundle(db, caseIdOrNumber);
   if (!bundle) return { ok: false, error: "Case not found" };
+
+  const wanted = String(recipientId || "").trim();
+  const targetRecipient = resolveTargetRecipient(bundle, wanted);
+  if (wanted && !targetRecipient) {
+    return { ok: false, error: "Recipient does not belong to this case", bundle };
+  }
 
   const assigned = bundle.assignedServer;
   if (!assigned) return { ok: false, error: "Case is not assigned to a field server" };
   const eligibility = serverEligibilityError(assigned);
   if (eligibility) return { ok: false, error: eligibility };
 
-  const methodErr = methodBlockingError(bundle.attempts, affidavitKind);
+  const methodErr = methodBlockingError(
+    bundle.attempts,
+    affidavitKind,
+    String(targetRecipient?.id || ""),
+    String(targetRecipient?.full_name || "")
+  );
   if (methodErr) return { ok: false, error: methodErr };
 
   const sig = activeSignature(db, String(assigned.id));
   if (!sig) return { ok: false, error: "Assigned server has no active saved signature" };
 
-  return { ok: true, bundle, signature: sig };
+  return { ok: true, bundle, signature: sig, targetRecipient };
 }
 
 export function createExecution(
@@ -434,8 +559,13 @@ export async function renderExecutionHtml(
   const { generateAffidavitHtml } = await import("../src/utils/affidavitEngine");
   const server = bundle.assignedServer || {};
   const c = bundle.caseObj;
+  const targetRecipient = (snapshot.targetRecipient as Record<string, unknown> | null) || null;
   const recipientName =
-    bundle.recipients[0]?.full_name || c.defendant_respondent || c.case_name || "TARGET RECIPIENT";
+    targetRecipient?.full_name ||
+    bundle.recipients[0]?.full_name ||
+    c.defendant_respondent ||
+    c.case_name ||
+    "TARGET RECIPIENT";
 
   const venue = ((snapshot.notaryVenue as Record<string, unknown>) || {}) as {
     state?: string;
@@ -455,6 +585,9 @@ export async function renderExecutionHtml(
     },
     client: bundle.client ? { name: String(bundle.client.name || "") } : undefined,
     recipient: {
+      // The frozen snapshot's recipient id drives method resolution, so a
+      // re-render years later resolves the same row it was sworn against.
+      id: String(targetRecipient?.id || ""),
       full_name: String(recipientName || ""),
       home_address: String(c.home_address || ""),
       work_address: String(c.work_address || ""),

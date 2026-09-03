@@ -51,7 +51,8 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
   const [acceptedBy, setAcceptedBy] = useState<string>(serve.acceptedBy || serve.accepted_by || "");
   const [refusedToIdentify, setRefusedToIdentify] = useState(false);
   const [postingLocation, setPostingLocation] = useState<string>(serve.postingLocation || serve.posting_location || "");
-  const [corporateAgent, setCorporateAgent] = useState<string>(serve.corporateAgent || serve.corporate_agent || "");
+  const [corporateAgent, setCorporateAgent] = useState<string>(serve.corporateAgent || serve.corporate_agent || serve.entityName || serve.entity_name || "");
+  const [recipientTitle, setRecipientTitle] = useState<string>(serve.recipientTitle || serve.recipient_title || "Registered Agent");
 
   const photosFromServe = (): Array<{ id: string; position: number; imageUrl?: string }> => {
     if (serve.photos && serve.photos.length > 0) {
@@ -85,7 +86,8 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
     setAcceptedBy(serve.acceptedBy || serve.accepted_by || "");
     setRefusedToIdentify(false);
     setPostingLocation(serve.postingLocation || serve.posting_location || "");
-    setCorporateAgent(serve.corporateAgent || serve.corporate_agent || "");
+    setCorporateAgent(serve.corporateAgent || serve.corporate_agent || serve.entityName || serve.entity_name || "");
+    setRecipientTitle(serve.recipientTitle || serve.recipient_title || "Registered Agent");
   }, [serve, open]);
 
   const handleDeleteExistingPhoto = async (photoId: string) => {
@@ -142,6 +144,14 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
         service_method: serviceMethod,
         acceptedBy: refusedToIdentify ? "" : acceptedBy,
         accepted_by: refusedToIdentify ? "" : acceptedBy,
+        postingLocation,
+        posting_location: postingLocation,
+        corporateAgent,
+        corporate_agent: corporateAgent,
+        entityName: corporateAgent,
+        entity_name: corporateAgent,
+        recipientTitle,
+        recipient_title: recipientTitle,
       };
       // Strip GPS fields so parents cannot accidentally overwrite them
       delete (payload as any).coordinates;
@@ -359,6 +369,22 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
                   value={corporateAgent}
                   onChange={(e) => setCorporateAgent(e.target.value)}
                 />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="recipientTitle" className="text-right">
+                  Title / Capacity
+                </Label>
+                <select
+                  id="recipientTitle"
+                  value={recipientTitle}
+                  onChange={(e) => setRecipientTitle(e.target.value)}
+                  className="col-span-3 rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2 text-sm"
+                >
+                  <option value="Registered Agent">Registered Agent</option>
+                  <option value="Managing Agent">Managing Agent</option>
+                  <option value="President / Officer">President / Officer</option>
+                  <option value="Authorized Representative">Authorized Representative</option>
+                </select>
               </div>
             </div>
           )}

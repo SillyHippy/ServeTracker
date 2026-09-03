@@ -122,7 +122,7 @@ const Settings: React.FC = () => {
               <div className="space-y-0.5">
                 <h3 className="text-sm font-medium">Local Storage</h3>
                 <p className="text-sm text-muted-foreground">
-                  Clear all locally stored data
+                  Clear all locally stored data in this browser
                 </p>
               </div>
               <AlertDialog>
@@ -152,23 +152,6 @@ const Settings: React.FC = () => {
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
-            </div>
-
-            <Separator className="my-4" />
-
-            <div className="space-y-2">
-              <h3 className="text-sm font-medium">Data Migration</h3>
-              <p className="text-sm text-muted-foreground">
-                Transfer data from browser local storage to the server
-              </p>
-              <Button
-                variant="outline"
-                onClick={() => navigate("/migration")}
-                className="w-full sm:w-auto"
-              >
-                <Database className="mr-2 h-4 w-4" />
-                Data Migration Tool
-              </Button>
             </div>
           </CardContent>
         </Card>

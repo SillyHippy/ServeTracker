@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Send, AlertCircle, Clock, Phone, AlertTriangle } from "lucide-react";
+import { Send, AlertCircle, Clock, Phone, AlertTriangle, Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { API_BASE } from "@/lib/api";
 
 const PRESET_MESSAGES = [
   {
@@ -40,10 +41,12 @@ export default function NudgeServerDialog({
   caseId,
   caseNumber,
   serverName,
+  compact = false,
 }: {
   caseId: string;
   caseNumber: string;
   serverName?: string;
+  compact?: boolean;
 }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
@@ -54,9 +57,10 @@ export default function NudgeServerDialog({
     if (!message.trim()) return;
     setSending(true);
     try {
-      const res = await fetch(`/api/admin/cases/${caseId}/nudge`, {
+      const res = await fetch(`${API_BASE}/api/admin/cases/${caseId}/nudge`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ message }),
       });
       const data = await res.json();
@@ -82,10 +86,22 @@ export default function NudgeServerDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="h-10 text-amber-700 border-amber-300 hover:bg-amber-50">
-          <Send className="h-3.5 w-3.5 mr-1" />
-          Nudge Server
-        </Button>
+        {compact ? (
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 min-h-8 min-w-8 text-amber-700 bg-amber-50/50 border-amber-300 hover:bg-amber-100 rounded-full shrink-0 shadow-xs"
+            title={`Nudge server (${serverName || "assigned"})`}
+          >
+            <Bell className="h-4 w-4 text-amber-600" />
+            <span className="sr-only">Nudge</span>
+          </Button>
+        ) : (
+          <Button variant="outline" size="sm" className="min-h-10 h-10 text-amber-700 border-amber-300 hover:bg-amber-50">
+            <Bell className="h-3.5 w-3.5 mr-1 text-amber-600" />
+            Nudge Server
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent className="max-w-md">
         <DialogHeader>

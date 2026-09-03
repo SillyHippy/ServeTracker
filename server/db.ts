@@ -255,7 +255,11 @@ function runMigrations(db: Database) {
   addCol("recipient_title", "TEXT DEFAULT ''");
   addCol("logged_by", "TEXT DEFAULT ''");
   addCol("logged_by_name", "TEXT DEFAULT ''");
+  // Rows sharing an event_id are one physical encounter (one stop, one GPS fix,
+  // one photo set) that delivered papers to more than one legal recipient.
+  addCol("event_id", "TEXT DEFAULT ''");
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_case ON serve_attempts(case_id);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_serves_event ON serve_attempts(event_id);");
 
   // Backfill occurred_at and entered_at for older rows
   db.exec(`
@@ -266,6 +270,14 @@ function runMigrations(db: Database) {
     UPDATE serve_attempts 
     SET entered_at = timestamp 
     WHERE entered_at IS NULL OR entered_at = '';
+  `);
+
+  // Self-event backfill: every pre-existing row is its own encounter, so
+  // grouping by event_id can never merge two historically separate attempts.
+  db.exec(`
+    UPDATE serve_attempts
+    SET event_id = id
+    WHERE event_id IS NULL OR event_id = '';
   `);
 
   // Safe backfill only: use THIS attempt's case_name when PBS is blank.
@@ -294,7 +306,23 @@ function runMigrations(db: Database) {
   if (!caseColNames.has("contact_info")) {
     db.exec(`ALTER TABLE client_cases ADD COLUMN contact_info TEXT DEFAULT '';`);
   }
+  const addCaseCol = (colName: string, sqlDef: string) => {
+    if (!caseColNames.has(colName)) {
+      db.exec(`ALTER TABLE client_cases ADD COLUMN ${colName} ${sqlDef};`);
+      caseColNames.add(colName);
+    }
+  };
+  addCaseCol("quoted_fee", "TEXT DEFAULT ''");
+  addCaseCol("invoice_id", "TEXT DEFAULT ''");
+  addCaseCol("invoice_number", "TEXT DEFAULT ''");
+  addCaseCol("pay_url", "TEXT DEFAULT ''");
+  addCaseCol("payment_status", "TEXT DEFAULT ''");
+  addCaseCol("paid_at", "TEXT DEFAULT ''");
+  addCaseCol("payment_method", "TEXT DEFAULT ''");
+  addCaseCol("payment_notes", "TEXT DEFAULT ''");
+  addCaseCol("invoice_email_sent", "INTEGER DEFAULT 0");
   db.exec("CREATE INDEX IF NOT EXISTS idx_cases_assigned ON client_cases(assigned_to);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_cases_invoice_id ON client_cases(invoice_id);");
 
   // 5. Serve recipients assigned columns
   const recCols = db.query("PRAGMA table_info(serve_recipients)").all() as { name: string }[];
@@ -393,6 +421,7 @@ function runMigrations(db: Database) {
   addUserCol("signature_updated_at", "TEXT DEFAULT ''");
   addUserCol("last_login_at", "TEXT DEFAULT ''");
   addUserCol("last_activity_at", "TEXT DEFAULT ''");
+  addUserCol("phone_sms_enabled", "INTEGER DEFAULT 1");
 
   // Backfill: only unset onboarding — never clobber an explicit must_change_password=1.
   db.exec(`
@@ -586,7 +615,7 @@ function runMigrations(db: Database) {
     END;
   `);
 
-  db.exec("PRAGMA user_version = 5;");
+  db.exec("PRAGMA user_version = 6;");
 }
 
 export type Db = Database;

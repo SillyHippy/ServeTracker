@@ -10,6 +10,7 @@ import { API_BASE } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Shield, UserPlus, PenLine, DollarSign, MapPin, CheckCircle, RefreshCw, Calendar } from "lucide-react";
 import { SignatureCapture } from "@/components/SignatureCapture";
+import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 
 export default function RegisterServerPage() {
   const navigate = useNavigate();
@@ -26,10 +27,10 @@ export default function RegisterServerPage() {
   const [licenseNumber, setLicenseNumber] = useState("");
   const [licenseJurisdiction, setLicenseJurisdiction] = useState("Tulsa County / Oklahoma");
   const [licenseExpiresAt, setLicenseExpiresAt] = useState("");
-  const [serviceTerritory, setServiceTerritory] = useState("");
+  const [serviceTerritory, setServiceTerritory] = useState("Tulsa, Rogers, Wagoner, Creek, Osage");
   const [standardRate, setStandardRate] = useState("50.00");
-  const [rushRate, setRushRate] = useState("85.00");
-  const [rateNotes, setRateNotes] = useState("");
+  const [rushRate, setRushRate] = useState("60.00");
+  const [rateNotes, setRateNotes] = useState("3 attempts included, flat rate.");
   const [signatureData, setSignatureData] = useState<string | null>(null);
   const [acceptedTos, setAcceptedTos] = useState(false);
 
@@ -108,6 +109,23 @@ export default function RegisterServerPage() {
           <p className="text-xs sm:text-sm text-slate-500">
             Join Just Legal Solutions as a licensed private process server
           </p>
+        </div>
+
+        <div className="space-y-3 bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <p className="text-xs text-center font-medium text-slate-600 dark:text-slate-400">
+            Fast Track: Sign up or log in instantly with Google
+          </p>
+          <GoogleSignInButton label="Sign up with Google" />
+          <div className="relative w-full my-2">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-slate-200 dark:border-slate-800" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white dark:bg-slate-900 px-2 text-muted-foreground font-semibold">
+                Or fill manual application
+              </span>
+            </div>
+          </div>
         </div>
 
         <form onSubmit={handleRegister}>
@@ -205,7 +223,7 @@ export default function RegisterServerPage() {
                     name="tel"
                     type="tel"
                     inputMode="tel"
-                    placeholder="(539) 555-0123"
+                    placeholder="(918) 555-0123"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     autoComplete="tel"

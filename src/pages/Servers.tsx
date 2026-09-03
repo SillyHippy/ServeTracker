@@ -12,8 +12,10 @@ import SignatureStatusBadge from "@/components/SignatureStatusBadge";
 import ServerIntakeDialog from "@/components/ServerIntakeDialog";
 import ServerProfileDialog from "@/components/ServerProfileDialog";
 import ServerAssignmentPanel from "@/components/ServerAssignmentPanel";
+import NotifyServerDialog from "@/components/NotifyServerDialog";
 import {
   Briefcase, UserPlus, RefreshCw, Loader2, ChevronDown, ChevronRight, Inbox, Search,
+  Phone, MessageSquare, Mail, MapPin, DollarSign,
 } from "lucide-react";
 
 interface CaseRow {
@@ -40,6 +42,7 @@ export default function Servers() {
   const [caseDetail, setCaseDetail] = useState<{ cases: CaseRow[]; events: AssignmentEvent[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [filterText, setFilterText] = useState("");
+  const [showDeactivated, setShowDeactivated] = useState(false);
   const [activeCases, setActiveCases] = useState<CaseRow[]>([]);
   const [caseSearch, setCaseSearch] = useState("");
   const { toast } = useToast();
@@ -69,8 +72,14 @@ export default function Servers() {
           assigned_name: c.assigned_name || "",
           home_address: c.home_address || c.homeAddress || "",
         })).filter((c) => {
-          const st = (c.status || "").toLowerCase();
-          return st !== "closed" && st !== "completed";
+          const st = (c.status || "").toLowerCase().replace(/[\s_]+/g, "-").trim();
+          return (
+            st !== "closed" &&
+            st !== "completed" &&
+            st !== "served" &&
+            st !== "non-service" &&
+            st !== "nonservice"
+          );
         });
         rows.sort((a, b) => Number(!!b.assigned_to) - Number(!!a.assigned_to) === 0
           ? String(b.updated_at).localeCompare(String(a.updated_at))
@@ -133,19 +142,33 @@ export default function Servers() {
     await loadDetail(serverId);
   };
 
+  const deactivatedCount = (data?.servers || []).filter((s) => s.isActive === false).length;
   const filtered = (data?.servers || []).filter((s) => {
-    if (filterText && !`${s.displayName} ${s.username} ${s.legalName}`.toLowerCase().includes(filterText.toLowerCase())) return false;
-    return true;
+    if (!showDeactivated && s.isActive === false) return false;
+    if (!filterText) return true;
+    const q = filterText.toLowerCase().trim();
+    const nameMatch = `${s.displayName} ${s.username} ${s.legalName}`.toLowerCase().includes(q);
+    const phoneMatch = String((s as any).phone || "").replace(/\D/g, "").includes(q.replace(/\D/g, ""));
+    const emailMatch = String((s as any).email || "").toLowerCase().includes(q);
+    const territoryMatch = Array.isArray((s as any).serviceTerritory) && (s as any).serviceTerritory.some((t: string) => t.toLowerCase().includes(q));
+    const notesMatch = String((s as any).profileNotes || "").toLowerCase().includes(q);
+    const licenseMatch = String((s as any).licenseNumber || "").toLowerCase().includes(q) || String((s as any).licenseJurisdiction || "").toLowerCase().includes(q);
+    return nameMatch || phoneMatch || emailMatch || territoryMatch || notesMatch || licenseMatch;
   });
 
   const serverOptions = (data?.servers || [])
-    .filter((s) => s.role === "server")
+    .filter((s) => (s.role === "server" || s.role === "admin") && s.isActive !== false)
     .map((s) => {
       let ineligible: string | undefined;
-      if (!s.isActive) ineligible = "inactive";
-      else if (s.onboardingStatus !== "active") ineligible = s.onboardingStatus;
-          else if (s.licenseStatus === "expired") ineligible = "license expired";
-          return { id: s.id, label: `${s.displayName} (@${s.username})`, ineligible };
+      if (s.role !== "admin") {
+        if (!s.isActive) ineligible = "inactive";
+        else if (s.onboardingStatus !== "active") ineligible = s.onboardingStatus;
+        else if (s.licenseStatus === "expired") ineligible = "license expired";
+      }
+      const label = s.role === "admin"
+        ? `${s.displayName} (Admin @${s.username})`
+        : `${s.displayName} (@${s.username})`;
+      return { id: s.id, label, ineligible };
     });
 
   const visibleCases = activeCases.filter((c) => {
@@ -267,16 +290,27 @@ export default function Servers() {
       )}
 
       {/* Search + filter */}
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1 max-w-sm">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search servers…"
+            placeholder="Search servers by county (e.g. Rogers, Tulsa), name, phone, PSL..."
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
-            className="pl-9"
+            className="pl-9 h-10 text-sm bg-slate-50/50"
           />
         </div>
+        {deactivatedCount > 0 && (
+          <Button
+            type="button"
+            variant={showDeactivated ? "secondary" : "outline"}
+            size="sm"
+            className="h-10 text-xs"
+            onClick={() => setShowDeactivated((v) => !v)}
+          >
+            {showDeactivated ? "Hide deactivated" : `Show deactivated (${deactivatedCount})`}
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -292,38 +326,104 @@ export default function Servers() {
         <div className="space-y-2">
           {filtered.map((s: WorkloadServer) => (
             <Card key={s.id} className="border-slate-200 shadow-xs">
-              <button
-                type="button"
-                className="w-full text-left p-4 flex items-center justify-between gap-3 hover:bg-slate-50/70 transition"
-                onClick={() => toggleDetail(s.id)}
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="font-bold text-slate-900">{s.displayName}</span>
-                    <Badge variant="secondary" className="text-[10px] uppercase">{s.username}</Badge>
-                    {!s.isActive && <Badge variant="destructive" className="text-[10px]">Inactive</Badge>}
-                    {s.onboardingStatus !== "active" && (
-                      <Badge variant="secondary" className="text-[10px]">{s.onboardingStatus}</Badge>
+              <div className="p-4 flex flex-col gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                  <div
+                    className="min-w-0 flex-1 cursor-pointer"
+                    onClick={() => toggleDetail(s.id)}
+                  >
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-bold text-slate-900 text-base">{s.displayName}</span>
+                      <Badge variant="secondary" className="text-[10px] uppercase font-semibold">{s.username}</Badge>
+                      {!s.isActive && <Badge variant="destructive" className="text-[10px]">Inactive</Badge>}
+                      {s.onboardingStatus !== "active" && (
+                        <Badge variant="secondary" className="text-[10px]">{s.onboardingStatus}</Badge>
+                      )}
+                      {s.licenseStatus === "expired" && <Badge variant="destructive" className="text-[10px]">License expired</Badge>}
+                      {s.licenseStatus === "expires_soon" && <Badge variant="secondary" className="text-[10px] text-amber-700 bg-amber-50">License expiring</Badge>}
+                      {s.licenseStatus === "missing" && <Badge variant="outline" className="text-[10px]">No license</Badge>}
+                    </div>
+
+                    <div className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">{s.assignedActiveCases}</span> active cases ·{" "}
+                      <span className={s.noAttemptCases > 0 ? "text-amber-700 font-semibold" : ""}>{s.noAttemptCases}</span> no attempt ·{" "}
+                      <span className={s.stale48hCases > 0 ? "text-red-600 font-semibold" : ""}>{s.stale48hCases}</span> stale 48h ·{" "}
+                      {s.activityToday} today / {s.activity7Days} 7d
+                    </div>
+
+                    {/* Territory Badges */}
+                    {Array.isArray((s as any).serviceTerritory) && (s as any).serviceTerritory.length > 0 && (
+                      <div className="flex items-center gap-1.5 flex-wrap pt-1.5">
+                        <MapPin className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                        <span className="text-[11px] font-bold text-slate-600">Territory:</span>
+                        {(s as any).serviceTerritory.map((t: string, idx: number) => (
+                          <span key={idx} className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-medium">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
                     )}
-                    {s.licenseStatus === "expired" && <Badge variant="destructive" className="text-[10px]">License expired</Badge>}
-                    {s.licenseStatus === "expires_soon" && <Badge variant="secondary" className="text-[10px]">License expiring</Badge>}
-                    {s.licenseStatus === "missing" && <Badge variant="outline" className="text-[10px]">No license</Badge>}
+
+                    {/* Rates & Notes */}
+                    {(s as any).profileNotes && (
+                      <div className="text-[11px] bg-slate-50 border border-slate-100 rounded p-1.5 mt-1 text-slate-600 font-mono">
+                        {(s as any).profileNotes}
+                      </div>
+                    )}
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    <span className="font-semibold">{s.assignedActiveCases}</span> active cases ·{" "}
-                    <span className={s.noAttemptCases > 0 ? "text-amber-700 font-semibold" : ""}>{s.noAttemptCases}</span> no attempt ·{" "}
-                    <span className={s.stale48hCases > 0 ? "text-red-600 font-semibold" : ""}>{s.stale48hCases}</span> stale 48h ·{" "}
-                    {s.activityToday} today / {s.activity7Days} 7d
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">
-                    Last activity: {s.lastActivity ? new Date(s.lastActivity).toLocaleString() : "never"}
+
+                  <div className="flex items-center gap-2 flex-wrap shrink-0 self-end sm:self-start">
+                    {(s as any).phone && (
+                      <>
+                        <a
+                          href={`tel:${(s as any).phone}`}
+                          className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100 transition shadow-2xs"
+                          title={`Call ${s.displayName}`}
+                        >
+                          <Phone className="h-3.5 w-3.5" /> Call
+                        </a>
+                        <a
+                          href={`sms:${(s as any).phone}`}
+                          className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-300 hover:bg-blue-100 transition shadow-2xs"
+                          title={`Text / SMS ${s.displayName}`}
+                        >
+                          <MessageSquare className="h-3.5 w-3.5" /> Text
+                        </a>
+                      </>
+                    )}
+                    {(s as any).email && (
+                      <a
+                        href={`mailto:${(s as any).email}`}
+                        className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md text-xs font-semibold bg-slate-50 text-slate-700 border border-slate-300 hover:bg-slate-100 transition"
+                        title={`Email ${s.displayName}`}
+                      >
+                        <Mail className="h-3.5 w-3.5" /> Email
+                      </a>
+                    )}
+                    <NotifyServerDialog
+                      serverId={s.id}
+                      serverName={s.displayName}
+                    />
+                    <SignatureStatusBadge status={s.signatureStatus} />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => toggleDetail(s.id)}
+                    >
+                      Cases {selectedServer === s.id ? <ChevronDown className="h-3.5 w-3.5 ml-1" /> : <ChevronRight className="h-3.5 w-3.5 ml-1" />}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => setProfileUserId(s.id)}
+                    >
+                      Profile
+                    </Button>
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1 shrink-0">
-                  <SignatureStatusBadge status={s.signatureStatus} />
-                  {selectedServer === s.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                </div>
-              </button>
+              </div>
 
               {selectedServer === s.id && (
                 <div className="border-t border-slate-100 p-4 space-y-4">

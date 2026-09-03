@@ -7,6 +7,13 @@ export const DATA_DIR = mkdtempSync(join(tmpdir(), "st-suite-"));
 process.env.DATA_DIR = DATA_DIR;
 process.env.APP_PASSWORD = "TestAdminPass123!";
 process.env.SESSION_COOKIE_NAME = "serve_tracker_session_test";
+process.env.DISABLE_EMAIL = "true";
+process.env.MOCK_EMAIL = "true";
+process.env.HELCIM_MOCK = "true";
+process.env.HELCIM_WEBHOOK_SECRET = "staging-helcim-webhook-secret";
+process.env.SMTP_HOST = "127.0.0.1";
+process.env.SMTP_PORT = "9";
+process.env.PORT = "39991";
 
 // Seeded admin in test suite uses changed password to satisfy must_change_password=1
 const mod = await import("../server/index");
@@ -31,6 +38,7 @@ export type HttpResult = {
 
 export class Client {
   cookies = new Map<string, string>();
+  bearer?: string;
 
   private jar(res: Response) {
     const setCookies: string[] = (res.headers as any).getSetCookie?.() ?? [];
@@ -45,6 +53,7 @@ export class Client {
     const headers: Record<string, string> = {};
     const cookie = [...this.cookies.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
     if (cookie) headers["Cookie"] = cookie;
+    if (this.bearer) headers["Authorization"] = `Bearer ${this.bearer}`;
     let payload: BodyInit | undefined;
     if (body instanceof FormData) {
       payload = body;

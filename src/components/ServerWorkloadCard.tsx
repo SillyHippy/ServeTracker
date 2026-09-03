@@ -71,13 +71,13 @@ export const ServerWorkloadCard: React.FC = () => {
 
         {isLoading ? (
           <div className="py-6 text-center text-xs text-muted-foreground">Loading workload…</div>
-        ) : !data || data.servers.length === 0 ? (
+        ) : !data || data.servers.filter((s) => s.isActive !== false).length === 0 ? (
           <div className="py-6 text-center text-xs text-muted-foreground">
             No field servers yet. Add one under Settings → Field Servers or the Servers page.
           </div>
         ) : (
           <div className="divide-y rounded-md border border-slate-100">
-            {data.servers.map((s) => (
+            {data.servers.filter((s) => s.isActive !== false).map((s) => (
               <Link to={`/servers?server=${s.id}`} key={s.id} className="block p-3 hover:bg-slate-50/80 transition">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">

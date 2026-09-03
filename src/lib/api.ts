@@ -447,6 +447,38 @@ export const api = {
     });
   },
 
+  async markCasePaid(
+    caseId: string,
+    opts: { payment_method?: string; payment_notes?: string; paid_at?: string } = {},
+  ) {
+    return apiFetch<Record<string, unknown>>(`/api/cases/${caseId}/mark-paid`, {
+      method: "POST",
+      body: JSON.stringify(opts),
+    });
+  },
+
+  async markCaseUnpaid(caseId: string) {
+    return apiFetch<Record<string, unknown>>(`/api/cases/${caseId}/mark-unpaid`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async attachCaseInvoice(
+    caseId: string,
+    opts: {
+      invoice_id?: string;
+      invoice_number?: string;
+      quoted_fee?: number;
+      preview?: boolean;
+    },
+  ) {
+    return apiFetch<Record<string, unknown>>(`/api/cases/${caseId}/invoice/attach`, {
+      method: "POST",
+      body: JSON.stringify(opts),
+    });
+  },
+
   async uploadClientDocument(clientId: string, file: File, caseNumber?: string, description?: string) {
     const form = new FormData();
     form.append("file", file);
@@ -548,7 +580,12 @@ export const api = {
   },
 
   async deleteUser(id: string) {
-    return apiFetch<{ success: boolean }>(`/api/users/${id}`, {
+    return apiFetch<{
+      success: boolean;
+      deactivated?: boolean;
+      signedAffidavits?: number;
+      message?: string;
+    }>(`/api/users/${id}`, {
       method: "DELETE",
     });
   },
@@ -596,9 +633,11 @@ export const api = {
     displayName?: string;
     email?: string;
     phone?: string;
+    phoneSmsEnabled?: boolean;
     serviceTerritory?: string[];
+    profileNotes?: string;
   }) {
-    return apiFetch<{ success: boolean; user?: Record<string, unknown> }>("/api/me/profile", {
+    return apiFetch<{ success: boolean; user: unknown }>("/api/me/profile", {
       method: "PUT",
       body: JSON.stringify(profile),
     });
@@ -655,11 +694,33 @@ export const api = {
 
   // ---- Affidavit e-sign ----
 
-  async prepareAffidavit(caseId: string, affidavitKind?: "service" | "non-service") {
-    return apiFetch<import("@/types/AffidavitExecution").AffidavitPrepareResult>("/api/affidavits/prepare", {
+  async prepareAffidavit(caseId: string, affidavitKind?: "service" | "non-service", recipientId?: string) {
+    const res = await fetch(`${API_BASE}/api/affidavits/prepare`, {
       method: "POST",
-      body: JSON.stringify({ caseId, affidavitKind }),
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ caseId, affidavitKind, recipientId }),
     });
+    const text = await res.text();
+    let data: Record<string, unknown> = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+    if (!res.ok) {
+      return {
+        ready: false,
+        caseId,
+        error:
+          String((data as { error?: string }).error || (data as { message?: string }).message || text || `Request failed: ${res.status}`),
+        ...data,
+      } as import("@/types/AffidavitExecution").AffidavitPrepareResult;
+    }
+    return data as unknown as import("@/types/AffidavitExecution").AffidavitPrepareResult;
   },
 
   async signAffidavit(caseId: string, payload: {
@@ -667,6 +728,7 @@ export const api = {
     acknowledged?: boolean;
     confirmation?: string;
     affidavitKind?: "service" | "non-service";
+    recipientId?: string;
     notaryState?: string;
     notaryCounty?: string;
   }) {
@@ -676,8 +738,9 @@ export const api = {
     });
   },
 
-  async renderAffidavit(caseId: string) {
-    return apiFetch<import("@/types/AffidavitExecution").AffidavitRenderResult>(`/api/affidavits/${caseId}/render`);
+  async renderAffidavit(caseId: string, recipientId?: string) {
+    const q = recipientId ? `?recipientId=${encodeURIComponent(recipientId)}` : "";
+    return apiFetch<import("@/types/AffidavitExecution").AffidavitRenderResult>(`/api/affidavits/${caseId}/render${q}`);
   },
 
   async auditAffidavit(caseId: string) {

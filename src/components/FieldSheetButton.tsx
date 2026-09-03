@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ClipboardList, Printer, X } from "lucide-react";
+import { ClipboardList, Printer, X, FileText, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { generateFieldSheetHtml, printFieldSheetInPage, type FieldSheetPayload } from "@/utils/fieldSheetEngine";
+import { generateFieldSheetPdf } from "@/utils/fieldSheetPdfEngine";
+import { openPdfInViewer } from "@/utils/packetEngine";
 import { api } from "@/lib/api";
 import {
   Dialog,
@@ -11,20 +13,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { CaseDocumentsDialog } from "@/components/CaseDocumentsDialog";
 
 export default function FieldSheetButton({
   data,
   className,
   size = "sm",
   label = "View Field Sheet",
+  showDocsButton = true,
 }: {
   data: FieldSheetPayload & { caseId?: string; clientId?: string };
   className?: string;
   size?: "sm" | "default";
   label?: string;
+  showDocsButton?: boolean;
 }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
+  const [docsOpen, setDocsOpen] = useState(false);
   const [resolvedData, setResolvedData] = useState<FieldSheetPayload>(data);
 
   // Keep static prop in sync when dialog is closed or props change
@@ -58,6 +64,7 @@ export default function FieldSheetButton({
           homeAddress: c.home_address || prev.homeAddress,
           workAddress: c.work_address || prev.workAddress,
           notes: c.notes || prev.notes,
+          recipients: Array.isArray(res.recipients) && res.recipients.length > 0 ? res.recipients : prev.recipients,
           assignedServer: res.assignedServer || prev.assignedServer,
         }));
       } catch (err) {
@@ -83,6 +90,23 @@ export default function FieldSheetButton({
     }
   };
 
+  const handleOpenPdf = async () => {
+    try {
+      const bytes = await generateFieldSheetPdf(resolvedData);
+      openPdfInViewer(bytes, `${resolvedData.caseNumber || "Case"}_Field_Sheet.pdf`);
+      toast({
+        title: "Field Sheet PDF Ready",
+        description: "Opened in native PDF print/viewer app.",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Could not open PDF",
+        description: err?.message || "Failed to generate field sheet PDF",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <>
       <Button type="button" variant="outline" size={size} className={className} onClick={() => setOpen(true)}>
@@ -100,11 +124,17 @@ export default function FieldSheetButton({
               Same sheet for everyone. Read it here. Print uses this page — no extra window.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex gap-2 px-4 pb-2 shrink-0">
-            <Button type="button" size={size} onClick={handlePrint}>
+          <div className="flex flex-wrap gap-2 px-4 pb-2 shrink-0">
+            <Button type="button" size={size} onClick={handleOpenPdf} className="bg-blue-600 hover:bg-blue-700 font-semibold text-white">
               <Printer className="h-4 w-4 mr-1" />
-              Print
+              Print / Open PDF
             </Button>
+            {data.caseId && showDocsButton && (
+              <Button type="button" size={size} variant="outline" onClick={() => setDocsOpen(true)} className="text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100 font-medium">
+                <FileText className="h-4 w-4 mr-1" />
+                Attached Court Papers
+              </Button>
+            )}
             <Button type="button" size={size} variant="ghost" onClick={() => setOpen(false)}>
               <X className="h-4 w-4 mr-1" />
               Close
@@ -117,6 +147,16 @@ export default function FieldSheetButton({
           />
         </DialogContent>
       </Dialog>
+
+      {data.caseId && (
+        <CaseDocumentsDialog
+          caseId={data.caseId}
+          caseNumber={resolvedData.caseNumber || ""}
+          defendantName={resolvedData.defendant || ""}
+          open={docsOpen}
+          onOpenChange={setDocsOpen}
+        />
+      )}
     </>
   );
 }

@@ -39,10 +39,10 @@ export const SignatureCapture: React.FC<SignatureCaptureProps> = ({
     canvas.height = h * dpr;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.5;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = "#000";
+    ctx.strokeStyle = "#000000";
 
     if (value) {
       const img = new Image();
@@ -59,30 +59,55 @@ export const SignatureCapture: React.FC<SignatureCaptureProps> = ({
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
+  const applyBlackInk = (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const a = d[i + 3];
+      if (a === 0) continue;
+      d[i] = 0;
+      d[i + 1] = 0;
+      d[i + 2] = 0;
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+
   const handleDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (disabled) return;
     e.preventDefault();
     drawing.current = true;
     const ctx = canvasRef.current?.getContext("2d");
     const { x, y } = getPos(e);
-    ctx?.beginPath();
-    ctx?.moveTo(x, y);
+    if (ctx) {
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#000000";
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    }
   };
 
   const handleMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawing.current || disabled) return;
     const ctx = canvasRef.current?.getContext("2d");
     const { x, y } = getPos(e);
-    ctx?.lineTo(x, y);
-    ctx?.stroke();
+    if (ctx) {
+      ctx.strokeStyle = "#000000";
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
     setHasDrawn(true);
   };
 
   const handleUp = () => {
     if (!drawing.current) return;
     drawing.current = false;
-    if (canvasRef.current) {
-      onChange(canvasRef.current.toDataURL("image/png"));
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (canvas && ctx) {
+      applyBlackInk(ctx, canvas);
+      onChange(canvas.toDataURL("image/png"));
     }
   };
 
@@ -99,7 +124,24 @@ export const SignatureCapture: React.FC<SignatureCaptureProps> = ({
   const handleFile = (file: File | undefined) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => onChange(String(reader.result));
+    reader.onload = () => {
+      const src = String(reader.result);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d");
+        if (!canvas || !ctx) {
+          onChange(src);
+          return;
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.clientWidth || 340, canvas.clientHeight || 120);
+        applyBlackInk(ctx, canvas);
+        setHasDrawn(true);
+        onChange(canvas.toDataURL("image/png"));
+      };
+      img.src = src;
+    };
     reader.readAsDataURL(file);
   };
 

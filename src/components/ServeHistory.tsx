@@ -3,9 +3,11 @@ import { ServeAttemptData } from "@/types/ServeAttemptData";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
-import { Calendar, MapPin, Edit, Trash2, Clock, ClipboardList, User, ShieldCheck, Plus } from "lucide-react";
+import { Calendar, MapPin, Edit, Trash2, Clock, ClipboardList, User, ShieldCheck, Plus, FileText } from "lucide-react";
 import AffidavitGenerator from "@/components/AffidavitGenerator";
 import FieldSheetButton from "@/components/FieldSheetButton";
+import { CaseDocumentsDialog } from "@/components/CaseDocumentsDialog";
+import NudgeServerDialog from "@/components/NudgeServerDialog";
 import { ClientData } from "@/components/ClientForm";
 import { useAuth } from "@/context/AuthContext";
 import { serviceMethodLabel } from "@/utils/affidavitEngine";
@@ -58,6 +60,8 @@ const getGoogleMapsLink = (coords: unknown): string | null => {
 export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onEdit, onDelete }) => {
   const navigate = useNavigate();
   const { isAdmin, isServer } = useAuth();
+  const [activeDocCase, setActiveDocCase] = React.useState<{ caseId: string; caseNumber: string; defendantName: string } | null>(null);
+
   if (!serves || serves.length === 0) {
     return (
       <div className="text-center p-8 border rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-500">
@@ -84,9 +88,9 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
           const isSuccess = serve.status === "completed" || serve.status === "served";
 
           return (
-            <Card key={serve.id} className="border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition min-w-0 w-full max-w-full overflow-x-clip [overflow-wrap:anywhere]">
-              <CardHeader className="pb-2 bg-slate-50/50 dark:bg-slate-900/50 space-y-2 min-w-0 max-w-full">
-                <div className="flex flex-col gap-2 min-w-0 sm:flex-row sm:items-start sm:justify-between">
+            <Card key={serve.id} className="border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition min-w-0 w-full max-w-full [overflow-wrap:anywhere]">
+              <CardHeader className="pb-2 bg-slate-50/50 dark:bg-slate-900/50 space-y-2 min-w-0 max-w-full overflow-hidden">
+                <div className="flex items-start justify-between gap-2 min-w-0">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start gap-1.5 font-bold text-slate-900 dark:text-slate-100 text-base">
                       <User className="w-4 h-4 mt-0.5 shrink-0 text-blue-600 dark:text-blue-400" />
@@ -96,15 +100,25 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                       <div className="text-xs text-slate-500 font-medium break-words">Client: {clientName}</div>
                     )}
                   </div>
-                  <span
-                    className={`self-start text-[11px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
-                      isSuccess
-                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                        : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                    }`}
-                  >
-                    {isSuccess ? "Successful" : "Unsuccessful"}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span
+                      className={`text-[11px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                        isSuccess
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      }`}
+                    >
+                      {isSuccess ? "Successful" : "Unsuccessful"}
+                    </span>
+                    {isAdmin && (
+                      <NudgeServerDialog
+                        caseId={(serve as any).caseId || (serve as any).case_id || (serve.caseNumber || serve.case_number || serve.id)}
+                        caseNumber={serve.caseNumber || serve.case_number || "Case"}
+                        serverName={(serve as any).loggedByName || (serve as any).logged_by_name || ""}
+                        compact
+                      />
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex items-start gap-1 min-w-0 text-xs text-muted-foreground">
@@ -112,48 +126,71 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                   <span className="break-words min-w-0">Case: {serve.caseNumber || serve.case_number}</span>
                 </div>
 
-                <div className="grid grid-cols-1 min-[380px]:grid-cols-2 gap-2 min-w-0 w-full">
-                  <FieldSheetButton
-                    label="Field Sheet"
-                    className="h-10 w-full justify-center"
-                    data={{
-                      caseId: (serve as any).caseId || (serve as any).case_id,
-                      caseNumber: serve.caseNumber || serve.case_number,
-                      caseName: serve.caseName || serve.case_name,
-                      courtName: serve.court_name,
-                      plaintiff: serve.plaintiff_petitioner,
-                      defendant: serve.defendant_respondent,
-                      documents: (serve as any).documents_to_serve || "",
-                      requirements: (serve as any).service_requirements || "",
-                      contactInfo: (serve as any).contact_info || "",
-                      notes: serve.notes,
-                      homeAddress: serve.home_address || serve.serviceAddress || serve.service_address || serve.address,
-                      workAddress: serve.work_address,
-                      personToServe: pbs,
-                      assignedServer: (serve as any).loggedByName || (serve as any).logged_by_name || "",
-                      clientName,
-                      clientId: serve.clientId || (serve as any).client_id,
-                      hideClient: isServer,
-                    }}
-                  />
-                  {(isAdmin || isServer) && (
-                    <AffidavitGenerator
-                      client={client || ({
-                        id: serve.clientId || serve.client_id || '',
-                        name: serve.clientName || (serve as any).client_name || 'Client',
-                        email: '', phone: '', address: '', notes: '',
-                      } as ClientData)}
-                      serves={caseServes}
-                      caseNumber={serve.caseNumber || serve.case_number}
-                      caseName={serve.caseName || serve.case_name}
-                      personBeingServed={pbs}
-                      courtName={serve.court_name}
-                      plaintiffPetitioner={serve.plaintiff_petitioner}
-                      defendantRespondent={serve.defendant_respondent}
-                      homeAddress={serve.home_address}
-                      workAddress={serve.work_address}
-                      documentsToServe={(serve as any).documents_to_serve || ""}
+                <div className="flex items-center gap-1.5 w-full min-w-0">
+                  <div className="flex-1 min-w-0">
+                    <FieldSheetButton
+                      label="Field Sheet"
+                      className="h-8.5 w-full justify-center px-1 text-[11px] font-semibold"
+                      data={{
+                        caseId: (serve as any).caseId || (serve as any).case_id || serve.caseNumber || serve.case_number,
+                        caseNumber: serve.caseNumber || serve.case_number,
+                        caseName: serve.caseName || serve.case_name,
+                        courtName: serve.court_name,
+                        plaintiff: serve.plaintiff_petitioner,
+                        defendant: serve.defendant_respondent,
+                        documents: (serve as any).documents_to_serve || "",
+                        requirements: (serve as any).service_requirements || "",
+                        contactInfo: (serve as any).contact_info || "",
+                        notes: serve.notes,
+                        homeAddress: serve.home_address || serve.serviceAddress || serve.service_address || serve.address,
+                        workAddress: serve.work_address,
+                        personToServe: pbs,
+                        assignedServer: (serve as any).loggedByName || (serve as any).logged_by_name || "",
+                        clientName,
+                        clientId: serve.clientId || (serve as any).client_id,
+                        hideClient: isServer,
+                      }}
                     />
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 min-w-0 h-8.5 justify-center px-1 text-[11px] font-semibold text-blue-700 bg-blue-50/50 hover:bg-blue-100/70 border-blue-200"
+                    onClick={() =>
+                      setActiveDocCase({
+                        caseId: String((serve as any).caseId || (serve as any).case_id || serve.caseNumber || serve.case_number),
+                        caseNumber: String(serve.caseNumber || serve.case_number || ""),
+                        defendantName: String(serve.defendant_respondent || pbs || ""),
+                      })
+                    }
+                  >
+                    <FileText className="h-3.5 w-3.5 mr-1 text-blue-600 shrink-0" />
+                    <span className="truncate">Service Docs</span>
+                  </Button>
+
+                  {(isAdmin || isServer) && (
+                    <div className="flex-1 min-w-0">
+                      <AffidavitGenerator
+                        buttonClassName="h-8.5 w-full justify-center px-1 text-[11px] font-semibold"
+                        client={client || ({
+                          id: serve.clientId || serve.client_id || '',
+                          name: serve.clientName || (serve as any).client_name || 'Client',
+                          email: '', phone: '', address: '', notes: '',
+                        } as ClientData)}
+                        serves={caseServes}
+                        caseNumber={serve.caseNumber || serve.case_number}
+                        caseName={serve.caseName || serve.case_name}
+                        personBeingServed={pbs}
+                        courtName={serve.court_name}
+                        plaintiffPetitioner={serve.plaintiff_petitioner}
+                        defendantRespondent={serve.defendant_respondent}
+                        homeAddress={serve.home_address}
+                        workAddress={serve.work_address}
+                        documentsToServe={(serve as any).documents_to_serve || ""}
+                      />
+                    </div>
                   )}
                 </div>
 
@@ -238,13 +275,13 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                 )}
               </CardContent>
 
-              <CardFooter className="pt-2 border-t dark:border-slate-800 flex flex-wrap justify-between items-center gap-2 text-[11px] text-slate-400 min-w-0 w-full max-w-full">
-                <div className="flex items-center gap-1 min-w-0">
+              <CardFooter className="pt-2 border-t dark:border-slate-800 flex flex-col sm:flex-row sm:flex-wrap sm:justify-between sm:items-center gap-2 text-[11px] text-slate-400 min-w-0 w-full max-w-full">
+                <div className="flex items-center gap-1 min-w-0 w-full sm:w-auto">
                   <Clock className="h-3 w-3 shrink-0" />
                   <span className="break-words">Logged: {formatDate(serve.enteredAt || serve.entered_at || serve.timestamp)}</span>
                 </div>
 
-                <div className="flex flex-wrap gap-1 items-center">
+                <div className="flex flex-wrap gap-1 items-center w-full sm:w-auto">
                   <Button
                     variant="outline"
                     size="sm"
@@ -299,6 +336,18 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
           );
         })}
       </div>
+
+      {activeDocCase && (
+        <CaseDocumentsDialog
+          caseId={activeDocCase.caseId}
+          caseNumber={activeDocCase.caseNumber}
+          defendantName={activeDocCase.defendantName}
+          open={Boolean(activeDocCase)}
+          onOpenChange={(open) => {
+            if (!open) setActiveDocCase(null);
+          }}
+        />
+      )}
     </div>
   );
 };

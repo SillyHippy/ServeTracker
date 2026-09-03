@@ -58,21 +58,28 @@ export const ServerAssignmentPanel: React.FC<Props> = ({
       .then((users: any) => {
         if (!active || !Array.isArray(users)) return;
         const opts: ServerOption[] = users
-          .filter((u) => u.role === "server" && u.isActive !== false && u.is_active !== 0)
+          .filter((u) => {
+            const active = u.isActive !== false && u.is_active !== 0;
+            return active && (u.role === "server" || u.role === "admin");
+          })
           .map((u) => {
             const onboarding = u.onboardingStatus || u.onboarding_status;
             const expires = u.licenseExpiresAt || u.license_expires_at;
+            const name = u.legalName || u.legal_name || u.displayName || u.display_name || u.username;
+            const isAdminUser = u.role === "admin";
             return {
               id: u.id,
-              label: u.legalName || u.legal_name || u.displayName || u.display_name || u.username,
-              ineligible:
-                onboarding && onboarding !== "active"
+              label: isAdminUser ? `${name} (Admin)` : name,
+              ineligible: isAdminUser
+                ? undefined
+                : onboarding && onboarding !== "active"
                   ? "Pending onboarding"
                   : expires && new Date(expires).getTime() < Date.now()
-                  ? "License expired"
-                  : undefined,
+                    ? "License expired"
+                    : undefined,
             };
-          });
+          })
+          .sort((a, b) => Number(b.label.includes("(Admin)")) - Number(a.label.includes("(Admin)")));
         setLoadedServers(opts);
       })
       .catch(() => {

@@ -1,6 +1,8 @@
 import React from "react";
 import { Outlet } from "react-router-dom";
 import { Header } from "./Header";
+import PermissionBanner from "./PermissionBanner";
+import { Toaster } from "@/components/ui/toaster";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 
@@ -14,6 +16,7 @@ const Layout: React.FC<LayoutProps> = ({ className }) => {
   return (
     <div className="bg-background w-full min-w-0 max-w-full">
       <Header />
+      <PermissionBanner />
       <main
         className={cn(
           "pb-28 w-full min-w-0 max-w-full",
@@ -23,6 +26,7 @@ const Layout: React.FC<LayoutProps> = ({ className }) => {
       >
         <Outlet />
       </main>
+      <Toaster />
     </div>
   );
 };

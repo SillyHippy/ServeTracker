@@ -3,6 +3,7 @@
 ServeTracker High-Frequency DB Snapshot Script (RPO <= 30 Minutes)
 Creates a crash-consistent SQLite snapshot using VACUUM INTO, validates integrity,
 and maintains a rolling 48-hour local history (96 snapshots).
+Silent on success (watchdog pattern) to prevent chat notifications.
 """
 
 import gzip
@@ -29,7 +30,6 @@ def calculate_sha256(filepath: Path) -> str:
     return sha.hexdigest()
 
 def main():
-    t0 = time.time()
     now_str = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
     if not DB_PATH.exists():
@@ -67,12 +67,6 @@ def main():
 
         temp_raw_snap.unlink()
 
-        checksum = calculate_sha256(final_gz_snap)
-        size_kb = final_gz_snap.stat().st_size / 1024
-        elapsed = time.time() - t0
-
-        print(f"[✓] 30-min snapshot created: {final_gz_snap.name} ({size_kb:.1f} KB) in {elapsed:.3f}s [SHA256: {checksum[:12]}...]")
-
         # Step 4: Prune older snapshots beyond 48 hours
         all_snaps = sorted(
             [f for f in SNAPSHOT_DIR.glob("pdfusaedit-snap-*.db.gz")],
@@ -82,6 +76,8 @@ def main():
         if len(all_snaps) > RETENTION_COUNT:
             for old_file in all_snaps[RETENTION_COUNT:]:
                 old_file.unlink()
+
+        # Silent on success (0 stdout = no chat message sent)
 
     except Exception as e:
         print(f"[!] Fast snapshot error: {e}")

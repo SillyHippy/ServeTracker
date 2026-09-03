@@ -1,4 +1,4 @@
-// BUILD_CACHE_BUST_$(date +%s)
+// BUILD_CACHE_BUST_2026-09-03-billing-ar
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -14,6 +14,7 @@ import { toast } from '@/components/ui/use-toast';
 // Lazy load heavy page components for better initial load performance
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const ActiveCases = lazy(() => import('./pages/ActiveCases'));
+const Billing = lazy(() => import('./pages/Billing'));
 const NewServe = lazy(() => import('./pages/NewServe'));
 const Clients = lazy(() => import('./pages/Clients'));
 const History = lazy(() => import('./pages/History'));
@@ -22,6 +23,7 @@ const MigrationPage = lazy(() => import('./pages/Migration'));
 const DataExport = lazy(() => import('./pages/DataExport'));
 const Servers = lazy(() => import('./pages/Servers'));
 const MyProfile = lazy(() => import('./pages/MyProfile'));
+const CompleteOnboardingPage = lazy(() => import('./pages/CompleteOnboardingPage'));
 const TermsPage = lazy(() => import('./pages/TermsPage'));
 const PrivacyPage = lazy(() => import('./pages/PrivacyPage'));
 const DpaPage = lazy(() => import('./pages/DpaPage'));
@@ -100,7 +102,7 @@ import ErrorBoundary from "@/components/ErrorBoundary";
 
 // Create a protected route wrapper component
 const ProtectedRoute = ({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) => {
-  const { status, isAdmin, mustChangePassword } = useAuth();
+  const { status, user, isAdmin, mustChangePassword } = useAuth();
 
   if (status === "loading") {
     return <PageLoader />;
@@ -113,6 +115,11 @@ const ProtectedRoute = ({ children, adminOnly = false }: { children: React.React
   // Forced password change blocks everything except the change-password page.
   if (mustChangePassword) {
     return <Navigate to="/change-password" replace />;
+  }
+
+  // If server onboarding is incomplete, guide them to complete onboarding
+  if (!isAdmin && user?.onboardingStatus === "pending") {
+    return <Navigate to="/complete-onboarding" replace />;
   }
 
   if (adminOnly && !isAdmin) {
@@ -357,6 +364,14 @@ const AnimatedRoutes = () => {
         service_method: serveData.serviceMethod || serveData.service_method || "",
         acceptedBy: serveData.acceptedBy || serveData.accepted_by || "",
         accepted_by: serveData.acceptedBy || serveData.accepted_by || "",
+        postingLocation: serveData.postingLocation || serveData.posting_location || "",
+        posting_location: serveData.postingLocation || serveData.posting_location || "",
+        corporateAgent: serveData.corporateAgent || serveData.corporate_agent || serveData.entityName || serveData.entity_name || "",
+        corporate_agent: serveData.corporateAgent || serveData.corporate_agent || serveData.entityName || serveData.entity_name || "",
+        entityName: serveData.entityName || serveData.entity_name || serveData.corporateAgent || serveData.corporate_agent || "",
+        entity_name: serveData.entityName || serveData.entity_name || serveData.corporateAgent || serveData.corporate_agent || "",
+        recipientTitle: serveData.recipientTitle || serveData.recipient_title || "",
+        recipient_title: serveData.recipientTitle || serveData.recipient_title || "",
       };
 
       const updatedServe = await api.updateServeAttempt(serveData.id, payload);
@@ -412,6 +427,8 @@ const AnimatedRoutes = () => {
         <Route path="/signup" element={<RegisterServerPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/complete-onboarding" element={<Suspense fallback={<PageLoader />}><CompleteOnboardingPage /></Suspense>} />
+        <Route path="/onboarding" element={<Suspense fallback={<PageLoader />}><CompleteOnboardingPage /></Suspense>} />
         <Route path="/terms" element={<Suspense fallback={<PageLoader />}><TermsPage /></Suspense>} />
         <Route path="/privacy" element={<Suspense fallback={<PageLoader />}><PrivacyPage /></Suspense>} />
         <Route path="/dpa" element={<Suspense fallback={<PageLoader />}><DpaPage /></Suspense>} />
@@ -435,6 +452,13 @@ const AnimatedRoutes = () => {
             <Suspense fallback={<PageLoader />}>
               <ProtectedRoute adminOnly>
                 <ActiveCases />
+              </ProtectedRoute>
+            </Suspense>
+          } />
+          <Route path="/billing" element={
+            <Suspense fallback={<PageLoader />}>
+              <ProtectedRoute adminOnly>
+                <Billing />
               </ProtectedRoute>
             </Suspense>
           } />
