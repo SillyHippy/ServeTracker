@@ -1,0 +1,26 @@
+ServeTracker — Custom Use License
+Copyright (c) 2026 Joseph Iannazzi / Just Legal Solutions. All rights reserved.
+
+PLAIN ENGLISH TERMS
+
+1. You may use, run, and modify ServeTracker for your own process serving business or agency, self-hosted on your own infrastructure, serving your own customers.
+
+2. You may fork this repository and submit pull requests and improvements back to it.
+
+3. You may NOT sell, lease, rent, sublicense, or redistribute ServeTracker or any derivative of it — in whole or in part — for a fee, as a paid product, or as part of any paid bundle.
+
+4. You may NOT offer ServeTracker or any derivative of it to third parties as a hosted or managed service (no "we host this for you" offerings, no white-label rebranding).
+
+5. You may NOT remove, alter, or obscure this license, the copyright notice, or ServeTracker branding/attribution in the software.
+
+LEGAL TERMS
+
+Permission is granted, free of charge, to any person or entity obtaining a copy of this software and associated documentation files (the "Software"), to use, copy, and modify the Software for their own internal business purposes, subject to the following conditions:
+
+(a) The above copyright notice and this license shall be included in all copies or substantial portions of the Software.
+
+(b) The Software may not be sold, sublicensed, or redistributed, in whole or in part, whether standalone or bundled with another product, and may not be offered to third parties as a hosted or managed service.
+
+(c) Any use of the Software in violation of these terms is unlicensed and constitutes copyright infringement. The copyright holder reserves all rights and remedies, including injunctive relief and damages, to the fullest extent of the law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
