@@ -1,26 +1,216 @@
-ServeTracker — Custom Use License
-Copyright (c) 2026 Joseph Iannazzi / Just Legal Solutions. All rights reserved.
+SERVETRACKER SOURCE-AVAILABLE INTERNAL BUSINESS USE LICENSE
+Version 1.0 — Effective September 8, 2026
 
-PLAIN ENGLISH TERMS
+Copyright © 2026 Joseph Iannazzi and Just Legal Solutions LLC. Contributions remain copyrighted by their respective contributors unless separately assigned. All rights reserved except as expressly licensed.
 
-1. You may use, run, and modify ServeTracker for your own process serving business or agency, self-hosted on your own infrastructure, serving your own customers.
+IMPORTANT: SERVETRACKER IS SOURCE-AVAILABLE, NOT OPEN-SOURCE SOFTWARE.
 
-2. You may fork this repository and submit pull requests and improvements back to it.
+This license permits a person or organization to use and modify ServeTracker for its own internal process-serving operations. It does not permit anyone to sell, resell, sublicense, redistribute, white-label for third parties, or offer ServeTracker or a modified version as a hosted, managed, or software-as-a-service product.
 
-3. You may NOT sell, lease, rent, sublicense, or redistribute ServeTracker or any derivative of it — in whole or in part — for a fee, as a paid product, or as part of any paid bundle.
+By downloading, copying, installing, deploying, modifying, or using the Software, you accept and agree to these terms. If you do not agree, you receive no license and must not use, copy, modify, or distribute the Software. Contributions are governed separately by Section 9, CONTRIBUTING.md, and the required pull-request certification.
 
-4. You may NOT offer ServeTracker or any derivative of it to third parties as a hosted or managed service (no "we host this for you" offerings, no white-label rebranding).
+1. DEFINITIONS
 
-5. You may NOT remove, alter, or obscure this license, the copyright notice, or ServeTracker branding/attribution in the software.
+1.1 “Licensor” means, individually and collectively as context requires, Joseph Iannazzi and Just Legal Solutions LLC, each solely with respect to copyrights, trademarks, or other rights that person or entity owns or is legally authorized to license or enforce. A separate permission or commercial license must be signed by every rights holder whose rights are required, or by a specifically identified agent authorized to bind them.
 
-LEGAL TERMS
+1.2 “Software” means ServeTracker and all source code, object code, scripts, user interfaces, documentation, templates, assets, database schemas, and other materials distributed with this license, together with modifications and derivative works based on any of them. “Software” excludes Third-Party Components described in Section 14.
 
-Permission is granted, free of charge, to any person or entity obtaining a copy of this software and associated documentation files (the "Software"), to use, copy, and modify the Software for their own internal business purposes, subject to the following conditions:
+1.3 “You” or “Licensee” means the individual or legal entity exercising rights under this license. If you act for an organization, “Licensee” includes that organization and entities it controls, is controlled by, or is under common control with. “Control” means ownership of more than fifty percent of the voting interests or the legal power to direct management. Licensee is responsible for compliance by every included entity. A change of control does not transfer this license contrary to Section 17.3.
 
-(a) The above copyright notice and this license shall be included in all copies or substantial portions of the Software.
+1.4 “Internal Business Use” means using the Software solely to operate Licensee’s own process-serving business or internal administrative operations. Licensee may charge customers for Licensee’s underlying process-serving or related professional work and may provide those customers incidental portal access solely to submit, monitor, receive, communicate about, or pay for that work, provided that no separate or identifiable fee is charged for the Software or portal access and the Software is not marketed or provided as a product or service. Internal Business Use includes access by Licensee’s employees, controlled affiliates, and contractors acting solely for Licensee. It does not include providing the Software or a derivative work as a product or service for another person or organization.
 
-(b) The Software may not be sold, sublicensed, or redistributed, in whole or in part, whether standalone or bundled with another product, and may not be offered to third parties as a hosted or managed service.
+1.5 “Commercial Exploitation” means directly or indirectly selling, reselling, renting, leasing, licensing, sublicensing, distributing for consideration, monetizing, commercially hosting, or otherwise receiving money or other consideration for the Software, a copy of it, a derivative work, or a product or service materially incorporating ServeTracker’s protectable code or expression. An advertisement, listing, proposal, invoice, offer, or solicitation to do any of those things is Commercial Exploitation even if no sale is completed. Fees for the underlying work and incidental customer access expressly permitted by Section 1.4 are not Commercial Exploitation.
 
-(c) Any use of the Software in violation of these terms is unlicensed and constitutes copyright infringement. The copyright holder reserves all rights and remedies, including injunctive relief and damages, to the fullest extent of the law.
+1.6 “Contribution” means code, documentation, artwork, tests, fixes, suggestions embodied in code, or other material intentionally submitted to the Licensor for possible inclusion in ServeTracker.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+1.7 “Official Repository” means the ServeTracker repository at https://github.com/SillyHippy/ServeTracker and its GitHub fork network, or a successor repository publicly designated by the Licensor.
+
+1.8 “Independently Developed Software” means software created without copying or deriving from ServeTracker’s protectable code or expression. Nothing in this license claims ownership of or restricts independently developed software, unprotectable ideas, methods of operation, systems, workflows, or functionality.
+
+2. CONDITIONAL LICENSE GRANT
+
+Subject to compliance with the license-scope conditions in Sections 2, 4, and 5, the Licensor grants Licensee a limited, non-exclusive, worldwide, royalty-free, non-transferable, and non-sublicensable copyright license, solely in material that Licensor owns or is authorized to license, to:
+
+(a) download and make reasonable copies of the Software for Internal Business Use, testing, backup, and disaster recovery;
+
+(b) install and run the Software for Internal Business Use on infrastructure owned, rented, or controlled by Licensee or supplied by a cloud, infrastructure, data-center, backup, or managed-operations vendor acting solely on Licensee’s behalf;
+
+(c) inspect and modify the Software for Licensee’s Internal Business Use; and
+
+(d) permit Licensee’s employees, controlled affiliates, contractors, and infrastructure or operations vendors to exercise those rights solely on Licensee’s behalf, without independent use rights, and subject to obligations at least as protective as this license.
+
+All rights not expressly granted are reserved. No ownership interest is transferred. The permissions in this Section are conditions of the license, not merely contractual promises.
+
+3. PERMITTED INTERNAL CUSTOMIZATION
+
+Licensee may customize features, workflows, forms, colors, logos, contact information, and other branding for Licensee’s own authorized deployment. Internal customization does not permit Licensee to claim authorship or ownership of ServeTracker, remove required legal notices from source or documentation, distribute a rebranded copy, or provide a rebranded deployment to another person or organization.
+
+4. COMMUNITY FORKS AND PULL REQUESTS
+
+Licensee may create and maintain a public GitHub fork within the Official Repository’s GitHub fork network only as reasonably necessary to prepare, discuss, or submit a Contribution to the Official Repository, provided that:
+
+(a) this license and all copyright and attribution notices remain intact;
+
+(b) the fork is not promoted, deployed, or maintained as a competing or substitute product;
+
+(c) no credentials, personal information, client information, case records, protected documents, or other confidential data are included; and
+
+(d) each Contribution complies with CONTRIBUTING.md and any pull-request certification required by the official repository.
+
+This narrow permission authorizes making the fork publicly available through the Official Repository’s GitHub fork network solely for contribution activity. It does not authorize general redistribution of the Software.
+
+5. PROHIBITED CONDUCT
+
+Except under a separate written agreement signed as required by Sections 1.1 and 18, Licensee must not, directly or indirectly:
+
+(a) sell, resell, rent, lease, license, sublicense, or charge any fee or other consideration for the Software, any copy, any derivative work, or access to it, except that Licensee may charge for underlying services and incidental customer access expressly permitted by Section 1.4;
+
+(b) offer, advertise, list, propose, invoice for, or solicit any prohibited sale, license, hosting, or service;
+
+(c) provide the Software, a derivative work, or a service materially incorporating ServeTracker’s protectable code or expression to third parties as software-as-a-service, a hosted service, a managed service, a bureau service, a platform, or a white-label offering;
+
+(d) distribute, publish, transfer, share, or make available the Software, source code, object code, or derivative works to any third party, except as expressly permitted for employees, controlled affiliates, contractors, infrastructure or operations vendors, backups, and public forks and Contributions under Section 4;
+
+(e) bundle, embed, or incorporate the Software or a derivative work into a product, service, subscription, consulting deliverable, or other offering provided to a third party;
+
+(f) modify, rename, rebrand, translate, rearrange, or combine the Software for the purpose of avoiding these restrictions or commercially exploiting ServeTracker’s protectable code or expression;
+
+(g) remove, alter, conceal, or misrepresent this license, any copyright notice, attribution, provenance, trademark notice, or other proprietary-rights notice;
+
+(h) state or imply that Licensee created, owns, sponsors, or is the original source of ServeTracker;
+
+(i) circumvent, remove, disable, or interfere with any license notice, license-verification feature, attribution mechanism, or access restriction included in the Software;
+
+(j) assign, transfer, pledge, or sublicense any right granted under this license; or
+
+(k) assist, enable, direct, or knowingly permit another person to do anything prohibited by this license.
+
+A modification or derivative work remains subject to these restrictions regardless of the amount or significance of the changes. Changing names, appearance, architecture, language, database, hosting provider, or individual features does not create a right to sell or redistribute ServeTracker’s protected expression. Nothing in this Section restricts Independently Developed Software as defined in Section 1.8.
+
+6. NO COMMERCIAL LICENSE IMPLIED
+
+No commercial resale, redistribution, hosting, managed-service, or SaaS right is available under this license. Any such right requires a separate written commercial license signed as required by Sections 1.1 and 18. Discussions, emails, issue comments, pull requests, silence, delay, or failure to object do not create a commercial license or waive these restrictions.
+
+7. OWNERSHIP, COPYRIGHT, AND TRADEMARKS
+
+The Software is licensed, not sold. As between Licensor and Licensee, the Licensor retains all right, title, and interest in the original Software, including all copyrights, trademarks, trade dress, and other intellectual-property rights. Contributors retain copyright in their Contributions unless separately assigned, subject to the grants in Section 9 and CONTRIBUTING.md. Licensee may own original material independently created by Licensee, subject to the Licensor’s rights in any underlying Software and without receiving any right to sell or redistribute a derivative work.
+
+No trademark license is granted. “ServeTracker,” associated logos, and Just Legal Solutions names and marks may not be used to market, endorse, sponsor, or identify Licensee’s products or services without prior written permission. Truthful identification of the Software and preservation of required attribution are permitted.
+
+8. AUTOMATIC TERMINATION AND REVOCATION FOR BREACH
+
+8.1 This license and every permission granted under it terminate automatically and immediately, without notice, if Licensee exceeds the scope of the grant in Section 2 or breaches Section 4 or 5. A prohibited offer, advertisement, listing, attempted sale, completed sale, redistribution, sublicense, white-label offering, hosted offering, managed-service offering, SaaS offering, circumvention, or knowing assistance triggers immediate termination.
+
+8.2 For another material breach, the Licensor may give written notice describing the breach. If the breach is curable and Licensee does not fully cure it within fifteen days after notice, the Licensor may terminate this license by further written notice. No cure period applies to conduct covered by Section 8.1 or to a breach that cannot reasonably be cured. The Licensor may extend a cure period in writing.
+
+8.3 After termination, Licensee must immediately:
+
+(a) stop all use, copying, modification, deployment, distribution, hosting, and display of the Software;
+
+(b) disable all running instances and access to them;
+
+(c) remove all public or private listings, offers, repositories, downloads, advertisements, and hosted instances under Licensee’s control; and
+
+(d) permanently delete or destroy all copies and derivative works under Licensee’s possession or control, except one archival copy retained solely when required by law and not used for any other purpose.
+
+8.4 Reinstatement is effective only through an express written instrument signed as required by Sections 1.1 and 18. Ending the violation does not automatically reinstate the license.
+
+8.5 Termination does not release claims or liabilities accrued before termination. Any post-termination exercise of rights formerly granted by this license is unauthorized and may constitute infringement. Sections 5, 6, 7, 8.3 through 8.5, 9, 11, 12, 13, 14, 15, 16, 17, and 18 survive termination to the extent necessary to enforce their purpose.
+
+9. CONTRIBUTIONS
+
+A person intentionally submitting a Contribution to the Official Repository and affirming its required contributor certification agrees to this Section and CONTRIBUTING.md. The contributor represents and warrants that the contributor has the legal right to submit the Contribution and grant the rights below; that it is original or that all third-party material and applicable license terms have been clearly identified; and that it does not knowingly contain confidential information, malicious code, or material that infringes another person’s rights. If a contributor submits on behalf of an employer or another organization, the contributor represents that the contributor is authorized to bind that entity, and “contributor” includes that entity.
+
+Each contributor retains ownership of the contributor’s original Contribution but grants each of Joseph Iannazzi and Just Legal Solutions LLC, and each recipient’s successors and assigns, independently, a perpetual, irrevocable, worldwide, royalty-free, fully paid, transferable, and sublicensable copyright license to use, reproduce, modify, prepare derivative works from, publicly display, publicly perform, distribute, host, sell, offer for sale, import, and relicense the Contribution under any terms, including source-available, proprietary, or commercial terms.
+
+Each contributor also grants those recipients and their successors and assigns a perpetual, irrevocable, worldwide, royalty-free, fully paid, transferable, and sublicensable patent license under patent claims the contributor owns or controls that are necessarily infringed by the Contribution alone or by its combination with ServeTracker as submitted, to make, have made, use, offer for sale, sell, import, and otherwise transfer the Contribution and such combination.
+
+To the fullest extent permitted by law, each contributor waives and agrees not to assert moral rights, droit moral, and similar rights in the Contribution. Where waiver is not permitted, the contributor consents to all acts authorized by these grants.
+
+Submitting a Contribution does not obligate the Licensor to review, accept, use, publish, maintain, or compensate for it. Contributions incorporated into ServeTracker are distributed to other users only under the license chosen by the Licensor. These grants do not purport to transfer infringement-enforcement standing that applicable law requires an owner or exclusive licensee to possess.
+
+10. CONFIDENTIAL DATA AND CREDENTIALS
+
+Licensee and contributors must not place credentials, API keys, access tokens, passwords, private keys, personal information, client records, case records, court documents, service-attempt data, photographs, or other confidential or legally protected information in the Official Repository, public or contribution forks, issues, pull requests, discussions, or unauthorized communications to the Licensor. This restriction does not prohibit Licensee from handling such information within an authorized, properly secured Internal Business Use deployment. Licensee is solely responsible for securing its deployment, data, backups, accounts, secrets, integrations, and infrastructure. The Licensor does not receive custody of, control, or responsibility for data in a self-hosted deployment.
+
+11. ENFORCEMENT AND REMEDIES
+
+11.1 Any exercise of copyright rights outside the scope of this license is unlicensed. Depending on the facts and applicable law, prohibited copying, modification, distribution, display, or creation of derivative works may constitute copyright infringement in addition to breach of contract.
+
+11.2 The Licensor may bring a civil action to enforce this license and the Licensor’s intellectual-property rights. Subject to applicable law and proof, the Licensor may seek temporary, preliminary, and permanent injunctive relief; statutorily authorized impoundment or destruction of infringing copies; actual damages; profits attributable to infringement when recoverable; statutory damages when available; contract damages; interest; costs; and reasonable attorneys’ fees when authorized by statute, contract, or court order. Copyright statutory damages and attorneys’ fees remain subject to all registration and timing requirements, including 17 U.S.C. §§ 411 and 412.
+
+11.3 Licensee acknowledges that unauthorized resale, redistribution, commercial hosting, or disclosure may cause irreparable harm for which monetary damages may be inadequate. The Licensor may seek equitable relief without waiving any other remedy. This acknowledgment does not eliminate applicable injunction factors, evidentiary burdens, or bond requirements. Nothing in this license guarantees that a court will grant any particular remedy or amount.
+
+11.4 When litigation is reasonably anticipated, each party must preserve reasonably relevant and proportionate evidence as required by applicable law. This section does not create a right to access another party’s systems without consent, legal process, or court order.
+
+11.5 Remedies are cumulative to the extent permitted by law, but the Licensor may not obtain duplicative recovery for the same injury under copyright and contract theories. Choosing or delaying one remedy does not waive another.
+
+12. OKLAHOMA GOVERNING LAW, JURISDICTION, AND VENUE
+
+12.1 Oklahoma law governs interpretation and enforcement of this license and associated state-law claims, without regard to conflict-of-law rules. United States federal law governs issues controlled by federal law, while ownership, assignments, contract interpretation, and defenses remain governed by the law otherwise applicable to those issues.
+
+12.2 To the fullest extent permitted by law, both Licensor and Licensee irrevocably consent to personal jurisdiction in Oklahoma and agree that:
+
+(a) a claim arising under a federal statute for which federal jurisdiction is exclusive, including a qualifying copyright or patent claim under 28 U.S.C. § 1338(a), must be brought exclusively in the United States District Court for the Northern District of Oklahoma; and
+
+(b) any other claim must be brought exclusively in the District Court of Tulsa County, Oklahoma, unless an independent basis for federal subject-matter jurisdiction exists, in which case it may be brought in the United States District Court for the Northern District of Oklahoma.
+
+12.3 Both Licensor and Licensee waive objections based on personal jurisdiction, improper venue, or forum non conveniens to the extent that waiver is permitted by law. Nothing in this Section creates subject-matter jurisdiction where it does not otherwise exist.
+
+12.4 This Section does not prevent either party from preserving evidence, enforcing an Oklahoma judgment elsewhere, or seeking emergency or provisional relief in another jurisdiction only when legally necessary to protect evidence or stop ongoing unlawful conduct. Any merits action must remain in the court selected by Section 12.2 unless applicable law requires otherwise. It also does not restrict lawful copyright or platform takedown notices.
+
+12.5 Service of process may be made by any method permitted by the Federal Rules of Civil Procedure, the Oklahoma Pleading Code, an applicable international convention, or other applicable law.
+
+13. INDEMNIFICATION
+
+To the fullest extent permitted by law, Licensee will defend, indemnify, and hold harmless the Licensor and the Licensor’s owners, officers, employees, and agents from third-party claims, liabilities, judgments, damages, losses, and reasonable costs and attorneys’ fees to the extent caused by Licensee’s data, modifications, deployment, services, unlawful conduct, breach of this license, or violation of another person’s rights. This duty does not apply to the extent a claim is caused by unmodified ServeTracker, the Licensor’s infringement, or the Licensor’s negligence or willful misconduct. The Licensor must provide reasonably prompt notice and reasonable cooperation. Licensee may not settle a claim in a manner that admits wrongdoing by or imposes obligations on an indemnified party without that party’s written consent.
+
+14. THIRD-PARTY COMPONENTS
+
+The Software may contain or depend on third-party software, libraries, fonts, icons, services, or other components governed by separate licenses or terms. Those separate terms control only the relevant Third-Party Components. This license applies only to rights the Licensor owns or has authority to license and neither overrides obligations nor restricts rights granted directly by a third-party license. Available dependency and license information is described in THIRD_PARTY_NOTICES.md, package manifests, lockfiles, source headers, and the components’ own license notices. Licensee remains responsible for reviewing applicable third-party terms for Licensee’s use and distribution.
+
+15. NO WARRANTY OR SUPPORT
+
+THE SOFTWARE IS PROVIDED “AS IS,” “AS AVAILABLE,” AND WITH ALL FAULTS. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR DISCLAIMS ALL EXPRESS, IMPLIED, AND STATUTORY WARRANTIES, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, SECURITY, AVAILABILITY, ACCURACY, LEGAL COMPLIANCE, AND FITNESS FOR USE IN COURT OR PROCESS-SERVING OPERATIONS.
+
+THE LICENSOR DOES NOT WARRANT THAT THE SOFTWARE IS ERROR-FREE, SECURE, CURRENT, OR SUITABLE FOR ANY PARTICULAR JURISDICTION. LICENSEE IS RESPONSIBLE FOR INDEPENDENT LEGAL, SECURITY, BACKUP, AND OPERATIONAL REVIEW. NO SUPPORT, MAINTENANCE, UPDATE, HOSTING, DATA-RECOVERY, OR PROFESSIONAL SERVICE IS PROMISED.
+
+16. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR WILL NOT BE LIABLE TO LICENSEE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL DAMAGES; LOSS OF PROFITS, REVENUE, BUSINESS, GOODWILL, USE, OR DATA; SERVICE INTERRUPTION; SECURITY INCIDENT; MISSED DEADLINE; FAILED SERVICE ATTEMPT; REJECTED FILING; OR CLAIM BY A CLIENT, COURT, PROCESS SERVER, OR OTHER THIRD PARTY, ARISING FROM OR RELATED TO THE SOFTWARE OR THIS LICENSE, UNDER ANY THEORY OF LIABILITY.
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR’S TOTAL AGGREGATE LIABILITY TO LICENSEE FOR ALL CLAIMS ARISING FROM OR RELATED TO THE SOFTWARE OR THIS LICENSE WILL NOT EXCEED THE GREATER OF THE AMOUNT LICENSEE PAID THE LICENSOR FOR THE SOFTWARE DURING THE TWELVE MONTHS BEFORE THE EVENT GIVING RISE TO LIABILITY OR ONE HUNDRED UNITED STATES DOLLARS (US $100).
+
+These limitations do not limit Licensee’s liability for breach, infringement, indemnification obligations, or unauthorized Commercial Exploitation, and do not apply where applicable law prohibits limitation.
+
+17. GENERAL TERMS
+
+17.1 Severability and Reformation. If a provision is held invalid or unenforceable, it will be enforced to the maximum lawful extent and modified only as much as necessary to make it enforceable. The remaining provisions remain effective.
+
+17.2 No Waiver. A failure or delay in enforcement is not a waiver. A waiver is effective only when in writing and signed by the Licensor and applies only to the specific instance stated.
+
+17.3 No Assignment. Licensee may not assign, delegate, transfer, or sublicense this license or any right under it by contract, merger, acquisition, operation of law, or otherwise without the Licensor’s prior written consent. Any attempted transfer is void. The Licensor may assign this license and the associated rights to a successor or other owner of the Software.
+
+17.4 Entire Agreement. This license is the complete agreement concerning the rights granted for the version of the Software distributed with it, unless Licensee and every necessary rights holder or an authorized licensing agent sign a separate written agreement.
+
+17.5 Changes to License. The Licensor may publish different terms for future versions. A new license does not retroactively alter the license attached to a copy already received, except through a written agreement with the affected Licensee. The license included with each release governs that release.
+
+17.6 No Partnership or Agency. This license does not create a partnership, joint venture, fiduciary relationship, employment relationship, franchise, or agency relationship.
+
+17.7 No Third-Party Beneficiaries. There are no third-party beneficiaries except indemnified parties under Section 13.
+
+17.8 Headings. Headings are for convenience and do not limit the text.
+
+17.9 Electronic Acceptance. Electronic conduct described in the acceptance paragraph is intended to evidence acceptance to the fullest extent permitted by applicable law.
+
+18. CONTACT AND SEPARATE WRITTEN PERMISSION
+
+Questions, permission requests, and separate-license requests may be directed to:
+
+Joseph Iannazzi
+Just Legal Solutions LLC
+joseph@justlegalsolutions.org
+
+Only a written agreement or permission signed by every necessary rights holder, or by a specifically identified licensing agent authorized to bind those rights holders, can expand the rights granted by this license.
+
+END OF LICENSE

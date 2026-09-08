@@ -1,5 +1,7 @@
 # ServeTracker (PDFUSAEDIT)
 
+> **License notice:** ServeTracker is **source-available, not open-source software**. You may use, self-host, and modify it for your own process-serving business. You may not sell, resell, redistribute, sublicense, white-label it for third parties, or offer it as SaaS, hosting, or a managed service. Prohibited commercial exploitation automatically terminates the license and may result in legal action in Oklahoma. See [LICENSE](LICENSE).
+
 > Modern, full-stack process serving management software with automated affidavit generation, field server role-based access controls, offline photo & attempt logging, accessible field sheets, and audit-ready legal workflows.
 
 ---
@@ -241,9 +243,9 @@ To allow both providers to send on behalf of your domain without deliverability 
 
 ---
 
-## Customizing Your Branding & Logo
+## Customizing Your Internal Deployment
 
-ServeTracker is built to be white-labeled for your own process serving agency. To replace the default branding with your own business logo and company name:
+The license permits you to customize branding for **your own process-serving business’s internal deployment**. It does not permit you to distribute a rebranded copy or provide ServeTracker to another business as a product, SaaS, hosted service, or managed service. Keep the LICENSE and source-code copyright notices intact.
 
 1. **Replace Logo and Favicon Files in `/public`**:
    - `public/logo.webp` — Your horizontal or square company logo (appears in top navigation bar).
@@ -307,4 +309,11 @@ bun test
 
 ## License
 
-MIT License — feel free to fork, customize, and deploy for your process serving business or agency.
+ServeTracker is distributed under the **ServeTracker Source-Available Internal Business Use License 1.0**.
+
+- You may use, self-host, and modify ServeTracker for your own process-serving business.
+- You may customize your own internal deployment and submit improvements through pull requests.
+- You may **not** sell, resell, sublicense, redistribute, commercially host, or provide ServeTracker or a modified version to others as SaaS, a managed service, or a white-label product.
+- A prohibited offer or commercial exploitation automatically terminates the license and may expose the violator to copyright and contract claims brought in Oklahoma.
+
+Read the complete [LICENSE](./LICENSE) before downloading, deploying, modifying, or using the Software. Contributions are governed by [CONTRIBUTING.md](./CONTRIBUTING.md). Direct dependency notices are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
