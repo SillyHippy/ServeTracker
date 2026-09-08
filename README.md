@@ -317,3 +317,5 @@ ServeTracker is distributed under the **ServeTracker Source-Available Internal B
 - A prohibited offer or commercial exploitation automatically terminates the license and may expose the violator to copyright and contract claims brought in Oklahoma.
 
 Read the complete [LICENSE](./LICENSE) before downloading, deploying, modifying, or using the Software. Contributions are governed by [CONTRIBUTING.md](./CONTRIBUTING.md). Direct dependency notices are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+A **$65 U.S. Copyright Office Standard Application was submitted on September 7, 2026 (Oklahoma time)**. Registration remains pending and must not be represented as issued until the Copyright Office acts. See [COPYRIGHT_REGISTRATION.md](./COPYRIGHT_REGISTRATION.md) for the filing record and the private records that must be retained.
