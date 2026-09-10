@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import * as z from "zod";
+import type { z } from "zod";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ServeAttemptData, ServeRecipient } from "@/types/ServeAttemptData";
 import { PhotoUploader, PhotoSlot } from "./PhotoUploader";
+import {
+  newEncounterEventId,
+  pickDefaultRecipientId,
+  requiresNamedRecipient,
+  serveAttemptSchema,
+  shouldStayForOtherRecipients,
+} from "@/utils/serveAttemptForm";
 
 interface ServeAttemptProps {
   clients: ClientData[];
@@ -40,14 +47,6 @@ interface ClientCase {
   defendantRespondent?: string;
   status?: string;
 }
-
-const serveAttemptSchema = z.object({
-  clientId: z.string().optional(),
-  caseNumber: z.string().min(1, { message: "Please select a case" }),
-  notes: z.string().optional(),
-  status: z.enum(["completed", "failed"]),
-  serviceAddress: z.string().optional(),
-});
 
 type ServeFormValues = z.infer<typeof serveAttemptSchema>;
 
@@ -103,6 +102,8 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const [entityName, setEntityName] = useState<string>("");
   const [recipientTitle, setRecipientTitle] = useState<string>("Registered Agent");
   const [moreMethodsOpen, setMoreMethodsOpen] = useState(false);
+  const [encounterEventId, setEncounterEventId] = useState("");
+  const [loggedRecipientIds, setLoggedRecipientIds] = useState<string[]>([]);
 
   const [addressSearchTerm, setAddressSearchTerm] = useState("");
   const [addressSearchOpen, setAddressSearchOpen] = useState(false);
@@ -165,37 +166,14 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     [activeCases, addressSearchTerm]
   );
 
-  const normalizeName = (name?: string) =>
-    (name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-  /** Pick PBS for THIS case only — prefer defendant/respondent match, never another case's person. */
-  const pickRecipientForCase = (recs: ServeRecipient[], caseItem: ClientCase | null) => {
-    if (!recs.length) return "";
-    const defendant = normalizeName(
-      caseItem?.defendantRespondent || caseItem?.personEntityBeingServed || caseItem?.caseName
-    );
-    if (defendant) {
-      const exact = recs.find((r) => normalizeName(r.full_name) === defendant);
-      if (exact?.id) return exact.id;
-      const partial = recs.find((r) => {
-        const n = normalizeName(r.full_name);
-        return n.includes(defendant) || defendant.includes(n);
-      });
-      if (partial?.id) return partial.id;
-    }
-    const defendantRole = recs.find((r) =>
-      /defendant|respondent|target/i.test(r.role || "")
-    );
-    if (defendantRole?.id) return defendantRole.id;
-    return "";
-  };
-
   const fetchRecipientsForCase = async (caseItem: ClientCase) => {
     try {
       // CRITICAL: filter by case_id only — never by client_id (would mix other cases)
       const recs = caseItem.id ? await api.getRecipients(caseItem.id) : [];
       setRecipients(recs);
-      setSelectedRecipientId(pickRecipientForCase(recs, caseItem));
+      setSelectedRecipientId(
+        pickDefaultRecipientId(recs, caseItem.defendantRespondent || caseItem.caseName)
+      );
     } catch (err) {
       console.error("Error fetching recipients:", err);
       setRecipients([]);
@@ -242,8 +220,11 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     form.setValue("caseNumber", "");
   };
 
-  const handleCaseChange = (caseNumber: string) => {
-    const found = clientCases.find((c) => c.caseNumber === caseNumber) || null;
+  const handleCaseChange = (caseIdOrNumber: string) => {
+    const found =
+      clientCases.find((c) => c.id && c.id === caseIdOrNumber) ||
+      clientCases.find((c) => c.caseNumber === caseIdOrNumber) ||
+      null;
     setSelectedCase(found);
     setRecipients([]);
     setSelectedRecipientId("");
@@ -394,6 +375,14 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       toast({ title: "Missing Information", description: "Please select a case.", variant: "destructive" });
       return;
     }
+    if (requiresNamedRecipient(recipients) && !selectedRecipientId) {
+      toast({
+        title: "Pick the person",
+        description: "This address has more than one person. Choose who these papers are for before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
     // Method of service validation — only for successful serves (the affidavit
     // wording depends on it; Joseph refuses to sign a false affidavit).
     if (data.status === "completed") {
@@ -424,12 +413,15 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       const clientId = selectedClient ? (selectedClient.id || (selectedClient as any).$id) : (selectedCase.clientId || "");
       const clientName = selectedClient?.name || selectedCase.clientName || "";
       const clientEmail = selectedClient?.email || "";
+      const eventId = encounterEventId || newEncounterEventId();
+      if (!encounterEventId) setEncounterEventId(eventId);
       const serveData: any = {
         client_id: clientId,
         clientId: clientId,
         clientName: clientName, clientEmail: clientEmail,
         case_id: selectedCase.id || "", caseId: selectedCase.id || "",
-        case_number: selectedCase.caseNumber, caseNumber: selectedCase.caseNumber,
+        event_id: eventId, eventId,
+        case_number: selectedCase.caseNumber || "", caseNumber: selectedCase.caseNumber || "",
         case_name: selectedCase.caseName || "", caseName: selectedCase.caseName || "",
         recipient_id: selectedRecipientId === "default_pbs" ? "" : selectedRecipientId,
         person_being_served: pbsName, personEntityBeingServed: pbsName,
@@ -453,16 +445,42 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       };
       // Single POST only — NewServe.onComplete must NOT createServeAttempt again.
       const saved = await api.createServeAttempt(serveData);
+      const stay = shouldStayForOtherRecipients({
+        status: data.status,
+        selectedRecipientId,
+        recipients,
+        alreadyLoggedIds: loggedRecipientIds,
+      });
+      const nextName =
+        recipients.find((r) => r.id === stay.nextRecipientId)?.full_name || "the other person";
+
       if ((saved as any)?.offlineQueued) {
         toast({ title: "Saved on this phone", description: "No signal — will upload when you are back online." });
+      } else if (stay.stay) {
+        toast({
+          title: `Saved for ${pbsName}`,
+          description: `Same stop — now log ${nextName}. Pick their method. Do not leave this screen.`,
+        });
       } else {
         toast({ title: "Serve recorded", description: `Attempt saved for ${pbsName}` });
       }
+
+      if (stay.stay) {
+        setLoggedRecipientIds((prev) => [...prev, selectedRecipientId].filter(Boolean));
+        setSelectedRecipientId(stay.nextRecipientId);
+        setServiceMethod("");
+        setAcceptedBy(pbsName);
+        setRefusedToIdentify(false);
+        return;
+      }
+
       form.reset(); setLocation(null); setGpsStatus("idle");
       setSelectedClient(null); setSelectedCase(null); setPhotos([]);
       setAcceptedBy(""); setRefusedToIdentify(false); setPostingLocation("front_door");
       setCorporateAgent(""); setEntityName(""); setRecipientTitle("Registered Agent");
       setServiceMethod("personal");
+      setEncounterEventId("");
+      setLoggedRecipientIds([]);
       setIsManualLog(false); setStep("select");
       if (onComplete) onComplete({ ...serveData, ...(saved || {}), id: (saved as any)?.id || serveData.id });
     } catch (err) {
@@ -475,6 +493,53 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   // Field servers never get a Client object (GET /api/clients is empty and case.client_id is stripped).
   // Capture/manual-log must enable from the assigned case alone.
   const isCaseSelected = Boolean(selectedCase);
+  const needsNamedRecipient = requiresNamedRecipient(recipients);
+  const canStartLog = isCaseSelected && (!needsNamedRecipient || Boolean(selectedRecipientId));
+  const remainingPeople = recipients.filter(
+    (r) => r.id && r.id !== selectedRecipientId && !loggedRecipientIds.includes(r.id)
+  );
+
+  const onPersonChange = (val: string) => {
+    if (val === "__add_new__") {
+      setIsAddingRecipient(true);
+      return;
+    }
+    if (val === "__none__" || val === "default_pbs") {
+      setSelectedRecipientId("");
+      setIsAddingRecipient(false);
+      return;
+    }
+    setSelectedRecipientId(val);
+    setIsAddingRecipient(false);
+  };
+
+  const personSelect = (triggerClass: string) => (
+    <Select
+      value={selectedRecipientId || (needsNamedRecipient ? "__none__" : "default_pbs")}
+      onValueChange={onPersonChange}
+    >
+      <SelectTrigger className={triggerClass}>
+        <SelectValue placeholder="Select who these papers are for" />
+      </SelectTrigger>
+      <SelectContent>
+        {needsNamedRecipient ? (
+          <SelectItem value="__none__" disabled>
+            Select who these papers are for
+          </SelectItem>
+        ) : (
+          <SelectItem value="default_pbs">
+            {(selectedCase?.defendantRespondent || selectedCase?.caseName || "Defendant").trim()} (Defendant)
+          </SelectItem>
+        )}
+        {recipients.map((r) => (
+          <SelectItem key={r.id} value={r.id}>
+            {r.full_name}{r.role ? ` (${r.role})` : ""}
+          </SelectItem>
+        ))}
+        <SelectItem value="__add_new__">+ Add different person…</SelectItem>
+      </SelectContent>
+    </Select>
+  );
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
@@ -497,7 +562,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                     <Button variant="outline" role="combobox" className="w-full justify-between text-left h-11">
                       <span className="truncate text-xs">
                         {selectedCase
-                          ? `${selectedCase.defendantRespondent || selectedCase.caseName} — ${selectedCase.caseNumber}`
+                          ? `${selectedCase.defendantRespondent || selectedCase.caseName} — ${selectedCase.caseNumber || "No case #"}`
                           : "Search active cases by name, case #, or address..."}
                       </span>
                       <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -511,14 +576,14 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                         <CommandGroup heading={`Active Cases (${filteredCases.length})`}>
                           {filteredCases.map((c) => (
                             <CommandItem
-                              key={`${c.clientId}-${c.caseNumber}`}
-                              value={`${c.defendantRespondent}-${c.caseNumber}-${c.clientName}-${c.homeAddress}`}
+                              key={c.id || `${c.clientId}-${c.caseNumber}-${c.homeAddress}`}
+                              value={`${c.id}-${c.defendantRespondent}-${c.caseNumber}-${c.clientName}-${c.homeAddress}`}
                               onSelect={() => handleAddressSelect(c)}
                               className={`flex flex-col w-full ${isMobile ? "py-3" : "py-1.5"}`}
                             >
                               <div className="flex justify-between items-center w-full">
                                 <span className="font-bold text-sm">{c.defendantRespondent || c.caseName}</span>
-                                <span className="text-[10px] bg-blue-100 text-blue-800 font-semibold px-1.5 py-0.5 rounded">{c.caseNumber}</span>
+                                <span className="text-[10px] bg-blue-100 text-blue-800 font-semibold px-1.5 py-0.5 rounded">{c.caseNumber || "No case #"}</span>
                               </div>
                               {!isServer && c.clientName && c.clientName !== "Client" && (
                                 <span className="text-xs text-slate-500">Client: {c.clientName}</span>
@@ -539,37 +604,12 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                       <label className="text-[10px] font-bold text-blue-900 dark:text-blue-200 flex items-center gap-1">
                         <User className="w-3.5 h-3.5" /> Person Being Served
                       </label>
-                      <Select
-                        value={selectedRecipientId || "default_pbs"}
-                        onValueChange={(val) => {
-                          if (val === "__add_new__") {
-                            setIsAddingRecipient(true);
-                            return;
-                          }
-                          setSelectedRecipientId(val === "default_pbs" ? "" : val);
-                          setIsAddingRecipient(false);
-                        }}
-                      >
-                        <SelectTrigger className="h-11 bg-white dark:bg-slate-900 text-sm font-semibold">
-                          <SelectValue placeholder="Select who you are serving" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="default_pbs">
-                            {(selectedCase.defendantRespondent || selectedCase.caseName || "Defendant").trim()} (Defendant)
-                          </SelectItem>
-                          {recipients
-                            .filter((r) => {
-                              const def = (selectedCase.defendantRespondent || selectedCase.caseName || "").trim().toLowerCase();
-                              return r.full_name.trim().toLowerCase() !== def;
-                            })
-                            .map((r) => (
-                              <SelectItem key={r.id} value={r.id}>
-                                {r.full_name}{r.role ? ` (${r.role})` : ""}
-                              </SelectItem>
-                            ))}
-                          <SelectItem value="__add_new__">+ Add different person…</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      {personSelect("h-11 bg-white dark:bg-slate-900 text-sm font-semibold")}
+                      {needsNamedRecipient && !selectedRecipientId && (
+                        <p className="text-[11px] text-red-600 font-semibold">
+                          Two people at this address — pick one person before logging.
+                        </p>
+                      )}
                     </div>
 
                     {isAddingRecipient && (
@@ -620,10 +660,10 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
           </CardContent>
 
           <CardFooter className="flex flex-col gap-2 pt-0">
-            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-12" disabled={!isCaseSelected} onClick={startFieldCapture}>
+            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-12" disabled={!canStartLog} onClick={startFieldCapture}>
               <Camera className="w-4 h-4 mr-2" /> Field Capture (Live GPS + Photos)
             </Button>
-            <Button variant="outline" className="w-full min-h-11 h-11 text-sm" disabled={!isCaseSelected} onClick={startManualLog}>
+            <Button variant="outline" className="w-full min-h-11 h-11 text-sm" disabled={!canStartLog} onClick={startManualLog}>
               <Calendar className="w-4 h-4 mr-2 text-purple-600" /> Manual Log / Backfill
             </Button>
           </CardFooter>
@@ -639,35 +679,12 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-500">Person Being Served</label>
-                <Select
-                  value={selectedRecipientId || "default_pbs"}
-                  onValueChange={(val) => {
-                    if (val === "__add_new__") {
-                      setIsAddingRecipient(true);
-                      return;
-                    }
-                    setSelectedRecipientId(val === "default_pbs" ? "" : val);
-                    setIsAddingRecipient(false);
-                  }}
-                >
-                  <SelectTrigger className="h-11 text-sm font-semibold">
-                    <SelectValue placeholder="Who are you serving?" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default_pbs">
-                      {(selectedCase?.defendantRespondent || selectedCase?.caseName || "Defendant").trim()} (Defendant)
-                    </SelectItem>
-                    {recipients
-                      .filter((r) => {
-                        const def = (selectedCase?.defendantRespondent || selectedCase?.caseName || "").trim().toLowerCase();
-                        return r.full_name.trim().toLowerCase() !== def;
-                      })
-                      .map((r) => (
-                        <SelectItem key={r.id} value={r.id}>{r.full_name}</SelectItem>
-                      ))}
-                    <SelectItem value="__add_new__">+ Add different person…</SelectItem>
-                  </SelectContent>
-                </Select>
+                {personSelect("h-11 text-sm font-semibold")}
+                {loggedRecipientIds.length > 0 && remainingPeople.length > 0 && (
+                  <p className="text-[11px] font-semibold text-blue-800 bg-blue-50 px-2 py-1 rounded">
+                    Same stop still open — next: {remainingPeople.map((r) => r.full_name).join(", ")}
+                  </p>
+                )}
                 {isAddingRecipient && (
                   <div className="flex gap-2 pt-1">
                     <Input placeholder="Full Name" value={newRecipientName} onChange={(e) => setNewRecipientName(e.target.value)} className="h-10 text-sm" />
