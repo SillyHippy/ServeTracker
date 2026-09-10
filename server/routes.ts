@@ -212,13 +212,38 @@ function renumberAttemptPeers(
   return peers.length;
 }
 
-/** Close exactly one case row by UUID on successful personal service. */
-function maybeCloseCaseOnSuccess(db: Db, caseId: string | null | undefined, status: string) {
+/**
+ * Mark a case Served only after every named recipient has a successful,
+ * recipient-scoped attempt. A shared-address case must stay active after the
+ * first person is served so the remaining people are still selectable.
+ * Single-recipient and legacy cases keep the historical one-success behavior.
+ */
+function maybeMarkCaseServed(db: Db, caseId: string | null | undefined, status: string) {
   const id = String(caseId || "").trim();
   if (!id) return false;
   const s = String(status || "").toLowerCase().trim();
   if (s !== "completed" && s !== "served") return false;
-  db.query("UPDATE client_cases SET status = ?, updated_at = ? WHERE id = ?").run("closed", nowIso(), id);
+
+  const recipients = db
+    .query("SELECT id FROM serve_recipients WHERE case_id = ?")
+    .all(id) as { id: string }[];
+  const allRecipientsServed =
+    recipients.length <= 1 ||
+    recipients.every((recipient) =>
+      Boolean(
+        db
+          .query(
+            `SELECT 1 FROM serve_attempts
+             WHERE case_id = ? AND recipient_id = ?
+               AND LOWER(COALESCE(status, '')) IN ('completed', 'served')
+             LIMIT 1`
+          )
+          .get(id, recipient.id)
+      )
+    );
+
+  if (!allRecipientsServed) return false;
+  db.query("UPDATE client_cases SET status = ?, updated_at = ? WHERE id = ?").run("Served", nowIso(), id);
   return true;
 }
 
@@ -1673,7 +1698,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     ].includes(statusNorm);
     const isSuccessful = !isUnsuccessful && (statusNorm === "served" || statusNorm === "completed");
     if (caseId && isSuccessful) {
-      db.query("UPDATE client_cases SET status = 'Served', updated_at = ? WHERE id = ?").run(nowIso(), caseId);
+      maybeMarkCaseServed(db, caseId, serveStatus);
     }
 
     // Save multiple photos if provided in creation POST

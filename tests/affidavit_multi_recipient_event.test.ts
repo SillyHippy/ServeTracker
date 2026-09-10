@@ -241,6 +241,13 @@ test("dual delivery at one stop stores two rows under one event_id", async () =>
   });
   expectStatus(personServe, 201, "log personal serve");
 
+  // One successful recipient must not hide a shared-address case while another
+  // active recipient still has no successful serve.
+  const afterFirstServe = await admin.get(`/api/cases/${caseId}`);
+  expectStatus(afterFirstServe, 200, "case after first recipient served");
+  expect(String(afterFirstServe.data.status).toLowerCase()).not.toBe("served");
+  expect(String(afterFirstServe.data.status).toLowerCase()).not.toBe("closed");
+
   const llcServe = await field.post("/api/serves", {
     case_id: caseId,
     case_number: caseNumber,
@@ -258,6 +265,10 @@ test("dual delivery at one stop stores two rows under one event_id", async () =>
     timestamp: occurredAt,
   });
   expectStatus(llcServe, 201, "log corporate serve");
+
+  const afterAllServed = await admin.get(`/api/cases/${caseId}`);
+  expectStatus(afterAllServed, 200, "case after all recipients served");
+  expect(String(afterAllServed.data.status).toLowerCase()).toBe("served");
 
   const listed = await admin.get(`/api/serves?case_id=${caseId}`);
   expectStatus(listed, 200, "list serves");
