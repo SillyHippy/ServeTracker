@@ -15,6 +15,7 @@ interface ReadyAffidavitItem {
   caseName: string;
   defendantName: string;
   personServed: string;
+  recipientId?: string;
   serviceMethod: string;
   servedAt: string;
   assignedServerName: string;
@@ -99,13 +100,13 @@ export const AffidavitSignatureQueue: React.FC = () => {
       <CardContent className="p-3 space-y-2.5">
         {items.map((item) => (
           <div
-            key={item.caseId}
+            key={`${item.caseId}:${item.recipientId || item.personServed}`}
             className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-amber-200/70 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs hover:border-amber-300 transition"
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap mb-1">
                 <span className="font-mono text-xs font-bold text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-2 py-0.5 rounded border border-blue-200 dark:border-blue-800">
-                  #{item.caseNumber}
+                  {item.caseNumber ? `#${item.caseNumber}` : "No case #"}
                 </span>
                 <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
                   {item.personServed}
@@ -150,6 +151,7 @@ export const AffidavitSignatureQueue: React.FC = () => {
           caseId={selectedCase.caseId}
           caseNumber={selectedCase.caseNumber}
           personBeingServed={selectedCase.personServed}
+          recipientId={selectedCase.recipientId}
           open={Boolean(selectedCase)}
           onOpenChange={(open) => {
             if (!open) setSelectedCase(null);

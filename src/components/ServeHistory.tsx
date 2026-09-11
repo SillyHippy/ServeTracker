@@ -80,7 +80,12 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
           const clientName = serve.clientName || (serve as any).client_name || client?.name || "Client";
           const pbs = serve.personBeingServed || serve.person_being_served || serve.caseName || serve.case_name || "Target Recipient";
           const googleMapsLink = getGoogleMapsLink(serve.coordinates);
-          const caseServes = serves.filter((s) => (s.clientId === serve.clientId || s.client_id === serve.client_id) && (s.caseNumber === serve.caseNumber || s.case_number === serve.case_number));
+          const serveCaseId = String((serve as any).caseId || (serve as any).case_id || "");
+          const caseServes = serves.filter((s) => {
+            const otherId = String((s as any).caseId || (s as any).case_id || "");
+            if (serveCaseId && otherId) return otherId === serveCaseId;
+            return (s.clientId === serve.clientId || s.client_id === serve.client_id) && (s.caseNumber === serve.caseNumber || s.case_number === serve.case_number) && Boolean(serve.caseNumber || serve.case_number);
+          });
           const hasEdits = serve.edits && serve.edits.length > 0;
           const photos = serve.photos && serve.photos.length > 0 ? serve.photos : (serve.imageUrl || serve.image_url ? [{ id: "p1", position: 1, imageUrl: serve.imageUrl || serve.image_url!, image_url: serve.imageUrl || serve.image_url! }] : []);
           const methodRaw = String(serve.serviceMethod || serve.service_method || "");
@@ -180,6 +185,7 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                           email: '', phone: '', address: '', notes: '',
                         } as ClientData)}
                         serves={caseServes}
+                        caseRecordId={serveCaseId}
                         caseNumber={serve.caseNumber || serve.case_number}
                         caseName={serve.caseName || serve.case_name}
                         personBeingServed={pbs}

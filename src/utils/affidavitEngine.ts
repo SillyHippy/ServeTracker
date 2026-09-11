@@ -275,7 +275,20 @@ function isPhysicalRow(att: ServeAttemptData): boolean {
   return t === "physical" || t === "other" || t === "";
 }
 
-function photoKeyOf(p: { id?: string; imageUrl?: string; image_url?: string }): string {
+function photoKeyOf(p: {
+  id?: string;
+  imageUrl?: string;
+  image_url?: string;
+  position?: number;
+  captured_at?: string;
+  capturedAt?: string;
+}): string {
+  const pos = p.position != null ? String(p.position) : "";
+  const captured = String(p.captured_at || p.capturedAt || "").trim();
+  // Same slot + same capture time = one physical photo copied onto every
+  // recipient row at that stop. Different URLs without a capture time stay
+  // distinct (two cameras / two files).
+  if (pos && captured) return `p${pos}|${captured}`;
   return String(p.imageUrl || p.image_url || p.id || "");
 }
 
@@ -720,7 +733,6 @@ export function generateBatchAffidavitsHtml(
       </div>
     `);
     if (exhibits.length > 0) {
-      // Deduplicate exhibit photos by URL across all recipient attempts
       for (const ex of exhibits) {
         if (!sharedExhibits.some((se) => se.photoUrl === ex.photoUrl)) {
           sharedExhibits.push(ex);

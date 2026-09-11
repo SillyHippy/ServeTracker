@@ -307,8 +307,17 @@ test("signed affidavit render includes all multiple photos per attempt", async (
 });
 
 test("unassigned case cannot be prepared or signed", async () => {
-  const freshCase = await makeCase("Summons", "Unassigned Target");
-  const prep = await admin.post("/api/affidavits/prepare", { caseId: freshCase.id });
+  const freshCase = await admin.post("/api/cases", {
+    client_id: clientId,
+    case_number: `ES-${Math.floor(Math.random() * 90000 + 10000)}`,
+    case_name: "Unassigned Target",
+    defendant_respondent: "Unassigned Target",
+    home_address: "10 Affidavit Lane, Tulsa, OK",
+    documents_to_serve: "Summons",
+    allow_unassigned: true,
+  });
+  expectStatus(freshCase, 201, "create unassigned case");
+  const prep = await admin.post("/api/affidavits/prepare", { caseId: freshCase.data.id });
   expectStatus(prep, 400, "unassigned prepare blocked");
   expect(String(prep.data.error).toLowerCase()).toContain("assign");
 });

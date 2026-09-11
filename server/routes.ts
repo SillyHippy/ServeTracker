@@ -14,6 +14,7 @@ import {
   findCaseByInvoiceId,
   attachInvoiceOnCase,
   buildAttachPreview,
+  refreshCaseInvoiceFromHelcim,
 } from "./helcim";
 import {
   buildServeEmailSubject,
@@ -50,6 +51,7 @@ import {
   serverEligibilityError,
   sha256Hex,
   validateSignable,
+  executionTargetRecipientId,
 } from "./affidavitExecution";
 
 function newId() {
@@ -854,7 +856,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
   });
 
   // Cases
-  app.get("/api/cases", (c: Context) => {
+  app.get("/api/cases", async (c: Context) => {
     const user = getUserOrAdmin(c);
     if (user.role === "server") {
       const rows = db
@@ -867,10 +869,18 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const rows = clientId !== undefined && clientId !== ""
       ? (db.query("SELECT * FROM client_cases WHERE client_id = ? ORDER BY created_at DESC").all(clientId) as Record<string, unknown>[])
       : (db.query("SELECT * FROM client_cases ORDER BY created_at DESC").all() as Record<string, unknown>[]);
-    return c.json(rows.map((r) => caseRow(r, "admin")));
+    const unpaid = rows.filter((r) => {
+      const status = String(r.payment_status || "").toUpperCase();
+      return Boolean(r.invoice_id) && (status === "UNPAID" || status === "DUE");
+    });
+    await Promise.all(unpaid.map((r) => refreshCaseInvoiceFromHelcim(db, r).catch(() => null)));
+    const refreshed = clientId !== undefined && clientId !== ""
+      ? (db.query("SELECT * FROM client_cases WHERE client_id = ? ORDER BY created_at DESC").all(clientId) as Record<string, unknown>[])
+      : (db.query("SELECT * FROM client_cases ORDER BY created_at DESC").all() as Record<string, unknown>[]);
+    return c.json(refreshed.map((r) => caseRow(r, "admin")));
   });
 
-  app.get("/api/cases/:id", (c: Context) => {
+  app.get("/api/cases/:id", async (c: Context) => {
     const user = getUserOrAdmin(c);
     const id = c.req.param("id");
     const caseObj = resolveCase(db, id);
@@ -878,7 +888,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (user.role === "server" && String(caseObj.assigned_to || "") !== user.id && String(caseObj.assigned_to || "") !== user.username) {
       return c.json({ error: "Forbidden: Not assigned to this case" }, 403);
     }
-    const row = db.query("SELECT * FROM client_cases WHERE id = ?").get(caseObj.id) as Record<string, unknown>;
+    let row = db.query("SELECT * FROM client_cases WHERE id = ?").get(caseObj.id) as Record<string, unknown>;
+    if (user.role === "admin") {
+      await refreshCaseInvoiceFromHelcim(db, row).catch(() => null);
+      row = db.query("SELECT * FROM client_cases WHERE id = ?").get(caseObj.id) as Record<string, unknown>;
+    }
     return c.json(caseRow(row, user.role));
   });
 
@@ -900,8 +914,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       : null;
 
     let id = body.id || newId();
-    const assignedTo = body.assigned_to || body.assignedTo || "";
-    let assignedName = body.assigned_name || body.assignedName || "";
+    let assignedTo = String(body.assigned_to || body.assignedTo || "").trim();
+    let assignedName = String(body.assigned_name || body.assignedName || "").trim();
+    // New cases land on the creating admin so affidavits can be signed immediately.
+    // Admin can reassign later.
+    const allowUnassigned = body.allow_unassigned === true || body.allowUnassigned === true;
+    if (!assignedTo && user.role === "admin" && user.id && !allowUnassigned) {
+      assignedTo = user.id;
+    }
     if (assignedTo && !assignedName) {
       const srvUser = db.query("SELECT display_name, legal_name, username FROM users WHERE id = ? OR username = ?").get(assignedTo, assignedTo) as { display_name?: string; legal_name?: string; username?: string } | null;
       if (srvUser) {
@@ -2431,6 +2451,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       createdAt: r.created_at,
       signedAt: r.signed_at,
       finalizedAt: r.finalized_at,
+      recipientId: executionTargetRecipientId(r),
+      recipient_id: executionTargetRecipientId(r),
     };
   }
 
@@ -2907,21 +2929,35 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const user = getUserOrAdmin(c);
     if (!user?.id) return c.json({ error: "Unauthorized" }, 401);
 
-    const signedCaseIds = new Set(
-      (
-        db
-          .query(
-            "SELECT DISTINCT case_id FROM affidavit_executions WHERE status = 'signed_not_notarized' AND (invalidated_at = '' OR invalidated_at IS NULL)"
-          )
-          .all() as Array<{ case_id: string }>
-      ).map((r) => r.case_id)
-    );
+    const signedExecs = db
+      .query(
+        "SELECT case_id, source_snapshot_json FROM affidavit_executions WHERE status = 'signed_not_notarized' AND (invalidated_at = '' OR invalidated_at IS NULL)"
+      )
+      .all() as Array<{ case_id: string; source_snapshot_json?: string }>;
+    const signedRecipientIdsByCase = new Map<string, Set<string>>();
+    const signedCaseIds = new Set<string>();
+    for (const row of signedExecs) {
+      signedCaseIds.add(row.case_id);
+      const recId = executionTargetRecipientId(row);
+      if (!signedRecipientIdsByCase.has(row.case_id)) signedRecipientIdsByCase.set(row.case_id, new Set());
+      if (recId) signedRecipientIdsByCase.get(row.case_id)!.add(recId);
+    }
 
+    const attemptScope = `(
+      s.case_id = c.id
+      OR (
+        (s.case_id IS NULL OR s.case_id = '')
+        AND TRIM(COALESCE(c.case_number,'')) != ''
+        AND s.case_number = c.case_number
+        AND s.client_id = c.client_id
+        AND COALESCE(s.occurred_at, s.timestamp) >= COALESCE(c.created_at, '')
+      )
+    )`;
     const casesQuery = `
       SELECT c.*,
-        (SELECT s.status FROM serve_attempts s WHERE (s.case_id = c.id OR s.case_number = c.case_number) ORDER BY s.occurred_at DESC LIMIT 1) as last_service_type,
-        (SELECT s.service_method FROM serve_attempts s WHERE (s.case_id = c.id OR s.case_number = c.case_number) ORDER BY s.occurred_at DESC LIMIT 1) as last_service_method,
-        (SELECT s.occurred_at FROM serve_attempts s WHERE (s.case_id = c.id OR s.case_number = c.case_number) ORDER BY s.occurred_at DESC LIMIT 1) as last_served_at
+        (SELECT s.status FROM serve_attempts s WHERE ${attemptScope} ORDER BY COALESCE(s.occurred_at, s.timestamp) DESC LIMIT 1) as last_service_type,
+        (SELECT s.service_method FROM serve_attempts s WHERE ${attemptScope} ORDER BY COALESCE(s.occurred_at, s.timestamp) DESC LIMIT 1) as last_service_method,
+        (SELECT s.occurred_at FROM serve_attempts s WHERE ${attemptScope} ORDER BY COALESCE(s.occurred_at, s.timestamp) DESC LIMIT 1) as last_served_at
       FROM client_cases c
     `;
     let rows: Record<string, unknown>[];
@@ -2941,28 +2977,59 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const queue: Array<Record<string, unknown>> = [];
     for (const r of rows) {
       const caseId = String(r.id);
-      if (signedCaseIds.has(caseId)) continue;
       const assignedTo = String(r.assigned_to || "").trim();
       if (!assignedTo) continue;
 
       const status = String(r.status || "").toLowerCase();
       const lastType = String(r.last_service_type || "").toLowerCase();
-      const isServed = status === "served" || status === "completed" || lastType === "serve";
+      const isServed =
+        status === "served" ||
+        status === "completed" ||
+        lastType === "served" ||
+        lastType === "completed" ||
+        lastType === "serve";
+      if (!isServed) continue;
 
-      if (isServed) {
+      const recipients = db
+        .query("SELECT id, full_name FROM serve_recipients WHERE case_id = ? ORDER BY created_at ASC")
+        .all(caseId) as Array<{ id: string; full_name: string }>;
+      const signedSet = signedRecipientIdsByCase.get(caseId) || new Set<string>();
+
+      const pushItem = (personServed: string, recipientId?: string, serviceMethod?: string) => {
         queue.push({
           caseId,
           caseNumber: String(r.case_number || ""),
           caseName: String(r.case_name || r.defendant_respondent || ""),
           defendantName: String(r.defendant_respondent || ""),
-          personServed: String(r.defendant_respondent || r.case_name || "Recipient"),
-          serviceMethod: String(r.last_service_method || "Personal Service"),
+          personServed,
+          recipientId: recipientId || "",
+          serviceMethod: serviceMethod || String(r.last_service_method || "Personal Service"),
           servedAt: String(r.last_served_at || r.updated_at || r.created_at || ""),
           assignedServerName: String(r.assigned_name || "Assigned Server"),
           status: String(r.status || "Served"),
           clientName: user.role === "admin" ? String(r.client_name || "") : undefined,
         });
+      };
+
+      if (recipients.length > 1) {
+        const unsigned = recipients.filter((rec) => !signedSet.has(String(rec.id)));
+        if (unsigned.length === 0) continue;
+        for (const rec of unsigned) {
+          const methodRow = db
+            .query(
+              `SELECT service_method FROM serve_attempts
+               WHERE case_id = ? AND recipient_id = ?
+                 AND LOWER(COALESCE(status,'')) IN ('completed','served')
+               ORDER BY COALESCE(occurred_at, timestamp) DESC LIMIT 1`
+            )
+            .get(caseId, rec.id) as { service_method?: string } | null;
+          pushItem(String(rec.full_name || "Recipient"), rec.id, String(methodRow?.service_method || r.last_service_method || ""));
+        }
+        continue;
       }
+
+      if (signedCaseIds.has(caseId)) continue;
+      pushItem(String(r.defendant_respondent || r.case_name || "Recipient"));
     }
 
     return c.json({ queue });
@@ -3054,9 +3121,25 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       if (!isAssigned) return c.json({ error: "Forbidden: You are not assigned to this case" }, 403);
     }
 
-    const rows = db.query(
-      "SELECT id, client_id, case_id, case_number, file_name, file_size, file_type, description, is_archived, gdrive_file_id, created_at FROM client_documents WHERE (case_id = ? OR (case_id = '' AND case_number = ?)) ORDER BY created_at ASC"
-    ).all(caseObj.id, caseObj.case_number) as Record<string, unknown>[];
+    const caseNum = String(caseObj.case_number || "").trim();
+    // Blank court numbers must NOT match every leftover row with empty case_id
+    // AND empty case_number — that leaked ghost documents onto pre-litigation jobs.
+    const rows = (
+      caseNum
+        ? (db.query(
+            `SELECT id, client_id, case_id, case_number, file_name, file_size, file_type, description, is_archived, gdrive_file_id, created_at
+             FROM client_documents
+             WHERE TRIM(COALESCE(file_name,'')) != ''
+               AND (case_id = ? OR (TRIM(COALESCE(case_id,'')) = '' AND case_number = ?))
+             ORDER BY created_at ASC`
+          ).all(caseObj.id, caseNum) as Record<string, unknown>[])
+        : (db.query(
+            `SELECT id, client_id, case_id, case_number, file_name, file_size, file_type, description, is_archived, gdrive_file_id, created_at
+             FROM client_documents
+             WHERE case_id = ? AND TRIM(COALESCE(file_name,'')) != ''
+             ORDER BY created_at ASC`
+          ).all(caseObj.id) as Record<string, unknown>[])
+    );
 
     return c.json(rows.map(r => ({
       id: r.id,

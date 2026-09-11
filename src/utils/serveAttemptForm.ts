@@ -61,3 +61,87 @@ export function shouldStayForOtherRecipients(opts: {
   const nextRecipientId = named.find((id) => !logged.has(id)) || "";
   return { stay: Boolean(nextRecipientId), nextRecipientId };
 }
+
+export type CompanionMethod = "personal" | "substituted-residence" | "";
+
+export type SameStopDelivery = {
+  recipientId: string;
+  personName: string;
+  serviceMethod: string;
+  acceptedBy: string;
+};
+
+/** Other named people at this house — not the person just tapped. */
+export function otherRecipients<T extends { id?: string }>(
+  recipients: T[],
+  selectedRecipientId: string
+): T[] {
+  const selected = String(selectedRecipientId || "").trim();
+  return recipients.filter((r) => {
+    const id = String(r.id || "").trim();
+    return Boolean(id) && id !== selected;
+  });
+}
+
+/**
+ * First person tapped = Personal. Everybody else at that house starts as
+ * Substitute (papers left with the person just served). Override a row to
+ * Personal only when that person was also at the door.
+ */
+export function defaultCompanionMethods<T extends { id?: string }>(
+  recipients: T[],
+  selectedRecipientId: string,
+  existing: Record<string, CompanionMethod | "skip"> = {}
+): Record<string, CompanionMethod | "skip"> {
+  const next: Record<string, CompanionMethod | "skip"> = { ...existing };
+  for (const person of otherRecipients(recipients, selectedRecipientId)) {
+    const id = String(person.id || "").trim();
+    if (!id) continue;
+    if (!next[id]) next[id] = "substituted-residence";
+  }
+  return next;
+}
+
+/**
+ * One physical stop, one or more legal deliveries.
+ * Personal + Personal → two personal affidavits.
+ * Personal + Substitute → personal for the tapped person; substitute at
+ * abode for the other, accepted by the person who just took personal service.
+ */
+export function buildSameStopDeliveries(opts: {
+  primary: {
+    recipientId: string;
+    personName: string;
+    serviceMethod: string;
+    acceptedBy?: string;
+  };
+  companions?: {
+    recipientId: string;
+    personName: string;
+    serviceMethod: CompanionMethod;
+  }[];
+}): SameStopDelivery[] {
+  const primaryName = String(opts.primary.personName || "").trim();
+  const primaryAccepted = String(opts.primary.acceptedBy || "").trim();
+  const rows: SameStopDelivery[] = [
+    {
+      recipientId: String(opts.primary.recipientId || "").trim(),
+      personName: primaryName,
+      serviceMethod: String(opts.primary.serviceMethod || "").trim(),
+      acceptedBy: primaryAccepted,
+    },
+  ];
+  for (const companion of opts.companions || []) {
+    const method = String(companion.serviceMethod || "").trim() as CompanionMethod;
+    if (!method) continue;
+    const isSubstitute =
+      method === "substituted-residence";
+    rows.push({
+      recipientId: String(companion.recipientId || "").trim(),
+      personName: String(companion.personName || "").trim(),
+      serviceMethod: method,
+      acceptedBy: isSubstitute ? (primaryAccepted || primaryName) : "",
+    });
+  }
+  return rows.filter((row) => row.recipientId && row.serviceMethod);
+}

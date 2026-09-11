@@ -1,4 +1,6 @@
 import { createHmac, randomUUID } from "crypto";
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 import type { Db } from "./db";
 import { sendEmail } from "./email";
 
@@ -7,8 +9,24 @@ export type InvoiceStatus = "UNPAID" | "PAID" | "CANCELLED" | "";
 const HELCIM_API_BASE = "https://api.helcim.com/v2";
 const HELCIM_PAY_URL_BASE = "https://just-legal-solutions.myhelcim.com/order/?token=";
 
+function tokenFromFile(path: string): string {
+  if (!existsSync(path)) return "";
+  const text = readFileSync(path, "utf8");
+  const match =
+    text.match(/(?:export\s+)?HELCIM_API_TOKEN=["']([^"']+)["']/) ||
+    text.match(/(?:export\s+)?HELCIM_API_TOKEN=(\S+)/);
+  return match ? String(match[1]).replace(/\\/g, "").trim() : "";
+}
+
 export function getHelcimToken(): string {
-  return String(process.env.HELCIM_API_TOKEN || "").replace(/\\/g, "").trim();
+  // Prefer the raw file token. Bun dotenv interpolates `$` inside .env values,
+  // which truncates the live Helcim key and 401s every GET.
+  return (
+    tokenFromFile("/home/workspace/Projects/PDFUSAEDIT-zo/.env") ||
+    tokenFromFile("/root/.zo_secrets") ||
+    tokenFromFile(join(process.cwd(), ".env")) ||
+    String(process.env.HELCIM_API_TOKEN || "").replace(/\\/g, "").trim()
+  );
 }
 
 export function isHelcimMock(): boolean {
@@ -386,6 +404,44 @@ export async function maybeEmailInvoice(opts: {
     skipBusinessCopy: true,
   });
   return { sent: true, skipped: false };
+}
+
+/**
+ * Live Helcim GET — flip UNPAID/DUE to PAID when Helcim says paid.
+ * Never creates a second invoice. Safe no-op in mock unless the id contains "paid".
+ */
+export async function refreshCaseInvoiceFromHelcim(
+  db: Db,
+  caseRow: { id?: unknown; invoice_id?: unknown; invoice_number?: unknown; payment_status?: unknown },
+): Promise<{ changed: boolean; status: string }> {
+  const caseId = String(caseRow.id || "").trim();
+  const invoiceId = String(caseRow.invoice_id || "").trim();
+  const current = String(caseRow.payment_status || "").toUpperCase().trim();
+  if (!caseId || !invoiceId) return { changed: false, status: current };
+  if (current === "PAID" || current === "CANCELLED") return { changed: false, status: current };
+
+  let invoice;
+  try {
+    invoice = await fetchHelcimInvoice({
+      invoiceId,
+      invoiceNumber: String(caseRow.invoice_number || ""),
+    });
+  } catch (err) {
+    console.warn("[Helcim] refresh failed for", invoiceId, err instanceof Error ? err.message : err);
+    return { changed: false, status: current };
+  }
+  if (invoice.mock) return { changed: false, status: current };
+  if (invoice.status === "PAID") {
+    applyPaidWebhook(db, invoice.invoiceId, invoice.datePaid);
+    return { changed: true, status: "PAID" };
+  }
+  if (current === "DUE" && invoice.status === "UNPAID") {
+    db.query(
+      "UPDATE client_cases SET payment_status = 'UNPAID', updated_at = ? WHERE id = ?",
+    ).run(new Date().toISOString(), caseId);
+    return { changed: true, status: "UNPAID" };
+  }
+  return { changed: false, status: current || invoice.status };
 }
 
 export function applyPaidWebhook(

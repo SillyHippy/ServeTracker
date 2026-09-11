@@ -114,6 +114,44 @@ test("two deliveries at one stop collapse to a single attempt bar, keeping both 
   expect(html).toContain("Served as registered agent.");
 });
 
+test("copied photos on sibling rows of one stop print once", () => {
+  const captured1 = "2026-09-10T22:10:10.364Z";
+  const captured2 = "2026-09-10T22:10:10.494Z";
+  const truong = att({
+    id: "srv_t",
+    event_id: ENCOUNTER,
+    recipient_id: PERSON_REC,
+    person_being_served: PERSON_NAME,
+    status: "completed",
+    service_method: "personal",
+    occurred_at: ENCOUNTER_AT,
+    photos: [
+      { id: "a1", position: 1, captured_at: captured1, imageUrl: "/uploads/serves/t_p1_full.jpg", image_url: "/uploads/serves/t_p1_full.jpg" },
+      { id: "a2", position: 2, captured_at: captured2, imageUrl: "/uploads/serves/t_p2_full.jpg", image_url: "/uploads/serves/t_p2_full.jpg" },
+    ],
+  });
+  const phuong = att({
+    id: "srv_p",
+    event_id: ENCOUNTER,
+    recipient_id: LLC_REC,
+    person_being_served: LLC_NAME,
+    status: "completed",
+    service_method: "substituted-residence",
+    accepted_by: PERSON_NAME,
+    occurred_at: ENCOUNTER_AT,
+    photos: [
+      { id: "b1", position: 1, captured_at: captured1, imageUrl: "/uploads/serves/p_p1_full.jpg", image_url: "/uploads/serves/p_p1_full.jpg" },
+      { id: "b2", position: 2, captured_at: captured2, imageUrl: "/uploads/serves/p_p2_full.jpg", image_url: "/uploads/serves/p_p2_full.jpg" },
+    ],
+  });
+  expect(physicalAttemptsForAffidavit([truong, phuong]).length).toBe(1);
+  const html = generateAffidavitHtml(payloadFor({ id: PERSON_REC, full_name: PERSON_NAME }, [truong, phuong]));
+  expect(html).toContain("Attempt 1");
+  expect(html).not.toContain("Attempt 2");
+  expect(html).toContain("EXHIBIT PHOTOS (2)");
+  expect(html).not.toContain("EXHIBIT PHOTOS (4)");
+});
+
 test("separate encounters still print as separate attempts", () => {
   const later = att({
     id: "srv_later",
@@ -307,6 +345,12 @@ test("signing the LLC leaves the individual unsigned — no cross-recipient leak
 
   const personPrep = await admin.post("/api/affidavits/prepare", { caseId, recipientId: personRecId });
   expect(personPrep.data.executionStatus).toBe("none");
+
+  const queue = await admin.get("/api/affidavits/queue");
+  expectStatus(queue, 200, "queue after one sibling signed");
+  const remaining = (queue.data.queue || []).filter((q: any) => q.caseId === caseId);
+  expect(remaining.some((q: any) => q.recipientId === personRecId)).toBe(true);
+  expect(remaining.some((q: any) => q.recipientId === llcRecId)).toBe(false);
 });
 
 test("both recipients hold independent signed affidavits at the same time", async () => {

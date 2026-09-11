@@ -22,11 +22,14 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { ServeAttemptData, ServeRecipient } from "@/types/ServeAttemptData";
 import { PhotoUploader, PhotoSlot } from "./PhotoUploader";
 import {
+  buildSameStopDeliveries,
+  defaultCompanionMethods,
   newEncounterEventId,
+  otherRecipients,
   pickDefaultRecipientId,
   requiresNamedRecipient,
   serveAttemptSchema,
-  shouldStayForOtherRecipients,
+  type CompanionMethod,
 } from "@/utils/serveAttemptForm";
 
 interface ServeAttemptProps {
@@ -67,6 +70,15 @@ const filterCases = (cases: ClientCase[], query: string) => {
   );
 };
 
+// Local wall-clock string for <input type="datetime-local"> (YYYY-MM-DDTHH:mm).
+// toISOString() yields UTC digits, which made manual-log (phone call) times show
+// and store 5-6h ahead of Oklahoma local time. Round-trips correctly: parsing a
+// date-time string without offset treats it as device-local time.
+function localDatetimeInputValue(d: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete }) => {
   // Intermediate Camera Capture page removed — select → confirm (photos + GPS on same page)
   const { isServer } = useAuth();
@@ -90,7 +102,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
 
   const [attemptType, setAttemptType] = useState<"physical" | "phone" | "neighbor" | "management" | "other">("physical");
   const [contactPerson, setContactPerson] = useState<string>("");
-  const [occurredAt, setOccurredAt] = useState<string>(new Date().toISOString().slice(0, 16));
+  const [occurredAt, setOccurredAt] = useState<string>(() => localDatetimeInputValue());
   const [photos, setPhotos] = useState<PhotoSlot[]>([]);
 
   // Method of service (only meaningful when Result = Served / completed)
@@ -102,8 +114,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const [entityName, setEntityName] = useState<string>("");
   const [recipientTitle, setRecipientTitle] = useState<string>("Registered Agent");
   const [moreMethodsOpen, setMoreMethodsOpen] = useState(false);
-  const [encounterEventId, setEncounterEventId] = useState("");
-  const [loggedRecipientIds, setLoggedRecipientIds] = useState<string[]>([]);
+  const [companionMethods, setCompanionMethods] = useState<Record<string, CompanionMethod | "skip">>({});
 
   const [addressSearchTerm, setAddressSearchTerm] = useState("");
   const [addressSearchOpen, setAddressSearchOpen] = useState(false);
@@ -305,6 +316,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         setIsManualLog(true);
         setGpsStatus("idle");
         setLocation(null);
+        setOccurredAt(localDatetimeInputValue()); // re-seed to phone's current local time on deep-link manual log
       } else {
         setIsManualLog(false);
         void lockGpsNow();
@@ -353,6 +365,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     setIsManualLog(true);
     setGpsStatus("idle");
     setLocation(null);
+    setOccurredAt(localDatetimeInputValue()); // re-seed to phone's current local time on every manual log
     setStep("confirm");
   };
 
@@ -385,6 +398,8 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     }
     // Method of service validation — only for successful serves (the affidavit
     // wording depends on it; Joseph refuses to sign a false affidavit).
+    const otherPeople = otherRecipients(recipients, selectedRecipientId);
+    const companionChoices = defaultCompanionMethods(otherPeople, selectedRecipientId, companionMethods);
     if (data.status === "completed") {
       if (!serviceMethod) {
         toast({ title: "Method required", description: "Select how they were served (Personal or Substitute).", variant: "destructive" });
@@ -413,9 +428,32 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       const clientId = selectedClient ? (selectedClient.id || (selectedClient as any).$id) : (selectedCase.clientId || "");
       const clientName = selectedClient?.name || selectedCase.clientName || "";
       const clientEmail = selectedClient?.email || "";
-      const eventId = encounterEventId || newEncounterEventId();
-      if (!encounterEventId) setEncounterEventId(eventId);
-      const serveData: any = {
+      const eventId = newEncounterEventId();
+      const primaryRecipientId = selectedRecipientId === "default_pbs" ? "" : selectedRecipientId;
+      const deliveries =
+        data.status === "completed"
+          ? buildSameStopDeliveries({
+              primary: {
+                recipientId: primaryRecipientId || "default_pbs",
+                personName: pbsName,
+                serviceMethod,
+                acceptedBy: refusedToIdentify ? "" : acceptedBy,
+              },
+              companions: otherPeople.map((r) => ({
+                recipientId: r.id,
+                personName: r.full_name,
+                serviceMethod: companionChoices[r.id] === "skip" ? "" : ((companionChoices[r.id] || "substituted-residence") as CompanionMethod),
+              })),
+            })
+          : [
+              {
+                recipientId: primaryRecipientId,
+                personName: pbsName,
+                serviceMethod: "",
+                acceptedBy: "",
+              },
+            ];
+      const shared: any = {
         client_id: clientId,
         clientId: clientId,
         clientName: clientName, clientEmail: clientEmail,
@@ -423,8 +461,6 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         event_id: eventId, eventId,
         case_number: selectedCase.caseNumber || "", caseNumber: selectedCase.caseNumber || "",
         case_name: selectedCase.caseName || "", caseName: selectedCase.caseName || "",
-        recipient_id: selectedRecipientId === "default_pbs" ? "" : selectedRecipientId,
-        person_being_served: pbsName, personEntityBeingServed: pbsName,
         imageData: mainImageData,
         coordinates: location ? `${location.latitude},${location.longitude}` : "",
         address: data.serviceAddress || selectedCase.homeAddress || selectedCase.workAddress || (selectedClient?.address || ""),
@@ -433,45 +469,33 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         attempt_type: attemptType,
         gps_source: !isManualLog && location ? "captured" : "manual",
         contact_person: contactPerson, is_manual: isManualLog, photos: photos as any,
-        serviceMethod: data.status === "completed" ? serviceMethod : "",
-        service_method: data.status === "completed" ? serviceMethod : "",
-        acceptedBy: refusedToIdentify ? "" : acceptedBy,
-        accepted_by: refusedToIdentify ? "" : acceptedBy,
         refusedToIdentify, refused_to_identify: refusedToIdentify,
         postingLocation, posting_location: postingLocation,
         corporateAgent: entityName || corporateAgent, corporate_agent: entityName || corporateAgent,
         entityName: entityName || corporateAgent, entity_name: entityName || corporateAgent,
         recipientTitle, recipient_title: recipientTitle,
       };
-      // Single POST only — NewServe.onComplete must NOT createServeAttempt again.
-      const saved = await api.createServeAttempt(serveData);
-      const stay = shouldStayForOtherRecipients({
-        status: data.status,
-        selectedRecipientId,
-        recipients,
-        alreadyLoggedIds: loggedRecipientIds,
-      });
-      const nextName =
-        recipients.find((r) => r.id === stay.nextRecipientId)?.full_name || "the other person";
-
+      // One POST per legal delivery. Same event_id = one physical stop.
+      // NewServe.onComplete must NOT createServeAttempt again.
+      let saved: any = null;
+      for (const delivery of deliveries) {
+        const serveData = {
+          ...shared,
+          recipient_id: delivery.recipientId === "default_pbs" ? "" : delivery.recipientId,
+          person_being_served: delivery.personName,
+          personEntityBeingServed: delivery.personName,
+          serviceMethod: data.status === "completed" ? delivery.serviceMethod : "",
+          service_method: data.status === "completed" ? delivery.serviceMethod : "",
+          acceptedBy: delivery.acceptedBy,
+          accepted_by: delivery.acceptedBy,
+        };
+        saved = await api.createServeAttempt(serveData);
+      }
+      const names = deliveries.map((d) => d.personName).filter(Boolean).join(" · ");
       if ((saved as any)?.offlineQueued) {
         toast({ title: "Saved on this phone", description: "No signal — will upload when you are back online." });
-      } else if (stay.stay) {
-        toast({
-          title: `Saved for ${pbsName}`,
-          description: `Same stop — now log ${nextName}. Pick their method. Do not leave this screen.`,
-        });
       } else {
-        toast({ title: "Serve recorded", description: `Attempt saved for ${pbsName}` });
-      }
-
-      if (stay.stay) {
-        setLoggedRecipientIds((prev) => [...prev, selectedRecipientId].filter(Boolean));
-        setSelectedRecipientId(stay.nextRecipientId);
-        setServiceMethod("");
-        setAcceptedBy(pbsName);
-        setRefusedToIdentify(false);
-        return;
+        toast({ title: "Serve recorded", description: `Saved ${deliveries.length} ${deliveries.length === 1 ? "person" : "people"} at this stop${names ? `: ${names}` : ""}` });
       }
 
       form.reset(); setLocation(null); setGpsStatus("idle");
@@ -479,10 +503,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       setAcceptedBy(""); setRefusedToIdentify(false); setPostingLocation("front_door");
       setCorporateAgent(""); setEntityName(""); setRecipientTitle("Registered Agent");
       setServiceMethod("personal");
-      setEncounterEventId("");
-      setLoggedRecipientIds([]);
+      setCompanionMethods({});
       setIsManualLog(false); setStep("select");
-      if (onComplete) onComplete({ ...serveData, ...(saved || {}), id: (saved as any)?.id || serveData.id });
+      if (onComplete) onComplete({ ...shared, ...(saved || {}), id: (saved as any)?.id || eventId });
     } catch (err) {
       console.error("Error saving:", err);
       const msg = err instanceof Error ? err.message : "Failed to save attempt.";
@@ -495,9 +518,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const isCaseSelected = Boolean(selectedCase);
   const needsNamedRecipient = requiresNamedRecipient(recipients);
   const canStartLog = isCaseSelected && (!needsNamedRecipient || Boolean(selectedRecipientId));
-  const remainingPeople = recipients.filter(
-    (r) => r.id && r.id !== selectedRecipientId && !loggedRecipientIds.includes(r.id)
-  );
+  const remainingPeople = otherRecipients(recipients, selectedRecipientId);
 
   const onPersonChange = (val: string) => {
     if (val === "__add_new__") {
@@ -506,10 +527,12 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     }
     if (val === "__none__" || val === "default_pbs") {
       setSelectedRecipientId("");
+      setCompanionMethods({});
       setIsAddingRecipient(false);
       return;
     }
     setSelectedRecipientId(val);
+    setCompanionMethods(defaultCompanionMethods(recipients, val, {}));
     setIsAddingRecipient(false);
   };
 
@@ -602,12 +625,12 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                   <div className="p-3 bg-blue-50/60 dark:bg-blue-950/30 rounded-lg border border-blue-200 dark:border-blue-900 space-y-2">
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold text-blue-900 dark:text-blue-200 flex items-center gap-1">
-                        <User className="w-3.5 h-3.5" /> Person Being Served
+                        <User className="w-3.5 h-3.5" /> Who did you serve?
                       </label>
                       {personSelect("h-11 bg-white dark:bg-slate-900 text-sm font-semibold")}
                       {needsNamedRecipient && !selectedRecipientId && (
                         <p className="text-[11px] text-red-600 font-semibold">
-                          Two people at this address — pick one person before logging.
+                          Two people at this house — tap the person you handed papers to.
                         </p>
                       )}
                     </div>
@@ -678,13 +701,8 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                 <span>Log Attempt</span>
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-500">Person Being Served</label>
+                <label className="text-[10px] font-bold text-slate-500">Who did you serve?</label>
                 {personSelect("h-11 text-sm font-semibold")}
-                {loggedRecipientIds.length > 0 && remainingPeople.length > 0 && (
-                  <p className="text-[11px] font-semibold text-blue-800 bg-blue-50 px-2 py-1 rounded">
-                    Same stop still open — next: {remainingPeople.map((r) => r.full_name).join(", ")}
-                  </p>
-                )}
                 {isAddingRecipient && (
                   <div className="flex gap-2 pt-1">
                     <Input placeholder="Full Name" value={newRecipientName} onChange={(e) => setNewRecipientName(e.target.value)} className="h-10 text-sm" />
@@ -819,6 +837,42 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                       )}
                     </div>
 
+                    {remainingPeople.length > 0 && Boolean(serviceMethod) && (
+                      <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-700">
+                        <p className="text-[11px] text-slate-500">
+                          Everyone else at this house is Substitute — papers left with {pbsName || "the person you just served"}. Change a row to Personal only if they were also at the door.
+                        </p>
+                        {remainingPeople.map((person) => {
+                          const choice = companionMethods[person.id] || "substituted-residence";
+                          return (
+                            <div key={person.id} className="space-y-1">
+                              <label className="text-xs font-bold block">{person.full_name}</label>
+                              <Select
+                                value={choice}
+                                onValueChange={(val) =>
+                                  setCompanionMethods((prev) => ({
+                                    ...prev,
+                                    [person.id]: val as CompanionMethod | "skip",
+                                  }))
+                                }
+                              >
+                                <SelectTrigger className="h-10 text-sm">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="substituted-residence">
+                                    Substitute (left with {pbsName || "person served"})
+                                  </SelectItem>
+                                  <SelectItem value="personal">Personal Service</SelectItem>
+                                  <SelectItem value="skip">Not this stop</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     {["substituted-residence", "substituted-business", "corporate"].includes(serviceMethod) && (
                       <div className="space-y-2">
                         <div>
@@ -947,7 +1001,11 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                 )} />
 
                 <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-12" disabled={isSending}>
-                  {isSending ? "Saving..." : "Save Attempt"}
+                  {isSending
+                    ? "Saving..."
+                    : remainingPeople.length > 0 && form.watch("status") === "completed"
+                      ? "Save this stop"
+                      : "Save Attempt"}
                 </Button>
               </form>
             </Form>

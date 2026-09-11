@@ -36,6 +36,7 @@ async function makeCase(extra: Record<string, unknown> = {}) {
     defendant_respondent: "Workload Target",
     home_address: "100 Workload Ave, Tulsa, OK",
     documents_to_serve: "Summons; Petition",
+    allow_unassigned: true,
     ...extra,
   });
   expectStatus(created, 201, "create case");

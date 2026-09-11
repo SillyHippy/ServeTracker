@@ -36,6 +36,9 @@ import NudgeServerDialog from "./NudgeServerDialog";
 import ServerAssignmentPanel from "./ServerAssignmentPanel";
 import EditCaseDialog from "./EditCaseDialog";
 import MarkPaidDialog from "./MarkPaidDialog";
+import { AffidavitGenerator } from "./AffidavitGenerator";
+import { CaseDocumentsDialog } from "./CaseDocumentsDialog";
+import type { ClientData } from "./ClientForm";
 import {
   STILL_ACTIVE,
   canonicalStatus,
@@ -124,6 +127,7 @@ export default function ActiveCasesPanel({
   const isBilling = mode === "billing";
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [markPaidTarget, setMarkPaidTarget] = useState<ActiveCaseItem | null>(null);
+  const [docsTarget, setDocsTarget] = useState<ActiveCaseItem | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const fetchActiveCases = async () => {
@@ -384,7 +388,7 @@ export default function ActiveCasesPanel({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <span className="font-mono text-xs font-bold text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 px-2 py-0.5 rounded border border-blue-200 dark:border-blue-800">
-                        #{item.case_number}
+                        {item.case_number ? `#${item.case_number}` : "No case #"}
                       </span>
                       <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
                         {person}
@@ -532,6 +536,39 @@ export default function ActiveCasesPanel({
                       />
                     )}
 
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs px-2"
+                      onClick={() => setDocsTarget(item)}
+                    >
+                      <FileText className="h-3.5 w-3.5 mr-1" />
+                      Documents
+                    </Button>
+                    <AffidavitGenerator
+                      buttonClassName="h-8 text-xs px-2 font-semibold"
+                      client={{
+                        id: item.client_id || "",
+                        name: item.client_name || "Client",
+                        email: "",
+                        phone: "",
+                        address: "",
+                        notes: "",
+                      } as ClientData}
+                      serves={[]}
+                      caseRecordId={caseId}
+                      caseNumber={item.case_number}
+                      caseName={item.case_name}
+                      courtName={item.court_name}
+                      plaintiffPetitioner={item.plaintiff_petitioner}
+                      defendantRespondent={item.defendant_respondent}
+                      homeAddress={item.home_address}
+                      workAddress={item.work_address}
+                      personBeingServed={person}
+                      documentsToServe={item.documents_to_serve}
+                    />
+
                     {/* 1-Click Field Sheet Modal & Print */}
                     <FieldSheetButton
                       className="h-8 text-xs"
@@ -584,6 +621,15 @@ export default function ActiveCasesPanel({
         caseItem={markPaidTarget}
         onSuccess={fetchActiveCases}
       />
+      {docsTarget && (
+        <CaseDocumentsDialog
+          caseId={docsTarget.id || docsTarget.$id || ""}
+          caseNumber={docsTarget.case_number || ""}
+          defendantName={docsTarget.defendant_respondent || docsTarget.case_name}
+          open={Boolean(docsTarget)}
+          onOpenChange={(open) => !open && setDocsTarget(null)}
+        />
+      )}
     </Card>
   );
 }

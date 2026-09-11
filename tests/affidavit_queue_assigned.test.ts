@@ -56,6 +56,7 @@ describe("affidavit queue lists assigned Served cases only", () => {
       defendant_respondent: "Unassigned Target",
       home_address: "2 Unassigned St, Tulsa, OK",
       documents_to_serve: "Summons",
+      allow_unassigned: true,
     });
     expectStatus(unassigned, 201, "create unassigned case");
     unassignedCaseId = unassigned.data.case?.id || unassigned.data.id;

@@ -133,7 +133,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const [selectedRecipientId, setSelectedRecipientId] = useState<string>('');
   const [assignedServer, setAssignedServer] = useState<AssignedServerInfo | null>(null);
   const [notaryInfo, setNotaryInfo] = useState<{ notaryName?: string; commissionExpiration?: string } | null>(null);
-  const [hasActiveSigned, setHasActiveSigned] = useState(false);
+  const [signedExecutions, setSignedExecutions] = useState<Array<{ status?: string; recipientId?: string; recipient_id?: string }>>([]);
   const [checkingSigned, setCheckingSigned] = useState(false);
   const [signOpen, setSignOpen] = useState(false);
   const [isRenderingSigned, setIsRenderingSigned] = useState(false);
@@ -190,9 +190,9 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
         setCheckingSigned(true);
         try {
           const audit = await api.auditAffidavit(String(c.id || ''));
-          setHasActiveSigned((audit.executions || []).some((e) => e.status === 'signed_not_notarized'));
+          setSignedExecutions(audit.executions || []);
         } catch {
-          setHasActiveSigned(false);
+          setSignedExecutions([]);
         } finally {
           setCheckingSigned(false);
         }
@@ -448,12 +448,20 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   };
 
   const handleSigned = (renderedHtml: string) => {
-    setHasActiveSigned(true);
+    setSignedExecutions((prev) => [
+      ...prev,
+      { status: "signed_not_notarized", recipientId: selectedRecipientId, recipient_id: selectedRecipientId },
+    ]);
     printHtmlWithImages(renderedHtml);
   };
 
   const pbsName = personBeingServed || resolvedDefendant || defendantRespondent || caseName || 'Target Recipient';
   const activeRecipientObj = recipientsList.find((r) => String(r.id) === selectedRecipientId);
+  const hasActiveSigned = signedExecutions.some(
+    (e) =>
+      e.status === "signed_not_notarized" &&
+      (!selectedRecipientId || String(e.recipientId || e.recipient_id || "") === selectedRecipientId)
+  );
   const activeRecipientName = activeRecipientObj?.full_name || pbsName;
   const inferredKind = inferAffidavitKind(resolvedAttempts, undefined, activeRecipientObj?.id, activeRecipientName);
   const servedAttempt = latestSuccessfulServe(resolvedAttempts, activeRecipientObj?.id, activeRecipientName);
