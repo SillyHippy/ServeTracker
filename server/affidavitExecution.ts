@@ -3,10 +3,11 @@ import type { Db } from "./db";
 import {
   inferAffidavitKind,
   latestSuccessfulServe,
+  physicalAttemptsForAffidavit,
   type AffidavitKind,
 } from "../src/utils/affidavitEngine";
 
-export { inferAffidavitKind, latestSuccessfulServe };
+export { inferAffidavitKind, latestSuccessfulServe, physicalAttemptsForAffidavit };
 export type { AffidavitKind };
 
 export function newId(): string {

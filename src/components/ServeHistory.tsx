@@ -80,12 +80,16 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
           const clientName = serve.clientName || (serve as any).client_name || client?.name || "Client";
           const pbs = serve.personBeingServed || serve.person_being_served || serve.caseName || serve.case_name || "Target Recipient";
           const googleMapsLink = getGoogleMapsLink(serve.coordinates);
-          const serveCaseId = String((serve as any).caseId || (serve as any).case_id || "");
+          const serveCaseId = String(serve.caseId || serve.case_id || "");
           const caseServes = serves.filter((s) => {
-            const otherId = String((s as any).caseId || (s as any).case_id || "");
+            const otherId = String(s.caseId || s.case_id || "");
             if (serveCaseId && otherId) return otherId === serveCaseId;
-            return (s.clientId === serve.clientId || s.client_id === serve.client_id) && (s.caseNumber === serve.caseNumber || s.case_number === serve.case_number) && Boolean(serve.caseNumber || serve.case_number);
+            const sameClient = (s.clientId || s.client_id) === (serve.clientId || serve.client_id);
+            const num = String(serve.caseNumber || serve.case_number || "").trim();
+            const otherNum = String(s.caseNumber || s.case_number || "").trim();
+            return sameClient && Boolean(num) && num === otherNum;
           });
+          const courtLabel = String(serve.caseNumber || serve.case_number || "").trim() || "No case #";
           const hasEdits = serve.edits && serve.edits.length > 0;
           const photos = serve.photos && serve.photos.length > 0 ? serve.photos : (serve.imageUrl || serve.image_url ? [{ id: "p1", position: 1, imageUrl: serve.imageUrl || serve.image_url!, image_url: serve.imageUrl || serve.image_url! }] : []);
           const methodRaw = String(serve.serviceMethod || serve.service_method || "");
@@ -117,8 +121,8 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                     </span>
                     {isAdmin && (
                       <NudgeServerDialog
-                        caseId={(serve as any).caseId || (serve as any).case_id || (serve.caseNumber || serve.case_number || serve.id)}
-                        caseNumber={serve.caseNumber || serve.case_number || "Case"}
+                        caseId={serveCaseId || serve.caseNumber || serve.case_number || serve.id}
+                        caseNumber={courtLabel}
                         serverName={(serve as any).loggedByName || (serve as any).logged_by_name || ""}
                         compact
                       />
@@ -128,7 +132,7 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
 
                 <div className="flex items-start gap-1 min-w-0 text-xs text-muted-foreground">
                   <ClipboardList className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                  <span className="break-words min-w-0">Case: {serve.caseNumber || serve.case_number}</span>
+                  <span className="break-words min-w-0">Case: {courtLabel}</span>
                 </div>
 
                 <div className="flex items-center gap-1.5 w-full min-w-0">
@@ -137,7 +141,7 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                       label="Field Sheet"
                       className="h-8.5 w-full justify-center px-1 text-[11px] font-semibold"
                       data={{
-                        caseId: (serve as any).caseId || (serve as any).case_id || serve.caseNumber || serve.case_number,
+                        caseId: serveCaseId || serve.caseNumber || serve.case_number,
                         caseNumber: serve.caseNumber || serve.case_number,
                         caseName: serve.caseName || serve.case_name,
                         courtName: serve.court_name,
@@ -165,7 +169,7 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                     className="flex-1 min-w-0 h-8.5 justify-center px-1 text-[11px] font-semibold text-blue-700 bg-blue-50/50 hover:bg-blue-100/70 border-blue-200"
                     onClick={() =>
                       setActiveDocCase({
-                        caseId: String((serve as any).caseId || (serve as any).case_id || serve.caseNumber || serve.case_number),
+                        caseId: serveCaseId,
                         caseNumber: String(serve.caseNumber || serve.case_number || ""),
                         defendantName: String(serve.defendant_respondent || pbs || ""),
                       })
@@ -184,7 +188,7 @@ export const ServeHistory: React.FC<ServeHistoryProps> = ({ serves, clients, onE
                           name: serve.clientName || (serve as any).client_name || 'Client',
                           email: '', phone: '', address: '', notes: '',
                         } as ClientData)}
-                        serves={caseServes}
+                        serves={caseServes.length > 0 ? caseServes : [serve]}
                         caseRecordId={serveCaseId}
                         caseNumber={serve.caseNumber || serve.case_number}
                         caseName={serve.caseName || serve.case_name}

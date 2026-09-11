@@ -54,10 +54,15 @@ export interface ServeAttemptData {
   clientEmail?: string;
   caseName?: string; // alias for case_name
   caseNumber?: string; // alias for case_number
+  caseId?: string;
+  case_id?: string;
+  eventId?: string;
+  event_id?: string;
   recipientId?: string;
   recipient_id?: string;
   personBeingServed?: string;
   person_being_served?: string;
+  personEntityBeingServed?: string;
 
   // Address & Geo
   serviceAddress?: string; // alias for service_address

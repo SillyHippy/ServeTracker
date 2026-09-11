@@ -457,9 +457,12 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                             buttonClassName="h-8.5 w-full justify-center px-1 text-[11px] font-semibold"
                             caseRecordId={c.id}
                             client={{ id: "", name: "Client", email: "", phone: "", address: "", notes: "" }}
-                            serves={recentServes.filter(
-                              (s) => String(s.caseNumber || s.case_number || "") === String(c.case_number)
-                            )}
+                            serves={recentServes.filter((s) => {
+                              const sid = String(s.caseId || s.case_id || "");
+                              if (sid && c.id) return sid === String(c.id);
+                              const num = String(c.case_number || "").trim();
+                              return Boolean(num) && String(s.caseNumber || s.case_number || "") === num;
+                            })}
                             caseNumber={c.case_number}
                             caseName={c.case_name}
                             courtName={c.court_name}

@@ -40,6 +40,7 @@ import {
   methodBlockingError,
   inferAffidavitKind,
   latestSuccessfulServe,
+  physicalAttemptsForAffidavit,
   ATTEMPTS_FOR_CASE_SQL,
   attemptsForCaseParams,
   attemptBelongsToCaseSql,
@@ -2777,7 +2778,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           targetRec?.full_name || bundle.recipients[0]?.full_name || bundle.caseObj.defendant_respondent || bundle.caseObj.case_name || ""
         ),
         documents: String(bundle.caseObj.documents_to_serve || ""),
-        attemptsCount: bundle.attempts.length,
+        attemptsCount: physicalAttemptsForAffidavit(bundle.attempts as any).length,
         method: String(lastSuccessful?.service_method || ""),
         methodRecorded: !methodBlockingError(
           bundle.attempts,

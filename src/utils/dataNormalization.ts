@@ -16,12 +16,19 @@ export function normalizeServeData(serve: any): ServeAttemptData | null {
     return null;
   }
 
+  const caseNumber = serve.case_number ?? serve.caseNumber;
+  const caseId = String(serve.case_id || serve.caseId || "").trim();
+  const eventId = String(serve.event_id || serve.eventId || "").trim();
   return {
     id,
     // Database fields (snake_case)
-    client_id: serve.client_id || serve.clientId || "unknown",
-    case_name: serve.case_name || serve.caseName || "Unknown Case",
-    case_number: serve.case_number || serve.caseNumber || "Unknown",
+    client_id: serve.client_id || serve.clientId || "",
+    case_name: serve.case_name || serve.caseName || "",
+    // Pre-litigation jobs have a blank court number. Never invent "Unknown" —
+    // History used that as a lookup key and the affidavit dialog missed the case.
+    case_number: caseNumber == null ? "" : String(caseNumber),
+    case_id: caseId,
+    event_id: eventId,
     service_address: serve.service_address || serve.serviceAddress || serve.address,
     notes: serve.notes || "",
     status: serve.status || "unknown",
@@ -65,12 +72,15 @@ export function normalizeServeData(serve: any): ServeAttemptData | null {
     home_address: serve.home_address || "",
     work_address: serve.work_address || "",
 
+    documents_to_serve: serve.documents_to_serve || serve.documentsToServe || "",
     // Aliases for compatibility (camelCase)
-    clientId: serve.clientId || serve.client_id || "unknown",
+    clientId: serve.clientId || serve.client_id || "",
     clientName: serve.clientName || serve.client_name || "",
     clientEmail: serve.clientEmail || serve.client_email || "",
-    caseNumber: serve.caseNumber || serve.case_number || "Unknown",
-    caseName: serve.caseName || serve.case_name || "Unknown Case",
+    caseNumber: caseNumber == null ? "" : String(caseNumber),
+    caseName: serve.caseName || serve.case_name || "",
+    caseId,
+    eventId,
     serviceAddress: serve.serviceAddress || serve.service_address || serve.address,
     address: serve.address || serve.service_address || serve.home_address,
     attemptNumber: serve.attemptNumber || serve.attempt_number || 1,
@@ -153,24 +163,31 @@ export function mergeServeAndCaseData(serves: ServeAttemptData[], cases: any[]):
     return serves || [];
   }
 
+  const caseById = new Map<string, any>();
   const caseMap = new Map<string, any>();
   cases.forEach(c => {
-    if (c.client_id && c.case_number) {
-      const key = `${c.client_id}-${c.case_number}`;
-      caseMap.set(key, c);
+    const id = String(c.id || c.$id || "").trim();
+    if (id) caseById.set(id, c);
+    const num = String(c.case_number || "").trim();
+    if (c.client_id && num) {
+      caseMap.set(`${c.client_id}-${num}`, c);
     }
   });
 
   return serves.map(serve => {
-    if (!serve.clientId || !serve.caseNumber) {
-      return serve;
-    }
-    const key = `${serve.clientId}-${serve.caseNumber}`;
-    const matchingCase = caseMap.get(key);
+    const serveCaseId = String((serve as any).case_id || (serve as any).caseId || "").trim();
+    const matchingCase =
+      (serveCaseId && caseById.get(serveCaseId)) ||
+      (serve.clientId && String(serve.caseNumber || serve.case_number || "").trim()
+        ? caseMap.get(`${serve.clientId}-${serve.caseNumber || serve.case_number}`)
+        : undefined);
 
     if (matchingCase) {
+      const matchedId = String(matchingCase.id || matchingCase.$id || serveCaseId || "");
       return {
         ...serve,
+        case_id: matchedId || serveCaseId,
+        caseId: matchedId || serveCaseId,
         court_name: matchingCase.court_name,
         plaintiff_petitioner: matchingCase.plaintiff_petitioner,
         defendant_respondent: matchingCase.defendant_respondent,

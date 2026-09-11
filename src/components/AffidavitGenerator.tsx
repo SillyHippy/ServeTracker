@@ -7,6 +7,7 @@ import {
   generateBatchAffidavitsHtml,
   inferAffidavitKind,
   latestSuccessfulServe,
+  physicalAttemptsForAffidavit,
   serviceMethodLabel,
   type AffidavitKind,
 } from '@/utils/affidavitEngine';
@@ -140,7 +141,9 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const [affidavitKind, setAffidavitKind] = useState<AffidavitKind>(() => inferAffidavitKind(serves));
   const { toast } = useToast();
 
-  const lookupKey = caseRecordId || caseId || caseNumber || '';
+  const courtNumber = String(caseNumber || '').trim();
+  const fakeCourt = !courtNumber || courtNumber.toLowerCase() === 'unknown';
+  const lookupKey = String(caseRecordId || caseId || '').trim() || (fakeCourt ? '' : courtNumber);
 
   // Always pull Documents to Serve, caption fields, and THIS case's attempts from the live record.
   // History cards can mix duplicate case numbers (PG-26-22) — UUID lookup is authoritative.
@@ -177,7 +180,12 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           })).filter((r: any) => Boolean(r.full_name));
           setRecipientsList(mapped);
           if (mapped.length > 0) {
-            setSelectedRecipientId((prev) => (mapped.some((m: any) => m.id === prev) ? prev : mapped[0].id));
+            const wanted = String(personBeingServed || '').trim().toLowerCase();
+            setSelectedRecipientId((prev) => {
+              if (mapped.some((m: any) => m.id === prev)) return prev;
+              const named = wanted ? mapped.find((m: any) => m.full_name.toLowerCase() === wanted) : undefined;
+              return named?.id || mapped[0].id;
+            });
           }
         }
         if (Array.isArray(data.attempts) && data.attempts.length > 0) {
@@ -469,8 +477,11 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const acceptedRaw = String((servedAttempt as any)?.accepted_by || (servedAttempt as any)?.acceptedBy || '').trim();
   const methodLabelText = serviceMethodLabel(methodRaw);
   const docsPreview = resolvedDocs;
+  const stopCount = physicalAttemptsForAffidavit(resolvedAttempts).length;
+  const caseNoLabel = courtNumber || 'No case #';
   const serverLabel = assignedServer?.displayName || 'the assigned server';
   const isService = affidavitKind === 'service';
+  const compactSelect = recipientsList.length > 2 || (typeof window !== 'undefined' && window.innerWidth < 640);
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -488,7 +499,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           <span className="truncate">Affidavit</span>
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="w-[calc(100vw-1rem)] max-w-2xl max-h-[92vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <FileText className="w-5 h-5 text-blue-600" />
@@ -540,7 +551,20 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
                     {activeRecipientObj?.full_name || pbsName}
                   </span>
                 </div>
-                {recipientsList.length <= 2 ? (
+                {compactSelect ? (
+                  <Select value={selectedRecipientId} onValueChange={setSelectedRecipientId}>
+                    <SelectTrigger className="h-11 text-sm w-full mt-1">
+                      <SelectValue placeholder="Select Recipient" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {recipientsList.map((rec) => (
+                        <SelectItem key={rec.id} value={rec.id}>
+                          {rec.full_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
                   <div className="flex flex-wrap gap-1.5 mt-1">
                     {recipientsList.map((rec) => (
                       <Button
@@ -548,26 +572,13 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
                         type="button"
                         size="sm"
                         variant={selectedRecipientId === rec.id ? "default" : "outline"}
-                        className="h-7 text-xs flex-1 min-w-[120px]"
+                        className="h-11 text-xs flex-1 min-w-[120px]"
                         onClick={() => setSelectedRecipientId(rec.id)}
                       >
                         {rec.full_name}
                       </Button>
                     ))}
                   </div>
-                ) : (
-                  <Select value={selectedRecipientId} onValueChange={setSelectedRecipientId}>
-                    <SelectTrigger className="h-8 text-xs w-full mt-1">
-                      <SelectValue placeholder="Select Recipient" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {recipientsList.map((rec, idx) => (
-                        <SelectItem key={rec.id} value={rec.id}>
-                          {rec.full_name} {idx === 0 ? "(Primary)" : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
                 )}
               </div>
             ) : (
@@ -578,11 +589,19 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             )}
             <div className="flex justify-between gap-2">
               <span className="text-slate-500 font-medium">Case No:</span>
-              <span className="font-semibold">{caseNumber || 'N/A'}</span>
+              <span className="font-semibold">{caseNoLabel}</span>
             </div>
             <div className="flex justify-between gap-2">
               <span className="text-slate-500 font-medium">Attempts:</span>
-              <span className="font-semibold">{serves.length}</span>
+              <span className="font-semibold">
+                {isLoadingCase
+                  ? '…'
+                  : `${stopCount} stop${stopCount === 1 ? '' : 's'}${
+                      resolvedAttempts.length > stopCount
+                        ? ` (${resolvedAttempts.length} people)`
+                        : ''
+                    }`}
+              </span>
             </div>
             <div className="flex justify-between gap-2">
               <span className="text-slate-500 font-medium">Method:</span>
@@ -621,15 +640,15 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           ) : null}
         </div>
 
-        <div className="flex justify-end gap-2 pt-2 flex-wrap">
-          <Button variant="outline" onClick={() => setIsOpen(false)}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+          <Button variant="outline" className="h-11 w-full sm:w-auto" onClick={() => setIsOpen(false)}>
             Cancel
           </Button>
           {recipientsList.length > 1 && (
             <Button
               onClick={handlePrintAll}
               variant="outline"
-              className="border-blue-600 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center gap-1.5"
+              className="h-11 w-full sm:w-auto border-blue-600 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center justify-center gap-1.5"
               disabled={isLoadingCase}
               title="Prints all recipient affidavits in one continuous job, with exhibits once at the end"
             >
@@ -641,7 +660,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             <Button
               onClick={handlePrintSigned}
               disabled={isRenderingSigned}
-              className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2"
+              className="h-11 w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white flex items-center justify-center gap-2"
             >
               {isRenderingSigned ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
               <span>Print Signed Version</span>
@@ -649,7 +668,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           ) : (
             <Button
               onClick={handlePrintOrSave}
-              className="bg-blue-600 hover:bg-blue-700 text-white flex items-center gap-2"
+              className="h-11 w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center gap-2"
               disabled={isLoadingCase}
             >
               <Printer className="w-4 h-4" />
@@ -660,11 +679,17 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             <Button
               onClick={() => setSignOpen(true)}
               variant={hasActiveSigned ? "outline" : "secondary"}
-              className="flex items-center gap-2"
+              className="h-11 w-full sm:w-auto flex items-center justify-center gap-2"
               title="Applies the assigned server's electronic signature only — does not notarize"
             >
               <PenLine className="w-4 h-4" />
-              <span>{hasActiveSigned ? "Re-sign (new version)" : `Sign Affidavit as ${serverLabel}`}</span>
+              <span>
+                {hasActiveSigned
+                  ? "Re-sign (new version)"
+                  : recipientsList.length > 1
+                    ? `Sign both as ${serverLabel}`
+                    : `Sign Affidavit as ${serverLabel}`}
+              </span>
             </Button>
           )}
         </div>

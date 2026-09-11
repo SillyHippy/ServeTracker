@@ -567,7 +567,13 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
           <div className="grid gap-4">
             {clientCases.map((clientCase) => {
               // Filter serves for this specific case
-              const caseServes = serves.filter(serve => serve.caseNumber === clientCase.case_number);
+              const caseId = String(clientCase.$id || (clientCase as any).id || "");
+              const caseNum = String(clientCase.case_number || "").trim();
+              const caseServes = serves.filter((serve) => {
+                const sid = String(serve.caseId || serve.case_id || "");
+                if (sid && caseId) return sid === caseId;
+                return Boolean(caseNum) && String(serve.caseNumber || serve.case_number || "") === caseNum;
+              });
               
               return (
                 <Card key={clientCase.$id} className="w-full min-w-0 overflow-hidden shadow-sm">
