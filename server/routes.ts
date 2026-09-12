@@ -355,8 +355,29 @@ function recipientHasPersonalOnlyKey(rec: unknown): boolean {
   return obj.personal_service_only !== undefined || obj.personalServiceOnly !== undefined;
 }
 
+function servedRecipientIdSet(db: Db, caseIds: Array<string | unknown>): Set<string> {
+  const ids = [...new Set(caseIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  const out = new Set<string>();
+  if (ids.length === 0) return out;
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .query(
+      `SELECT DISTINCT recipient_id FROM serve_attempts
+       WHERE case_id IN (${placeholders})
+         AND recipient_id IS NOT NULL AND TRIM(recipient_id) != ''
+         AND LOWER(COALESCE(status, '')) IN ('completed', 'served')`
+    )
+    .all(...ids) as { recipient_id?: string }[];
+  for (const row of rows) {
+    const id = String(row.recipient_id || "").trim();
+    if (id) out.add(id);
+  }
+  return out;
+}
+
 function recipientRow(row: Record<string, unknown>, role: "admin" | "server" = "server") {
   const personalOnly = Number(row.personal_service_only || 0) === 1;
+  const alreadyServed = row.already_served === true || row.already_served === 1 || row.already_served === "1";
   const out: Record<string, unknown> = {
     $id: row.id,
     id: row.id,
@@ -372,6 +393,8 @@ function recipientRow(row: Record<string, unknown>, role: "admin" | "server" = "
     assigned_name: row.assigned_name || "",
     personal_service_only: personalOnly,
     personalServiceOnly: personalOnly,
+    already_served: alreadyServed,
+    alreadyServed,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -379,6 +402,13 @@ function recipientRow(row: Record<string, unknown>, role: "admin" | "server" = "
     out.client_id = row.client_id;
   }
   return out;
+}
+
+function recipientRows(db: Db, rows: Record<string, unknown>[], role: "admin" | "server" = "server") {
+  const served = servedRecipientIdSet(db, rows.map((r) => r.case_id));
+  return rows.map((row) =>
+    recipientRow({ ...row, already_served: served.has(String(row.id || "").trim()) ? 1 : 0 }, role)
+  );
 }
 
 function serveRow(row: Record<string, unknown>, db?: Db, role: "admin" | "server" = "server") {
@@ -695,7 +725,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         .all(user.id, user.id, user.username, param, param, param) as Record<string, unknown>[];
 
       return c.json({
-        recipients: recipients.map((r) => recipientRow(r, "server")),
+        recipients: recipientRows(db, recipients, "server"),
         cases: assignedCases.map((cs) => caseRow(cs, "server")),
         clients: [],
         serves: serves.map((r) => serveRow(r, db, "server")),
@@ -708,7 +738,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const serves = db.query("SELECT * FROM serve_attempts WHERE person_being_served LIKE ? OR notes LIKE ? OR case_number LIKE ? LIMIT 20").all(param, param, param) as Record<string, unknown>[];
 
     return c.json({
-      recipients: recipients.map((r) => recipientRow(r, "admin")),
+      recipients: recipientRows(db, recipients, "admin"),
       cases: cases.map((cs) => caseRow(cs, "admin")),
       clients: clients.map(clientRow),
       serves: serves.map((r) => serveRow(r, db, "admin")),
@@ -1311,7 +1341,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
            ORDER BY r.full_name ASC`
         )
         .all(caseId, user.id, user.username) as Record<string, unknown>[];
-      return c.json(rows.map((r) => recipientRow(r, "server")));
+      return c.json(recipientRows(db, rows, "server"));
     }
 
     if (caseId) {
@@ -1321,7 +1351,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     } else {
       rows = db.query("SELECT * FROM serve_recipients ORDER BY full_name ASC").all() as Record<string, unknown>[];
     }
-    return c.json(rows.map((r) => recipientRow(r, "admin")));
+    return c.json(recipientRows(db, rows, "admin"));
   });
 
   app.post("/api/recipients", async (c: Context) => {
@@ -1364,7 +1394,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     );
     invalidateExecutionsForCase(db, caseId, "material_change");
     const row = db.query("SELECT * FROM serve_recipients WHERE id = ?").get(id) as Record<string, unknown>;
-    return c.json(recipientRow(row, user.role), 201);
+    return c.json(recipientRows(db, [row], user.role)[0], 201);
   });
 
   app.put("/api/recipients/:id", async (c: Context) => {
@@ -1407,7 +1437,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     const row = db.query("SELECT * FROM serve_recipients WHERE id = ?").get(id) as Record<string, unknown>;
-    return c.json(recipientRow(row, user.role));
+    return c.json(recipientRows(db, [row], user.role)[0]);
   });
 
   app.delete("/api/recipients/:id", (c: Context) => {
@@ -1601,6 +1631,23 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }
     }
 
+    // Already-served person: a later stop for someone else at the house must not
+    // add Attempt 2 on their affidavit. Re-serves are a new case.
+    if (recipientIdEarly && caseId) {
+      const priorSuccess = db.query(
+        `SELECT * FROM serve_attempts
+         WHERE case_id = ? AND recipient_id = ?
+           AND LOWER(COALESCE(status, '')) IN ('completed', 'served')
+         ORDER BY COALESCE(occurred_at, timestamp) DESC LIMIT 1`
+      ).get(caseId, recipientIdEarly) as Record<string, unknown> | null;
+      if (priorSuccess) {
+        const out = serveRow(priorSuccess, db, user.role === "server" ? "server" : "admin") as Record<string, unknown>;
+        out.skipped = true;
+        out.reason = "already_served";
+        return c.json(out, 201);
+      }
+    }
+
     const clientObj = clientId
       ? (db.query("SELECT name, email, additional_emails FROM clients WHERE id = ?").get(clientId) as {
           name?: string;
@@ -1766,6 +1813,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const isSuccessful = !isUnsuccessful && (statusNorm === "served" || statusNorm === "completed");
     if (caseId && isSuccessful) {
       maybeMarkCaseServed(db, caseId, serveStatus);
+      if (recipientId) {
+        db.query("UPDATE serve_recipients SET status = ?, updated_at = ? WHERE id = ? AND case_id = ?")
+          .run("Served", nowIso(), recipientId, caseId);
+      }
     }
 
     // Save multiple photos if provided in creation POST
@@ -2444,7 +2495,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     return c.json({
       case: caseRow(caseObj, role),
       client: role === "admin" && clientObj ? clientRow(clientObj) : null,
-      recipients: recipients.map((r) => recipientRow(r, role)),
+      recipients: recipientRows(db, recipients, role),
       attempts: serves.map((s) => serveRow(s, db, role)),
       assignedServer: assignedServer
         ? {

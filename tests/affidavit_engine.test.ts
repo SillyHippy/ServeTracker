@@ -249,3 +249,69 @@ test("three distinct people at one stop still count as three people", () => {
   expect(physicalAttemptsForAffidavit(attempts)).toHaveLength(1);
   expect(distinctPeopleCount(attempts)).toBe(3);
 });
+
+test("already-served person's packet stops at their success; leftover house visit is the other person's", () => {
+  const stop1 = "evt_house_1";
+  const stop2 = "evt_house_2";
+  const attempts = [
+    att({
+      id: "p1s1",
+      event_id: stop1,
+      recipient_id: "rec_p1",
+      person_being_served: "Person #1",
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-12T20:37:00.000Z",
+      notes: "Person number one was served",
+    }),
+    att({
+      id: "p2s1",
+      event_id: stop1,
+      recipient_id: "rec_p2",
+      person_being_served: "Person number two",
+      status: "failed",
+      occurred_at: "2026-09-12T20:37:00.000Z",
+      notes: "not home",
+    }),
+    att({
+      id: "p1s2",
+      event_id: stop2,
+      recipient_id: "rec_p1",
+      person_being_served: "Person #1",
+      status: "failed",
+      occurred_at: "2026-09-12T20:38:00.000Z",
+      notes: "Person number one was already served",
+    }),
+    att({
+      id: "p2s2",
+      event_id: stop2,
+      recipient_id: "rec_p2",
+      person_being_served: "Person number two",
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-12T20:38:00.000Z",
+    }),
+  ];
+  expect(physicalAttemptsForAffidavit(attempts).length).toBe(2);
+  expect(physicalAttemptsForAffidavit(attempts, { recipientId: "rec_p1", recipientName: "Person #1" }).length).toBe(1);
+  expect(physicalAttemptsForAffidavit(attempts, { recipientId: "rec_p2", recipientName: "Person number two" }).length).toBe(2);
+
+  const p1 = generateAffidavitHtml({
+    case: { case_number: "Mackhshdhd", case_name: "Person #1", documents_to_serve: "Fake documentation" },
+    recipient: { id: "rec_p1", full_name: "Person #1" },
+    attempts,
+    swornDate: new Date("2026-09-12T21:00:00.000Z"),
+  });
+  expect(p1).toContain("Attempt 1");
+  expect(p1).not.toContain("Attempt 2");
+  expect(p1).not.toContain("already served");
+
+  const p2 = generateAffidavitHtml({
+    case: { case_number: "Mackhshdhd", case_name: "Person number two", documents_to_serve: "Fake documentation" },
+    recipient: { id: "rec_p2", full_name: "Person number two" },
+    attempts,
+    swornDate: new Date("2026-09-12T21:00:00.000Z"),
+  });
+  expect(p2).toContain("Attempt 1");
+  expect(p2).toContain("Attempt 2");
+});

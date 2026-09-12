@@ -11,6 +11,8 @@ export interface ServeRecipient {
   notes?: string;
   personal_service_only?: boolean | number | string;
   personalServiceOnly?: boolean | number | string;
+  already_served?: boolean | number | string;
+  alreadyServed?: boolean | number | string;
   created_at?: string;
   updated_at?: string;
 }

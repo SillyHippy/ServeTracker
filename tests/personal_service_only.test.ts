@@ -109,3 +109,119 @@ test("intake flag persists and substitute POST is rejected", async () => {
   const items = (queue.data.queue || []).filter((q: { caseId?: string }) => q.caseId === caseId);
   expect(items.map((q: { recipientId: string }) => q.recipientId)).toEqual([toni.id]);
 });
+
+test("second stop does not add another attempt for the person already served", async () => {
+  const cse = await admin.post("/api/cases", {
+    client_id: clientId,
+    case_number: "PG-2026-MOCK-SKIPDONE",
+    case_name: "Person #1",
+    defendant_respondent: "Person #1 & Person number two",
+    home_address: "I'm a home address",
+    documents_to_serve: "Fake documentation",
+    assigned_to: "usr_admin_default",
+    recipients: [
+      { full_name: "Person #1", role: "Defendant / Respondent", personal_service_only: true },
+      { full_name: "Person number two", role: "Defendant / Respondent", personal_service_only: false },
+    ],
+  });
+  expectStatus(cse, 201, "create skip-done mock");
+  const caseId = cse.data.case?.id || cse.data.id;
+  const recs = await admin.get(`/api/recipients?case_id=${caseId}`);
+  expectStatus(recs, 200, "list recipients");
+  const person1 = recs.data.find((r: { full_name: string }) => r.full_name === "Person #1");
+  const person2 = recs.data.find((r: { full_name: string }) => r.full_name === "Person number two");
+  expect(person1.already_served).toBe(false);
+  expect(person2.already_served).toBe(false);
+
+  const stop1 = newEncounterEventId();
+  const firstDeliveries = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: person1.id,
+    recipients: recs.data,
+    pbsName: "Person #1",
+    serviceMethod: "personal",
+    companionMethods: { [person2.id]: "failed" },
+  });
+  expect(firstDeliveries).toHaveLength(2);
+  expect(firstDeliveries.find((d) => d.recipientId === person2.id)?.status).toBe("failed");
+  for (const delivery of firstDeliveries) {
+    const posted = await admin.post("/api/serves", {
+      case_id: caseId,
+      case_number: "PG-2026-MOCK-SKIPDONE",
+      recipient_id: delivery.recipientId,
+      person_being_served: delivery.personName,
+      event_id: stop1,
+      status: delivery.status || "completed",
+      service_method: delivery.status === "failed" ? "" : delivery.serviceMethod,
+      notes: delivery.notes || "stop 1",
+      sendEmail: false,
+      isTest: true,
+    });
+    expectStatus(posted, 201, `stop1 ${delivery.personName}`);
+  }
+
+  const recsAfter = await admin.get(`/api/recipients?case_id=${caseId}`);
+  expectStatus(recsAfter, 200, "list recipients after stop 1");
+  const person1After = recsAfter.data.find((r: { full_name: string }) => r.full_name === "Person #1");
+  const person2After = recsAfter.data.find((r: { full_name: string }) => r.full_name === "Person number two");
+  expect(person1After.already_served).toBe(true);
+  expect(person2After.already_served).toBe(false);
+
+  const secondDeliveries = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: person2.id,
+    recipients: recsAfter.data,
+    pbsName: "Person number two",
+    serviceMethod: "personal",
+  });
+  expect(secondDeliveries).toHaveLength(1);
+  expect(secondDeliveries[0].recipientId).toBe(person2.id);
+
+  const stop2 = newEncounterEventId();
+  const posted2 = await admin.post("/api/serves", {
+    case_id: caseId,
+    case_number: "PG-2026-MOCK-SKIPDONE",
+    recipient_id: secondDeliveries[0].recipientId,
+    person_being_served: secondDeliveries[0].personName,
+    event_id: stop2,
+    status: "completed",
+    service_method: "personal",
+    notes: "stop 2 person two only",
+    sendEmail: false,
+    isTest: true,
+  });
+  expectStatus(posted2, 201, "stop2 person two");
+
+  const listed = await admin.get(`/api/serves?case_id=${caseId}`);
+  expectStatus(listed, 200, "list serves");
+  const p1Rows = (listed.data || []).filter((s: { recipient_id?: string; recipientId?: string }) =>
+    String(s.recipient_id || s.recipientId) === person1.id
+  );
+  const p2Rows = (listed.data || []).filter((s: { recipient_id?: string; recipientId?: string }) =>
+    String(s.recipient_id || s.recipientId) === person2.id
+  );
+  expect(p1Rows.length).toBe(1);
+  expect(String(p1Rows[0].status)).toBe("completed");
+  expect(p2Rows.length).toBe(2);
+
+  const stray = await admin.post("/api/serves", {
+    case_id: caseId,
+    case_number: "PG-2026-MOCK-SKIPDONE",
+    recipient_id: person1.id,
+    person_being_served: "Person #1",
+    event_id: stop2,
+    status: "failed",
+    notes: "Person number one was already served",
+    sendEmail: false,
+    isTest: true,
+  });
+  expectStatus(stray, 201, "skip already-served companion");
+  expect(stray.data.skipped).toBe(true);
+  expect(stray.data.reason).toBe("already_served");
+
+  const listedAgain = await admin.get(`/api/serves?case_id=${caseId}`);
+  const p1Again = (listedAgain.data || []).filter((s: { recipient_id?: string; recipientId?: string }) =>
+    String(s.recipient_id || s.recipientId) === person1.id
+  );
+  expect(p1Again.length).toBe(1);
+});

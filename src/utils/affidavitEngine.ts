@@ -352,13 +352,13 @@ export function distinctPeopleCount(attempts: ServeAttemptData[]): number {
   return count;
 }
 
-/**
- * Every physical attempt, oldest first. Do not cap — dropping newest rows hid later serves.
- * Rows sharing a non-empty event_id are one physical encounter and collapse to a
- * single chronology entry, so serving two recipients at one stop cannot print as
- * two attempts at the same minute.
- */
-export function physicalAttemptsForAffidavit(attempts: ServeAttemptData[]): ServeAttemptData[] {
+function isSuccessfulServeRow(att: ServeAttemptData): boolean {
+  const st = attemptStatus(att);
+  if (st !== "completed" && st !== "served") return false;
+  return Boolean(String(att.service_method || att.serviceMethod || "").trim());
+}
+
+function groupPhysicalEncounters(attempts: ServeAttemptData[]): ServeAttemptData[] {
   const sorted = [...attempts].sort((a, b) => attemptOccurredMs(a) - attemptOccurredMs(b));
   const encounters: ServeAttemptData[] = [];
   const slotByEvent = new Map<string, number>();
@@ -378,7 +378,48 @@ export function physicalAttemptsForAffidavit(attempts: ServeAttemptData[]): Serv
     }
     encounters[slot] = mergeEncounterRow(encounters[slot], att);
   }
+  return encounters;
+}
 
+function recipientSucceededInEncounter(
+  encounter: ServeAttemptData,
+  allAttempts: ServeAttemptData[],
+  targetId: string,
+  targetName: string
+): boolean {
+  const eventId = eventIdOf(encounter);
+  const rows = eventId
+    ? allAttempts.filter((a) => eventIdOf(a) === eventId)
+    : [encounter];
+  return rows.some(
+    (a) => servesTargetRecipient(a, targetId, targetName) && isSuccessfulServeRow(a)
+  );
+}
+
+/**
+ * Every physical attempt, oldest first. Do not cap — dropping newest rows hid later serves.
+ * Rows sharing a non-empty event_id are one physical encounter and collapse to a
+ * single chronology entry, so serving two recipients at one stop cannot print as
+ * two attempts at the same minute.
+ *
+ * When `target` is set (one sworn packet), chronology stops at that person's first
+ * successful serve. A later visit to serve someone else at the house must not
+ * become Attempt 2 on a person who is already done. Earlier no-answer visits stay.
+ * Omit `target` for case-level stop counts (Print All "Attempts").
+ */
+export function physicalAttemptsForAffidavit(
+  attempts: ServeAttemptData[],
+  target?: { recipientId?: string; recipientName?: string }
+): ServeAttemptData[] {
+  const encounters = groupPhysicalEncounters(attempts);
+  const targetId = String(target?.recipientId || "").trim();
+  const targetName = String(target?.recipientName || "").trim();
+  if (!(targetId || targetName) || !attemptsAreRecipientAware(attempts)) return encounters;
+
+  const cutoff = encounters.findIndex((enc) =>
+    recipientSucceededInEncounter(enc, attempts, targetId, targetName)
+  );
+  if (cutoff >= 0) return encounters.slice(0, cutoff + 1);
   return encounters;
 }
 
@@ -449,7 +490,10 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
     ? "AFFIDAVIT OF SERVICE"
     : "AFFIDAVIT OF NON-SERVICE";
 
-  const physicalAttempts = physicalAttemptsForAffidavit(sortedAttempts);
+  const physicalAttempts = physicalAttemptsForAffidavit(sortedAttempts, {
+    recipientId: data.recipient?.id,
+    recipientName: data.recipient?.full_name,
+  });
   const narrativeAttempts = sortedAttempts.filter((a) => !isPhysicalRow(a));
 
   const documentsLine = (c.documents_to_serve || "").trim();

@@ -12,6 +12,7 @@ import {
   shouldShowDefendantOption,
   shouldStayForOtherRecipients,
   isPersonalServiceOnly,
+  skippedAlreadyServedCompanions,
 } from "../src/utils/serveAttemptForm";
 
 test("blank court number is valid once a case is selected", () => {
@@ -364,4 +365,55 @@ test("unchecked 99% companion still auto-substitutes", () => {
   });
   expect(rows[1].serviceMethod).toBe("substituted-residence");
   expect(rows[1].status).toBe("completed");
+});
+
+test("already-served companion is skipped so their affidavit stays at one attempt", () => {
+  const recs = [
+    { id: "rec_p1", full_name: "Person #1", personal_service_only: true, already_served: true },
+    { id: "rec_p2", full_name: "Person number two", already_served: false },
+  ];
+  expect(otherRecipients(recs, "rec_p2").map((r) => r.id)).toEqual([]);
+  expect(skippedAlreadyServedCompanions(recs, "rec_p2").map((r) => r.full_name)).toEqual(["Person #1"]);
+  expect(defaultCompanionMethods(recs, "rec_p2")).toEqual({});
+
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "rec_p2",
+    recipients: recs,
+    pbsName: "Person number two",
+    serviceMethod: "personal",
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    recipientId: "rec_p2",
+    serviceMethod: "personal",
+    status: "completed",
+  });
+});
+
+test("first stop still auto-subs unchecked people and fails PS-only", () => {
+  const recs = [
+    { id: "rec_p1", full_name: "Person #1", personal_service_only: true, already_served: false },
+    { id: "rec_p2", full_name: "Person number two", already_served: false },
+  ];
+  expect(otherRecipients(recs, "rec_p1").map((r) => r.id)).toEqual(["rec_p2"]);
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "rec_p1",
+    recipients: recs,
+    pbsName: "Person #1",
+    serviceMethod: "personal",
+  });
+  expect(rows).toHaveLength(2);
+  expect(rows[1].recipientId).toBe("rec_p2");
+  expect(rows[1].serviceMethod).toBe("substituted-residence");
+});
+
+test("recipient status Served hides companion row even if already_served flag is missing", () => {
+  const recs = [
+    { id: "rec_p1", full_name: "Person #1", personal_service_only: true, status: "Served" },
+    { id: "rec_p2", full_name: "Person number two", status: "Pending" },
+  ];
+  expect(otherRecipients(recs, "rec_p2").map((r) => r.id)).toEqual([]);
+  expect(skippedAlreadyServedCompanions(recs, "rec_p2").map((r) => r.full_name)).toEqual(["Person #1"]);
 });

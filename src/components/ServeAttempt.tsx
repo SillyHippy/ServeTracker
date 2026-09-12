@@ -32,6 +32,7 @@ import {
   serveAttemptSchema,
   shouldShowDefendantOption,
   isPersonalServiceOnly,
+  skippedAlreadyServedCompanions,
   type CompanionChoice,
 } from "@/utils/serveAttemptForm";
 
@@ -516,6 +517,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const needsNamedRecipient = requiresNamedRecipient(recipients);
   const canStartLog = isCaseSelected && (!needsNamedRecipient || Boolean(selectedRecipientId));
   const remainingPeople = otherRecipients(recipients, selectedRecipientId);
+  const alreadyServedCompanions = skippedAlreadyServedCompanions(recipients, selectedRecipientId);
   const selectedIsPersonalOnly = isPersonalServiceOnly(
     recipients.find((r) => r.id === selectedRecipientId)
   );
@@ -849,8 +851,16 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                       )}
                     </div>
 
+                    {alreadyServedCompanions.length > 0 && isNamedRecipientId(selectedRecipientId) && Boolean(serviceMethod) && (
+                      <p className="text-[11px] text-slate-500 pt-2 border-t border-slate-200 dark:border-slate-700">
+                        Already served — not logged this stop:{" "}
+                        {alreadyServedCompanions.map((p) => p.full_name).filter(Boolean).join(", ")}.
+                        Their affidavit keeps the first successful attempt.
+                      </p>
+                    )}
+
                     {remainingPeople.length > 0 && isNamedRecipientId(selectedRecipientId) && Boolean(serviceMethod) && (
-                      <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-700">
+                      <div className={`space-y-3 ${alreadyServedCompanions.length > 0 ? "pt-2" : "pt-2 border-t border-slate-200 dark:border-slate-700"}`}>
                         <p className="text-[11px] text-slate-500">
                           {remainingPeople.some((p) => isPersonalServiceOnly(p))
                             ? `PS only people cannot be substituted. Everyone else is Substitute — papers left with ${pbsName || "the person you just served"}.`

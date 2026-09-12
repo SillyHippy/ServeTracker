@@ -111,8 +111,27 @@ export function isPersonalServiceOnly(person?: {
   return v === true || v === 1 || v === "1" || String(v || "").toLowerCase() === "true";
 }
 
-/** Other named people at this house — not the person just tapped. */
-export function otherRecipients<T extends { id?: string }>(
+/** True when this person already has a successful serve on this job. */
+export function isRecipientAlreadyServed(person?: {
+  already_served?: boolean | number | string;
+  alreadyServed?: boolean | number | string;
+  status?: string;
+}): boolean {
+  const v = person?.already_served ?? person?.alreadyServed;
+  if (v === true || v === 1 || v === "1" || String(v || "").toLowerCase() === "true") return true;
+  const st = String(person?.status || "").toLowerCase().replace(/[\s_]+/g, "-").trim();
+  return st === "served" || st === "completed";
+}
+
+type CompanionPerson = {
+  id?: string;
+  already_served?: boolean | number | string;
+  alreadyServed?: boolean | number | string;
+  status?: string;
+};
+
+/** Other named people at this house who are not done yet — not the person just tapped. */
+export function otherRecipients<T extends CompanionPerson>(
   recipients: T[],
   selectedRecipientId: string
 ): T[] {
@@ -120,7 +139,20 @@ export function otherRecipients<T extends { id?: string }>(
   if (!isNamedRecipientId(selected)) return [];
   return recipients.filter((r) => {
     const id = String(r.id || "").trim();
-    return isNamedRecipientId(id) && id !== selected;
+    return isNamedRecipientId(id) && id !== selected && !isRecipientAlreadyServed(r);
+  });
+}
+
+/** Already-successful people at this house — shown as skipped, never logged again. */
+export function skippedAlreadyServedCompanions<T extends CompanionPerson>(
+  recipients: T[],
+  selectedRecipientId: string
+): T[] {
+  const selected = String(selectedRecipientId || "").trim();
+  if (!isNamedRecipientId(selected)) return [];
+  return recipients.filter((r) => {
+    const id = String(r.id || "").trim();
+    return isNamedRecipientId(id) && id !== selected && isRecipientAlreadyServed(r);
   });
 }
 
@@ -134,6 +166,8 @@ export function defaultCompanionMethods<
     id?: string;
     personal_service_only?: boolean | number | string;
     personalServiceOnly?: boolean | number | string;
+    already_served?: boolean | number | string;
+    alreadyServed?: boolean | number | string;
   },
 >(
   recipients: T[],
@@ -234,6 +268,8 @@ export function buildStopDeliveriesFromForm(opts: {
     full_name?: string;
     personal_service_only?: boolean | number | string;
     personalServiceOnly?: boolean | number | string;
+    already_served?: boolean | number | string;
+    alreadyServed?: boolean | number | string;
   }[];
   pbsName: string;
   serviceMethod: string;
