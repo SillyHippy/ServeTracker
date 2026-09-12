@@ -47,6 +47,7 @@ interface RecipientEntry {
   id?: string;
   full_name: string;
   role: string;
+  personal_service_only?: boolean;
 }
 
 export default function EditCaseDialog({ clientCase, onUpdate, isLoading, className }: EditCaseDialogProps) {
@@ -102,6 +103,7 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
                 id: r.id || r.$id,
                 full_name: r.full_name || r.fullName || "",
                 role: r.role || "Defendant / Respondent",
+                personal_service_only: Boolean(r.personal_service_only || r.personalServiceOnly),
               })));
             } else {
               setRecipients([
@@ -180,13 +182,13 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
   };
 
   const addRecipient = () => {
-    setRecipients((prev) => [...prev, { full_name: "", role: "Defendant / Respondent" }]);
+    setRecipients((prev) => [...prev, { full_name: "", role: "Defendant / Respondent", personal_service_only: false }]);
   };
 
-  const updateRecipient = (index: number, field: keyof RecipientEntry, value: string) => {
+  const updateRecipient = (index: number, field: keyof RecipientEntry, value: string | boolean) => {
     setRecipients((prev) => {
       const updated = [...prev];
-      updated[index] = { ...updated[index], [field]: value };
+      updated[index] = { ...updated[index], [field]: value } as RecipientEntry;
       return updated;
     });
   };
@@ -289,6 +291,15 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
                           className="h-9 text-xs"
                         />
                       </div>
+                      <label className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4"
+                          checked={Boolean(rec.personal_service_only)}
+                          onChange={(e) => updateRecipient(idx, "personal_service_only", e.target.checked)}
+                        />
+                        PS only
+                      </label>
                       {recipients.length > 1 && (
                         <Button
                           type="button"
@@ -306,7 +317,7 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
                 </div>
               )}
               <p className="text-[11px] text-muted-foreground">
-                Multiple people at the same address will each get their own separate selectable Affidavit upon completion or non-service.
+                Multiple people at the same address will each get their own affidavit. Check <strong>PS only</strong> only when that person cannot be substitute-served (PG proposed ward). Default off — 99% of jobs still auto-sub the rest of the house.
               </p>
             </div>
 

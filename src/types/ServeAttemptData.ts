@@ -9,6 +9,8 @@ export interface ServeRecipient {
   home_address?: string;
   work_address?: string;
   notes?: string;
+  personal_service_only?: boolean | number | string;
+  personalServiceOnly?: boolean | number | string;
   created_at?: string;
   updated_at?: string;
 }

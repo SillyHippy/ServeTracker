@@ -342,7 +342,21 @@ function caseRow(row: Record<string, unknown>, role: "admin" | "server" = "serve
   };
 }
 
+function recipientPersonalOnlyValue(rec: unknown): number {
+  if (!rec || typeof rec !== "object") return 0;
+  const obj = rec as Record<string, unknown>;
+  const v = obj.personal_service_only ?? obj.personalServiceOnly;
+  return v === true || v === 1 || v === "1" || String(v || "").toLowerCase() === "true" ? 1 : 0;
+}
+
+function recipientHasPersonalOnlyKey(rec: unknown): boolean {
+  if (!rec || typeof rec !== "object") return false;
+  const obj = rec as Record<string, unknown>;
+  return obj.personal_service_only !== undefined || obj.personalServiceOnly !== undefined;
+}
+
 function recipientRow(row: Record<string, unknown>, role: "admin" | "server" = "server") {
+  const personalOnly = Number(row.personal_service_only || 0) === 1;
   const out: Record<string, unknown> = {
     $id: row.id,
     id: row.id,
@@ -356,6 +370,8 @@ function recipientRow(row: Record<string, unknown>, role: "admin" | "server" = "
     notes: row.notes || "",
     assigned_to: row.assigned_to || "",
     assigned_name: row.assigned_name || "",
+    personal_service_only: personalOnly,
+    personalServiceOnly: personalOnly,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -1033,11 +1049,12 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         const role = (typeof rec === "object" && rec?.role) ? String(rec.role).trim() : "Defendant / Respondent";
         const home = (typeof rec === "object" && rec?.home_address) ? String(rec.home_address).trim() : (body.home_address || "");
         const work = (typeof rec === "object" && rec?.work_address) ? String(rec.work_address).trim() : (body.work_address || "");
-        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name);
+        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name) as { id: string } | null;
+        const personalOnly = recipientPersonalOnlyValue(rec);
         if (!existingRec) {
           db.query(
-            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, personal_service_only, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(
             "rec_" + newId().slice(0, 16),
             id,
@@ -1046,9 +1063,13 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
             role,
             home,
             work,
+            personalOnly,
             ts,
             ts
           );
+        } else if (recipientHasPersonalOnlyKey(rec)) {
+          db.query("UPDATE serve_recipients SET personal_service_only = ?, role = ?, updated_at = ? WHERE id = ?")
+            .run(personalOnly, role, ts, existingRec.id);
         }
       }
     } else if (body.defendant_respondent && body.defendant_respondent.trim()) {
@@ -1201,12 +1222,13 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         const role = (typeof rec === "object" && rec?.role) ? String(rec.role).trim() : "Defendant / Respondent";
         const home = (typeof rec === "object" && rec?.home_address) ? String(rec.home_address).trim() : (homeAddress || "");
         const work = (typeof rec === "object" && rec?.work_address) ? String(rec.work_address).trim() : (workAddress || "");
-        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name);
+        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name) as { id: string } | null;
+        const personalOnly = recipientPersonalOnlyValue(rec);
         if (!existingRec) {
           const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
           db.query(
-            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, personal_service_only, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(
             "rec_" + newId().slice(0, 16),
             id,
@@ -1215,9 +1237,13 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
             role,
             home,
             work,
+            personalOnly,
             ts,
             ts
           );
+        } else if (recipientHasPersonalOnlyKey(rec)) {
+          db.query("UPDATE serve_recipients SET personal_service_only = ?, role = ?, updated_at = ? WHERE id = ?")
+            .run(personalOnly, role, ts, existingRec.id);
         }
       }
     } else if (body.defendant_respondent && body.defendant_respondent.trim()) {
@@ -1319,8 +1345,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const id = body.id || newId();
     const ts = nowIso();
     db.query(
-      `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, description, status, home_address, work_address, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, description, status, home_address, work_address, notes, personal_service_only, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       caseId,
@@ -1332,6 +1358,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       body.home_address || "",
       body.work_address || "",
       body.notes || "",
+      recipientPersonalOnlyValue(body),
       ts,
       ts
     );
@@ -1364,11 +1391,14 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const homeAddress = body.home_address !== undefined ? body.home_address : existing.home_address;
     const workAddress = body.work_address !== undefined ? body.work_address : existing.work_address;
     const notes = body.notes !== undefined ? body.notes : existing.notes;
+    const personalOnly = recipientHasPersonalOnlyKey(body)
+      ? recipientPersonalOnlyValue(body)
+      : Number(existing.personal_service_only || 0);
     db.query(
-      `UPDATE serve_recipients SET full_name = ?, role = ?, description = ?, status = ?, home_address = ?, work_address = ?, notes = ?, updated_at = ? WHERE id = ?`
+      `UPDATE serve_recipients SET full_name = ?, role = ?, description = ?, status = ?, home_address = ?, work_address = ?, notes = ?, personal_service_only = ?, updated_at = ? WHERE id = ?`
     ).run(
       fullName ?? "", role ?? "", description ?? "", status ?? "Pending",
-      homeAddress ?? "", workAddress ?? "", notes ?? "", ts, id
+      homeAddress ?? "", workAddress ?? "", notes ?? "", personalOnly, ts, id
     );
 
     // Recipient facts appear on the affidavit → void any signed execution.
@@ -1553,6 +1583,22 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         return c.json({ error: "Forbidden: you can only log attempts on cases assigned to you" }, 403);
       }
       if (!caseId) caseId = assignedCase.id;
+    }
+
+    if (recipientIdEarly) {
+      const recFlags = db.query("SELECT personal_service_only, full_name FROM serve_recipients WHERE id = ?").get(recipientIdEarly) as
+        | { personal_service_only?: number; full_name?: string }
+        | null;
+      if (recFlags && Number(recFlags.personal_service_only) === 1) {
+        const statusNorm = String(body.status || "").toLowerCase().trim();
+        const isSuccess = statusNorm === "completed" || statusNorm === "served";
+        const method = String(body.serviceMethod || body.service_method || "").trim().toLowerCase();
+        if (isSuccess && method && method !== "personal") {
+          return c.json({
+            error: `Personal service only — cannot log ${method} for ${recFlags.full_name || "this person"}.`,
+          }, 400);
+        }
+      }
     }
 
     const clientObj = clientId
@@ -2989,7 +3035,6 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         lastType === "served" ||
         lastType === "completed" ||
         lastType === "serve";
-      if (!isServed) continue;
 
       const recipients = db
         .query("SELECT id, full_name FROM serve_recipients WHERE case_id = ? ORDER BY created_at ASC")
@@ -3024,11 +3069,15 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
                ORDER BY COALESCE(occurred_at, timestamp) DESC LIMIT 1`
             )
             .get(caseId, rec.id) as { service_method?: string } | null;
-          pushItem(String(rec.full_name || "Recipient"), rec.id, String(methodRow?.service_method || r.last_service_method || ""));
+          // Only people actually served belong on Sign Affidavit. A sibling
+          // success must not copy personal onto someone who was not home.
+          if (!methodRow) continue;
+          pushItem(String(rec.full_name || "Recipient"), rec.id, String(methodRow.service_method || ""));
         }
         continue;
       }
 
+      if (!isServed) continue;
       if (signedCaseIds.has(caseId)) continue;
       pushItem(String(r.defendant_respondent || r.case_name || "Recipient"));
     }

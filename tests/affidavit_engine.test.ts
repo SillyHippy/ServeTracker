@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
   generateAffidavitHtml,
+  generateBatchAffidavitsHtml,
   inferAffidavitKind,
   latestSuccessfulServe,
   physicalAttemptsForAffidavit,
+  distinctPeopleCount,
   type AffidavitPayload,
 } from "../src/utils/affidavitEngine";
 import type { ServeAttemptData } from "../src/types/ServeAttemptData";
@@ -138,4 +140,112 @@ test("corporate / registered agent serve renders exact statutory execution parag
   expect(html).toContain("Cynde Carner");
   expect(html).toContain("Managing Agent");
   expect(html).toContain("authorized to accept service on behalf of <strong>Midfirst Bank</strong>");
+});
+
+test("generateBatchAffidavitsHtml collates multiple recipients and deduplicates shared exhibit photos", () => {
+  const attempts1: ServeAttemptData[] = [
+    att({
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-08-19T00:16:18.417Z",
+      photos: [{ image_url: "https://example.test/photo_shared_1.jpg", position: 1 }],
+    }),
+  ];
+  const attempts2: ServeAttemptData[] = [
+    att({
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-08-19T00:16:18.417Z",
+      photos: [
+        { image_url: "https://example.test/photo_shared_1.jpg", position: 1 },
+        { image_url: "https://example.test/photo_unique_2.jpg", position: 2 },
+      ],
+    }),
+  ];
+
+  const payload1 = {
+    case: { case_number: "CJ-2026-BATCH-1", case_name: "Smith vs Doe" },
+    recipient: { full_name: "John Doe" },
+    attempts: attempts1,
+    swornDate: new Date("2026-08-19T12:00:00.000Z"),
+  } as AffidavitPayload;
+
+  const payload2 = {
+    case: { case_number: "CJ-2026-BATCH-1", case_name: "Smith vs Doe" },
+    recipient: { full_name: "Jane Doe" },
+    attempts: attempts2,
+    swornDate: new Date("2026-08-19T12:00:00.000Z"),
+  } as AffidavitPayload;
+
+  const html = generateBatchAffidavitsHtml([payload1, payload2], true);
+
+  expect(html).toContain("John Doe");
+  expect(html).toContain("Jane Doe");
+  expect(html).toContain("CASE EXHIBIT PHOTOS (2)");
+  expect(html).toContain("photo_shared_1.jpg");
+  expect(html).toContain("photo_unique_2.jpg");
+  expect(html.split("photo_shared_1.jpg").length - 1).toBe(1); // deduplicated
+});
+
+test("self-duplicate DBA rows at one stop count as one person", () => {
+  const eventId = "evt_1a095a0b1cc41b370";
+  const name = "JODY BESON DBA CLEAN MACHINE AUTO DETAIL";
+  const attempts = [
+    att({
+      id: "blank",
+      event_id: eventId,
+      recipient_id: "",
+      person_being_served: name,
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-12T12:38:51.596Z",
+    }),
+    att({
+      id: "named",
+      event_id: eventId,
+      recipient_id: "c4b48af6-aa76-4199-b9b6-285cfc2243cf",
+      person_being_served: name,
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-12T12:38:51.596Z",
+    }),
+  ];
+  expect(physicalAttemptsForAffidavit(attempts)).toHaveLength(1);
+  expect(distinctPeopleCount(attempts)).toBe(1);
+});
+
+test("three distinct people at one stop still count as three people", () => {
+  const eventId = "evt_house_3";
+  const attempts = [
+    att({
+      id: "a",
+      event_id: eventId,
+      recipient_id: "rec_john",
+      person_being_served: "John Doe 1",
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-12T13:00:00.000Z",
+    }),
+    att({
+      id: "b",
+      event_id: eventId,
+      recipient_id: "rec_jane",
+      person_being_served: "Jane Doe 1",
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-12T13:00:00.000Z",
+    }),
+    att({
+      id: "c",
+      event_id: eventId,
+      recipient_id: "rec_john3",
+      person_being_served: "John Doe 3",
+      status: "completed",
+      service_method: "substituted-residence",
+      accepted_by: "John Doe 1",
+      occurred_at: "2026-09-12T13:00:00.000Z",
+    }),
+  ];
+  expect(physicalAttemptsForAffidavit(attempts)).toHaveLength(1);
+  expect(distinctPeopleCount(attempts)).toBe(3);
 });

@@ -8,6 +8,7 @@ import {
   inferAffidavitKind,
   latestSuccessfulServe,
   physicalAttemptsForAffidavit,
+  distinctPeopleCount,
   serviceMethodLabel,
   type AffidavitKind,
 } from '@/utils/affidavitEngine';
@@ -478,6 +479,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const methodLabelText = serviceMethodLabel(methodRaw);
   const docsPreview = resolvedDocs;
   const stopCount = physicalAttemptsForAffidavit(resolvedAttempts).length;
+  const peopleCount = distinctPeopleCount(resolvedAttempts);
   const caseNoLabel = courtNumber || 'No case #';
   const serverLabel = assignedServer?.displayName || 'the assigned server';
   const isService = affidavitKind === 'service';
@@ -597,8 +599,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
                 {isLoadingCase
                   ? '…'
                   : `${stopCount} stop${stopCount === 1 ? '' : 's'}${
-                      resolvedAttempts.length > stopCount
-                        ? ` (${resolvedAttempts.length} people)`
+                      peopleCount > 1
+                        ? ` (${peopleCount} people)`
                         : ''
                     }`}
               </span>

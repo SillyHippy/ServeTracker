@@ -22,14 +22,17 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { ServeAttemptData, ServeRecipient } from "@/types/ServeAttemptData";
 import { PhotoUploader, PhotoSlot } from "./PhotoUploader";
 import {
-  buildSameStopDeliveries,
+  buildStopDeliveriesFromForm,
   defaultCompanionMethods,
+  isNamedRecipientId,
   newEncounterEventId,
   otherRecipients,
   pickDefaultRecipientId,
   requiresNamedRecipient,
   serveAttemptSchema,
-  type CompanionMethod,
+  shouldShowDefendantOption,
+  isPersonalServiceOnly,
+  type CompanionChoice,
 } from "@/utils/serveAttemptForm";
 
 interface ServeAttemptProps {
@@ -114,12 +117,13 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const [entityName, setEntityName] = useState<string>("");
   const [recipientTitle, setRecipientTitle] = useState<string>("Registered Agent");
   const [moreMethodsOpen, setMoreMethodsOpen] = useState(false);
-  const [companionMethods, setCompanionMethods] = useState<Record<string, CompanionMethod | "skip">>({});
+  const [companionMethods, setCompanionMethods] = useState<Record<string, CompanionChoice>>({});
 
   const [addressSearchTerm, setAddressSearchTerm] = useState("");
   const [addressSearchOpen, setAddressSearchOpen] = useState(false);
   const [isLoadingCases, setIsLoadingCases] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const submitLockRef = useRef(false);
 
   const { toast } = useToast();
   const isMobile = useIsMobile();
@@ -384,11 +388,12 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   }, [recipients, selectedRecipientId, selectedCase]);
 
   const handleSubmit = async (data: ServeFormValues) => {
+    if (submitLockRef.current || isSending) return;
     if (!selectedCase) {
       toast({ title: "Missing Information", description: "Please select a case.", variant: "destructive" });
       return;
     }
-    if (requiresNamedRecipient(recipients) && !selectedRecipientId) {
+    if (requiresNamedRecipient(recipients) && !isNamedRecipientId(selectedRecipientId)) {
       toast({
         title: "Pick the person",
         description: "This address has more than one person. Choose who these papers are for before saving.",
@@ -398,8 +403,6 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     }
     // Method of service validation — only for successful serves (the affidavit
     // wording depends on it; Joseph refuses to sign a false affidavit).
-    const otherPeople = otherRecipients(recipients, selectedRecipientId);
-    const companionChoices = defaultCompanionMethods(otherPeople, selectedRecipientId, companionMethods);
     if (data.status === "completed") {
       if (!serviceMethod) {
         toast({ title: "Method required", description: "Select how they were served (Personal or Substitute).", variant: "destructive" });
@@ -420,6 +423,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         return;
       }
     }
+    submitLockRef.current = true;
     setIsSending(true);
     try {
       let mainImageData = photos[0]?.imageData;
@@ -429,30 +433,15 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       const clientName = selectedClient?.name || selectedCase.clientName || "";
       const clientEmail = selectedClient?.email || "";
       const eventId = newEncounterEventId();
-      const primaryRecipientId = selectedRecipientId === "default_pbs" ? "" : selectedRecipientId;
-      const deliveries =
-        data.status === "completed"
-          ? buildSameStopDeliveries({
-              primary: {
-                recipientId: primaryRecipientId || "default_pbs",
-                personName: pbsName,
-                serviceMethod,
-                acceptedBy: refusedToIdentify ? "" : acceptedBy,
-              },
-              companions: otherPeople.map((r) => ({
-                recipientId: r.id,
-                personName: r.full_name,
-                serviceMethod: companionChoices[r.id] === "skip" ? "" : ((companionChoices[r.id] || "substituted-residence") as CompanionMethod),
-              })),
-            })
-          : [
-              {
-                recipientId: primaryRecipientId,
-                personName: pbsName,
-                serviceMethod: "",
-                acceptedBy: "",
-              },
-            ];
+      const deliveries = buildStopDeliveriesFromForm({
+        status: data.status,
+        selectedRecipientId,
+        recipients,
+        pbsName,
+        serviceMethod,
+        acceptedBy: refusedToIdentify ? "" : acceptedBy,
+        companionMethods,
+      });
       const shared: any = {
         client_id: clientId,
         clientId: clientId,
@@ -479,15 +468,20 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       // NewServe.onComplete must NOT createServeAttempt again.
       let saved: any = null;
       for (const delivery of deliveries) {
+        const deliveryStatus = delivery.status || data.status;
         const serveData = {
           ...shared,
+          status: deliveryStatus,
           recipient_id: delivery.recipientId === "default_pbs" ? "" : delivery.recipientId,
           person_being_served: delivery.personName,
           personEntityBeingServed: delivery.personName,
-          serviceMethod: data.status === "completed" ? delivery.serviceMethod : "",
-          service_method: data.status === "completed" ? delivery.serviceMethod : "",
+          serviceMethod: deliveryStatus === "completed" ? delivery.serviceMethod : "",
+          service_method: deliveryStatus === "completed" ? delivery.serviceMethod : "",
           acceptedBy: delivery.acceptedBy,
           accepted_by: delivery.acceptedBy,
+          notes: deliveryStatus === "failed"
+            ? [data.notes, delivery.notes].filter(Boolean).join(" — ") || "not home"
+            : (data.notes || ""),
         };
         saved = await api.createServeAttempt(serveData);
       }
@@ -510,7 +504,10 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       console.error("Error saving:", err);
       const msg = err instanceof Error ? err.message : "Failed to save attempt.";
       toast({ title: "Error", description: msg.slice(0, 240), variant: "destructive" });
-    } finally { setIsSending(false); }
+    } finally {
+      submitLockRef.current = false;
+      setIsSending(false);
+    }
   };
 
   // Field servers never get a Client object (GET /api/clients is empty and case.client_id is stripped).
@@ -519,6 +516,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
   const needsNamedRecipient = requiresNamedRecipient(recipients);
   const canStartLog = isCaseSelected && (!needsNamedRecipient || Boolean(selectedRecipientId));
   const remainingPeople = otherRecipients(recipients, selectedRecipientId);
+  const selectedIsPersonalOnly = isPersonalServiceOnly(
+    recipients.find((r) => r.id === selectedRecipientId)
+  );
 
   const onPersonChange = (val: string) => {
     if (val === "__add_new__") {
@@ -533,12 +533,22 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     }
     setSelectedRecipientId(val);
     setCompanionMethods(defaultCompanionMethods(recipients, val, {}));
+    const picked = recipients.find((r) => r.id === val);
+    if (isPersonalServiceOnly(picked)) setServiceMethod("personal");
     setIsAddingRecipient(false);
   };
 
+  const personSelectValue = isNamedRecipientId(selectedRecipientId)
+    ? selectedRecipientId
+    : needsNamedRecipient
+      ? "__none__"
+      : shouldShowDefendantOption(recipients)
+        ? "default_pbs"
+        : (recipients.find((r) => isNamedRecipientId(r.id))?.id || undefined);
+
   const personSelect = (triggerClass: string) => (
     <Select
-      value={selectedRecipientId || (needsNamedRecipient ? "__none__" : "default_pbs")}
+      value={personSelectValue}
       onValueChange={onPersonChange}
     >
       <SelectTrigger className={triggerClass}>
@@ -549,11 +559,11 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
           <SelectItem value="__none__" disabled>
             Select who these papers are for
           </SelectItem>
-        ) : (
+        ) : shouldShowDefendantOption(recipients) ? (
           <SelectItem value="default_pbs">
             {(selectedCase?.defendantRespondent || selectedCase?.caseName || "Defendant").trim()} (Defendant)
           </SelectItem>
-        )}
+        ) : null}
         {recipients.map((r) => (
           <SelectItem key={r.id} value={r.id}>
             {r.full_name}{r.role ? ` (${r.role})` : ""}
@@ -792,6 +802,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                         >
                           Personal Service
                         </button>
+                        {!selectedIsPersonalOnly && (
                         <button
                           type="button"
                           onClick={() => setServiceMethod("substituted-residence")}
@@ -803,6 +814,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                         >
                           Substitute Service
                         </button>
+                        )}
                       </div>
 
                       <button
@@ -837,22 +849,28 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                       )}
                     </div>
 
-                    {remainingPeople.length > 0 && Boolean(serviceMethod) && (
+                    {remainingPeople.length > 0 && isNamedRecipientId(selectedRecipientId) && Boolean(serviceMethod) && (
                       <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-700">
                         <p className="text-[11px] text-slate-500">
-                          Everyone else at this house is Substitute — papers left with {pbsName || "the person you just served"}. Change a row to Personal only if they were also at the door.
+                          {remainingPeople.some((p) => isPersonalServiceOnly(p))
+                            ? `PS only people cannot be substituted. Everyone else is Substitute — papers left with ${pbsName || "the person you just served"}.`
+                            : `Everyone else at this house is Substitute — papers left with ${pbsName || "the person you just served"}. Change a row to Personal only if they were also at the door.`}
                         </p>
                         {remainingPeople.map((person) => {
-                          const choice = companionMethods[person.id] || "substituted-residence";
+                          const personalOnly = isPersonalServiceOnly(person);
+                          const choice = companionMethods[person.id] || (personalOnly ? "failed" : "substituted-residence");
                           return (
                             <div key={person.id} className="space-y-1">
-                              <label className="text-xs font-bold block">{person.full_name}</label>
+                              <label className="text-xs font-bold block">
+                                {person.full_name}
+                                {personalOnly ? <span className="ml-1 font-semibold text-amber-700">PS only</span> : null}
+                              </label>
                               <Select
                                 value={choice}
                                 onValueChange={(val) =>
                                   setCompanionMethods((prev) => ({
                                     ...prev,
-                                    [person.id]: val as CompanionMethod | "skip",
+                                    [person.id]: val as CompanionChoice,
                                   }))
                                 }
                               >
@@ -860,11 +878,20 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  <SelectItem value="substituted-residence">
-                                    Substitute (left with {pbsName || "person served"})
-                                  </SelectItem>
-                                  <SelectItem value="personal">Personal Service</SelectItem>
-                                  <SelectItem value="skip">Not this stop</SelectItem>
+                                  {personalOnly ? (
+                                    <>
+                                      <SelectItem value="failed">Unsuccessful (not home)</SelectItem>
+                                      <SelectItem value="personal">Personal Service</SelectItem>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <SelectItem value="substituted-residence">
+                                        Substitute (left with {pbsName || "person served"})
+                                      </SelectItem>
+                                      <SelectItem value="personal">Personal Service</SelectItem>
+                                      <SelectItem value="skip">Not this stop</SelectItem>
+                                    </>
+                                  )}
                                 </SelectContent>
                               </Select>
                             </div>

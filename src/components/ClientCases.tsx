@@ -86,7 +86,8 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
     email_invoice: false,
   });
   const [newCaseFiles, setNewCaseFiles] = useState<File[]>([]);
-  const [additionalRecipients, setAdditionalRecipients] = useState<string[]>([]);
+  const [additionalRecipients, setAdditionalRecipients] = useState<{ name: string; personal_service_only: boolean }[]>([]);
+  const [primaryPersonalOnly, setPrimaryPersonalOnly] = useState(false);
   const [isAddingCase, setIsAddingCase] = useState(false);
   const [isSubmittingCase, setIsSubmittingCase] = useState(false);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
@@ -140,11 +141,21 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
       console.log("Creating new case:", newCase);
       // case_name = Person Being Served (legacy field name kept for DB)
       const personBeingServed = (newCase.case_name || newCase.defendant_respondent || "").trim();
-      const validAdditional = additionalRecipients.map((s) => s.trim()).filter(Boolean);
-      const allRecipients = [personBeingServed, ...validAdditional].filter(Boolean).map((name) => ({
-        full_name: name,
-        role: "Defendant / Respondent",
-      }));
+      const validAdditional = additionalRecipients
+        .map((r) => ({ name: r.name.trim(), personal_service_only: r.personal_service_only }))
+        .filter((r) => Boolean(r.name));
+      const allRecipients = [
+        {
+          full_name: personBeingServed,
+          role: "Defendant / Respondent",
+          personal_service_only: primaryPersonalOnly,
+        },
+        ...validAdditional.map((r) => ({
+          full_name: r.name,
+          role: "Defendant / Respondent",
+          personal_service_only: r.personal_service_only,
+        })),
+      ].filter((r) => Boolean(r.full_name));
       const combinedDefendants = allRecipients.length > 1
         ? allRecipients.map((r) => r.full_name).join(" & ")
         : (newCase.defendant_respondent || personBeingServed).trim();
@@ -213,6 +224,8 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
         email_invoice: false,
       });
       setNewCaseFiles([]);
+      setAdditionalRecipients([]);
+      setPrimaryPersonalOnly(false);
       setIsAddingCase(false);
       onUpdate();
     } catch (error) {
@@ -361,13 +374,13 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs flex items-center gap-1 border-blue-200 text-blue-700 hover:bg-blue-50"
-                        onClick={() => setAdditionalRecipients(prev => [...prev, ""])}
+                        onClick={() => setAdditionalRecipients(prev => [...prev, { name: "", personal_service_only: false }])}
                       >
                         <Plus className="w-3 h-3" />
                         Add Person
                       </Button>
                     </div>
-                    <div>
+                    <div className="flex gap-2 items-center">
                       <Input
                         id="case_name"
                         value={newCase.case_name}
@@ -385,17 +398,26 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                         placeholder="Primary Person Being Served (full name)"
                         className="h-9 text-xs"
                       />
+                      <label className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4"
+                          checked={primaryPersonalOnly}
+                          onChange={(e) => setPrimaryPersonalOnly(e.target.checked)}
+                        />
+                        PS only
+                      </label>
                     </div>
-                    {additionalRecipients.map((recName, idx) => (
+                    {additionalRecipients.map((rec, idx) => (
                       <div key={idx} className="flex gap-2 items-center">
                         <div className="flex-1">
                           <Input
-                            value={recName}
+                            value={rec.name}
                             onChange={(e) => {
                               const v = e.target.value;
                               setAdditionalRecipients(prev => {
                                 const copy = [...prev];
-                                copy[idx] = v;
+                                copy[idx] = { ...copy[idx], name: v };
                                 return copy;
                               });
                             }}
@@ -403,6 +425,22 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                             className="h-9 text-xs"
                           />
                         </div>
+                        <label className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4"
+                            checked={rec.personal_service_only}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setAdditionalRecipients(prev => {
+                                const copy = [...prev];
+                                copy[idx] = { ...copy[idx], personal_service_only: checked };
+                                return copy;
+                              });
+                            }}
+                          />
+                          PS only
+                        </label>
                         <Button
                           type="button"
                           variant="ghost"
@@ -416,7 +454,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                       </div>
                     ))}
                     <p className="text-[11px] text-muted-foreground">
-                      Each person added at this address will get their own separate selectable Affidavit upon completion or non-service.
+                      Each person gets their own affidavit. Check <strong>PS only</strong> only when that person cannot be substitute-served. Default off — serving one person still auto-subs the rest of the house.
                     </p>
                   </div>
                   <div>

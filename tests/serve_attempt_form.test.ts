@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
 import {
   buildSameStopDeliveries,
+  buildStopDeliveriesFromForm,
   defaultCompanionMethods,
   newEncounterEventId,
   otherRecipients,
   pickDefaultRecipientId,
   requiresNamedRecipient,
+  resolvePrimaryRecipientId,
   serveAttemptSchema,
+  shouldShowDefendantOption,
   shouldStayForOtherRecipients,
+  isPersonalServiceOnly,
 } from "../src/utils/serveAttemptForm";
 
 test("blank court number is valid once a case is selected", () => {
@@ -104,12 +108,14 @@ test("personal + personal is two personal deliveries on one stop", () => {
       personName: "TRUONG TUYEN CAM",
       serviceMethod: "personal",
       acceptedBy: "",
+      status: "completed",
     },
     {
       recipientId: "rec_phuong",
       personName: "PHUONG HOANG MINH PHAM",
       serviceMethod: "personal",
       acceptedBy: "",
+      status: "completed",
     },
   ]);
 });
@@ -185,4 +191,177 @@ test("everyone else at the house defaults to substitute with the person just ser
   expect(rows.filter((r) => r.serviceMethod === "substituted-residence")).toHaveLength(15);
   expect(rows.find((r) => r.recipientId === "rec_3")?.serviceMethod).toBe("personal");
   expect(rows.find((r) => r.recipientId === "rec_2")?.acceptedBy).toBe("PERSON 1");
+});
+
+test("blank Defendant selection on one DBA is not a second person", () => {
+  const recs = [
+    { id: "c4b48af6-aa76-4199-b9b6-285cfc2243cf", full_name: "JODY BESON DBA CLEAN MACHINE AUTO DETAIL" },
+  ];
+  expect(requiresNamedRecipient(recs)).toBe(false);
+  expect(shouldShowDefendantOption(recs)).toBe(false);
+  expect(otherRecipients(recs, "")).toEqual([]);
+  expect(defaultCompanionMethods(recs, "")).toEqual({});
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "",
+    recipients: recs,
+    pbsName: "JODY BESON DBA CLEAN MACHINE AUTO DETAIL",
+    serviceMethod: "personal",
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0].recipientId).toBe("c4b48af6-aa76-4199-b9b6-285cfc2243cf");
+  expect(rows[0].serviceMethod).toBe("personal");
+});
+
+test("explicit self-companion of the same id is dropped", () => {
+  const rows = buildSameStopDeliveries({
+    primary: {
+      recipientId: "rec_jody",
+      personName: "JODY BESON DBA CLEAN MACHINE AUTO DETAIL",
+      serviceMethod: "personal",
+    },
+    companions: [
+      {
+        recipientId: "rec_jody",
+        personName: "JODY BESON DBA CLEAN MACHINE AUTO DETAIL",
+        serviceMethod: "substituted-residence",
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0].serviceMethod).toBe("personal");
+});
+
+test("Defendant fallback plus same-name named row collapses to one delivery", () => {
+  const rows = buildSameStopDeliveries({
+    primary: {
+      recipientId: "default_pbs",
+      personName: "JODY BESON DBA CLEAN MACHINE AUTO DETAIL",
+      serviceMethod: "personal",
+    },
+    companions: [
+      {
+        recipientId: "rec_jody",
+        personName: "JODY BESON DBA CLEAN MACHINE AUTO DETAIL",
+        serviceMethod: "personal",
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+});
+
+test("John Personal + Jane Personal + John3 Substitute stays three deliveries", () => {
+  const recs = [
+    { id: "rec_john", full_name: "John Doe 1" },
+    { id: "rec_jane", full_name: "Jane Doe 1" },
+    { id: "rec_john3", full_name: "John Doe 3" },
+  ];
+  expect(requiresNamedRecipient(recs)).toBe(true);
+  expect(otherRecipients(recs, "rec_john").map((r) => r.id)).toEqual(["rec_jane", "rec_john3"]);
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "rec_john",
+    recipients: recs,
+    pbsName: "John Doe 1",
+    serviceMethod: "personal",
+    companionMethods: {
+      rec_jane: "personal",
+      rec_john3: "substituted-residence",
+    },
+  });
+  expect(rows).toHaveLength(3);
+  expect(rows.find((r) => r.recipientId === "rec_john")).toEqual({
+    recipientId: "rec_john",
+    personName: "John Doe 1",
+    serviceMethod: "personal",
+    acceptedBy: "",
+    status: "completed",
+  });
+  expect(rows.find((r) => r.recipientId === "rec_jane")?.serviceMethod).toBe("personal");
+  expect(rows.find((r) => r.recipientId === "rec_jane")?.acceptedBy).toBe("");
+  expect(rows.find((r) => r.recipientId === "rec_john3")?.serviceMethod).toBe("substituted-residence");
+  expect(rows.find((r) => r.recipientId === "rec_john3")?.acceptedBy).toBe("John Doe 1");
+});
+
+test("skip still drops that companion", () => {
+  const recs = [
+    { id: "rec_john", full_name: "John Doe 1" },
+    { id: "rec_jane", full_name: "Jane Doe 1" },
+  ];
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "rec_john",
+    recipients: recs,
+    pbsName: "John Doe 1",
+    serviceMethod: "personal",
+    companionMethods: { rec_jane: "skip" },
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0].recipientId).toBe("rec_john");
+});
+
+test("failed stop never fans out companions", () => {
+  const recs = [
+    { id: "rec_john", full_name: "John Doe 1" },
+    { id: "rec_jane", full_name: "Jane Doe 1" },
+  ];
+  const rows = buildStopDeliveriesFromForm({
+    status: "failed",
+    selectedRecipientId: "rec_john",
+    recipients: recs,
+    pbsName: "John Doe 1",
+    serviceMethod: "personal",
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0].serviceMethod).toBe("");
+});
+
+test("legacy zero-recipient cases still offer the Defendant option", () => {
+  expect(shouldShowDefendantOption([])).toBe(true);
+  expect(resolvePrimaryRecipientId("", [])).toBe("");
+});
+
+test("PS-only companion defaults to unsuccessful, not substitute", () => {
+  const recs = [
+    { id: "rec_toni", full_name: "TONI MOCK" },
+    { id: "rec_steven", full_name: "STEVEN MOCK", personal_service_only: true },
+  ];
+  expect(isPersonalServiceOnly(recs[1])).toBe(true);
+  const defaults = defaultCompanionMethods(recs, "rec_toni");
+  expect(defaults["rec_steven"]).toBe("failed");
+  expect(defaults["rec_toni"]).toBeUndefined();
+
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "rec_toni",
+    recipients: recs,
+    pbsName: "TONI MOCK",
+    serviceMethod: "personal",
+  });
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toMatchObject({ recipientId: "rec_toni", serviceMethod: "personal", status: "completed" });
+  expect(rows[1]).toMatchObject({
+    recipientId: "rec_steven",
+    serviceMethod: "",
+    status: "failed",
+    notes: "not home",
+  });
+});
+
+test("unchecked 99% companion still auto-substitutes", () => {
+  const recs = [
+    { id: "rec_a", full_name: "PERSON A" },
+    { id: "rec_b", full_name: "PERSON B", personal_service_only: false },
+  ];
+  const defaults = defaultCompanionMethods(recs, "rec_a");
+  expect(defaults["rec_b"]).toBe("substituted-residence");
+  const rows = buildStopDeliveriesFromForm({
+    status: "completed",
+    selectedRecipientId: "rec_a",
+    recipients: recs,
+    pbsName: "PERSON A",
+    serviceMethod: "personal",
+  });
+  expect(rows[1].serviceMethod).toBe("substituted-residence");
+  expect(rows[1].status).toBe("completed");
 });

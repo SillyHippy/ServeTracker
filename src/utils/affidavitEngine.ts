@@ -324,6 +324,34 @@ function mergeEncounterRow(base: ServeAttemptData, extra: ServeAttemptData): Ser
   return merged;
 }
 
+function normalizePersonName(name?: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Distinct legal people in an attempt set. Blank recipient_id + the same
+ * person's named row (the DBA self-companion bug) still counts as one.
+ * Two different recipient ids with the same display name stay two people.
+ */
+export function distinctPeopleCount(attempts: ServeAttemptData[]): number {
+  const byName = new Map<string, Set<string>>();
+  for (const att of attempts) {
+    const name = normalizePersonName(personServedOf(att)) || "__unnamed__";
+    const rid = recipientIdOf(att);
+    if (!byName.has(name)) byName.set(name, new Set());
+    byName.get(name)!.add(rid || "__blank__");
+  }
+  let count = 0;
+  for (const ids of byName.values()) {
+    const real = [...ids].filter((id) => id !== "__blank__");
+    count += real.length > 0 ? new Set(real).size : 1;
+  }
+  return count;
+}
+
 /**
  * Every physical attempt, oldest first. Do not cap — dropping newest rows hid later serves.
  * Rows sharing a non-empty event_id are one physical encounter and collapse to a

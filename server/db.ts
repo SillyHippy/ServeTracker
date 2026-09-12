@@ -333,6 +333,9 @@ function runMigrations(db: Database) {
   if (!recColNames.has("assigned_name")) {
     db.exec(`ALTER TABLE serve_recipients ADD COLUMN assigned_name TEXT DEFAULT '';`);
   }
+  if (!recColNames.has("personal_service_only")) {
+    db.exec(`ALTER TABLE serve_recipients ADD COLUMN personal_service_only INTEGER DEFAULT 0;`);
+  }
 
   // 6. Photo columns
   const photoCols = db.query("PRAGMA table_info(serve_attempt_photos)").all() as { name: string }[];
