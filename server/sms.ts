@@ -9,6 +9,9 @@ function getDb(): Database {
     _smsDb = new Database(DB_PATH);
     _smsDb.exec("PRAGMA journal_mode = WAL;");
     _smsDb.exec("PRAGMA busy_timeout = 5000;");
+    // Same durability hardening as server/db.ts (keep commits fsynced, no mmap).
+    _smsDb.exec("PRAGMA synchronous = FULL;");
+    _smsDb.exec("PRAGMA mmap_size = 0;");
   }
   return _smsDb;
 }

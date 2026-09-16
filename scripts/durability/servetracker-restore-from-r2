@@ -1,0 +1,130 @@
+#!/bin/bash
+# ServeTracker prod: recover the SQLite DB from the Cloudflare R2 Litestream replica.
+#
+# Why: "/" on this host is a 9p network filesystem. When the container is hard-restarted,
+# recently written WAL tail frames can be dropped, so committed rows vanish (2026-09-16:
+# a serve attempt + its notifications disappeared after an 18:49 restart even though the
+# client email and SMS had already gone out). Litestream ships those frames to R2 within
+# ~1s, so the replica is the recovery source of truth.
+#
+# Behaviour (safe to run at every boot, never destructive to newer data):
+#   * app listening on :3150  -> skip (never touch a live DB)
+#   * local DB missing/corrupt -> restore newest replica
+#   * local DB older than replica by >60s -> back up local, keep the newer replica copy
+#   * otherwise -> no-op
+set -uo pipefail
+
+DB="${SERVETRACKER_DB:-/home/workspace/Projects/PDFUSAEDIT-zo/data/pdfusaedit.db}"
+PORT="${SERVETRACKER_PORT:-3150}"
+ENVF="/etc/zo/litestream-prod.env"
+LOCK="/dev/shm/servetracker-restore.lock"
+LOG_TAG="[durability-restore]"
+
+log() { echo "$(date -u +%FT%TZ) $LOG_TAG $*"; }
+notify() { # telegram alert (best effort, never fatal)
+  local msg="$1"
+  [ -x /usr/local/bin/zo-telegram-alert ] && /usr/local/bin/zo-telegram-alert "$msg" >/dev/null 2>&1 || true
+}
+
+[ -f "$ENVF" ] || { log "missing $ENVF"; exit 0; }
+set -a; . "$ENVF"; set +a
+CFG="/dev/shm/litestream-prod.yml"
+
+python3 - "$CFG" "$DB" "${LITESTREAM_PREFIX:-litestream/prod}" <<'PY'
+import os, sys
+cfg, db, prefix = sys.argv[1:4]
+e = os.environ
+open(cfg, "w").write(f"""dbs:
+  - path: {db}
+    replicas:
+      - type: s3
+        bucket: {e['LITESTREAM_BUCKET']}
+        path: {prefix}
+        endpoint: {e['LITESTREAM_ENDPOINT']}
+        region: auto
+        access-key-id: {e['LITESTREAM_ACCESS_KEY_ID']}
+        secret-access-key: {e['LITESTREAM_SECRET_ACCESS_KEY']}
+        sync-interval: 1s
+""")
+os.chmod(cfg, 0o600)
+PY
+
+# Never touch a live database.
+if ss -lnt 2>/dev/null | grep -q ":${PORT} "; then
+  log "app is listening on :${PORT}; skipping restore (nothing to do while live)"
+  exit 0
+fi
+
+exec 9>"$LOCK" || exit 0
+flock -n 9 || { log "another restore holds the lock"; exit 0; }
+
+newest_write() { # newest meaningful write timestamp in a DB file (string or empty)
+  timeout 60 sqlite3 "file:$1?mode=ro" "
+    SELECT COALESCE(MAX(t),'') FROM (
+      SELECT MAX(entered_at) AS t FROM serve_attempts
+      UNION ALL SELECT MAX(created_at) FROM audit_logs
+      UNION ALL SELECT MAX(updated_at) FROM client_cases
+      UNION ALL SELECT MAX(updated_at) FROM clients
+      UNION ALL SELECT MAX(created_at) FROM sms_logs
+    );" 2>/dev/null || true
+}
+
+local_state="missing"
+if [ -f "$DB" ]; then
+  chk="$(timeout 60 sqlite3 "file:$DB?mode=ro" "PRAGMA quick_check;" 2>/dev/null | head -1)"
+  [ "$chk" = "ok" ] && local_state="ok" || local_state="corrupt($chk)"
+fi
+LOCAL_NEW="$( [ "$local_state" = "ok" ] && newest_write "$DB" || echo "" )"
+log "local db state=$local_state newest_write=${LOCAL_NEW:-<none>}"
+
+if [ "$local_state" = "ok" ]; then
+  # Compare against the replica before doing anything. Restore into a scratch copy first.
+  TMP="/dev/shm/pdfusaedit.restore-probe.db"
+  rm -f "$TMP" "$TMP"-*
+  if timeout 300 /usr/local/bin/litestream restore -config "$CFG" -o "$TMP" "$DB" >/dev/null 2>&1; then
+    R_NEW="$(newest_write "$TMP")"
+    log "replica newest_write=${R_NEW:-<none>}"
+    NEWER="$(python3 -c "
+import sys
+a,b='${LOCAL_NEW}','${R_NEW}'
+def iso(s):
+    s=(s or '').replace('Z','+00:00')
+    from datetime import datetime
+    try: return datetime.fromisoformat(s)
+    except Exception: return None
+A,B=iso(a),iso(b)
+print('yes' if (A is None and B is not None) or (A and B and (B-A).total_seconds()>60) else 'no')
+")"
+    if [ "$NEWER" = "yes" ]; then
+      BAK="/dev/shm/pdfusaedit.pre-restore.$(date -u +%Y%m%dT%H%M%SZ).db"
+      log "replica is newer -> keeping replica copy (local backed up to $BAK)"
+      cp -f "$DB" "$BAK" 2>/dev/null || true
+      rm -f "$DB-wal" "$DB-shm"
+      mv -f "$TMP" "$DB"
+      notify "ServeTracker prod: recovered ${R_NEW} of writes from R2 replica (local DB was behind). Local copy saved at $BAK"
+      log "restore complete"
+    else
+      log "local db already current; no restore needed"
+    fi
+    rm -f "$TMP" "$TMP"-* 2>/dev/null || true
+  else
+    log "replica unreachable or empty; leaving local db untouched"
+  fi
+else
+  log "restoring from replica (local db $local_state)"
+  rm -f /dev/shm/pdfusaedit.restore-tmp.db
+  if timeout 300 /usr/local/bin/litestream restore -config "$CFG" -o /dev/shm/pdfusaedit.restore-tmp.db "$DB" >/dev/null 2>&1; then
+    if [ "$(timeout 60 sqlite3 "file:/dev/shm/pdfusaedit.restore-tmp.db?mode=ro" 'PRAGMA quick_check;' 2>/dev/null | head -1)" = "ok" ]; then
+      [ -f "$DB" ] && cp -f "$DB" "/dev/shm/pdfusaedit.corrupt.$(date -u +%Y%m%dT%H%M%SZ).db" 2>/dev/null || true
+      rm -f "$DB-wal" "$DB-shm"
+      mv -f /dev/shm/pdfusaedit.restore-tmp.db "$DB"
+      notify "ServeTracker prod: DB was $local_state - restored from R2 replica"
+      log "restore complete"
+    else
+      log "restored copy failed quick_check; leaving local db untouched"
+    fi
+  else
+    log "restore failed; leaving local db untouched"
+  fi
+fi
+log "done"

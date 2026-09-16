@@ -17,9 +17,39 @@ export function createDb() {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA foreign_keys = ON;");
+  // Durability hardening for hosts where the data directory sits on a network filesystem
+  // (9p): a hard container restart can drop recently written WAL tail frames, silently
+  // losing committed rows (2026-09-16: a serve attempt + its notification/sms rows vanished
+  // after a restart even though the client email and SMS had already been dispatched).
+  // Keep every commit fsynced, never mmap, and keep the WAL short so the DB file itself is
+  // rewritten (and synced) often instead of resting in a long-lived WAL.
+  db.exec("PRAGMA synchronous = FULL;");
+  db.exec("PRAGMA wal_autocheckpoint = 128;");
+  db.exec("PRAGMA mmap_size = 0;");
   initSchema(db);
   runMigrations(db);
+  startWalCheckpointTimer(db);
   return db;
+}
+
+/**
+ * Flush the WAL back into the main DB file so the newest writes live in the base file
+ * (which is what survives a container restart) rather than only in the -wal tail.
+ * Cheap at ServeTracker's write volume; failures from busy readers are ignored.
+ */
+export function checkpointWal(db: Db, mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "TRUNCATE") {
+  try {
+    db.query(`PRAGMA wal_checkpoint(${mode})`).get();
+  } catch {
+    /* busy readers: the next tick will pick it up */
+  }
+}
+
+let walTimer: ReturnType<typeof setInterval> | null = null;
+function startWalCheckpointTimer(db: Db) {
+  if (walTimer) return;
+  walTimer = setInterval(() => checkpointWal(db, "TRUNCATE"), 60_000);
+  (walTimer as unknown as { unref?: () => void }).unref?.();
 }
 
 function initSchema(db: Database) {

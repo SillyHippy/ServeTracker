@@ -1,0 +1,35 @@
+#!/bin/bash
+# ServeTracker prod SQLite -> Cloudflare R2 continuous replication (Litestream).
+# Runs as supervisor program `litestream-prod`. Restores are handled by
+# /usr/local/bin/servetracker-restore-from-r2 (invoked by the app boot wrapper).
+set -euo pipefail
+
+ENVF="/etc/zo/litestream-prod.env"
+[ -f "$ENVF" ] || { echo "missing $ENVF"; exit 1; }
+set -a; . "$ENVF"; set +a
+
+DB="${LITESTREAM_DB:-/home/workspace/Projects/PDFUSAEDIT-zo/data/pdfusaedit.db}"
+PREFIX="${LITESTREAM_PREFIX:-litestream/prod}"
+CFG="/dev/shm/litestream-prod.yml"
+
+python3 - "$CFG" "$DB" "$PREFIX" <<'PY'
+import os, sys
+cfg, db, prefix = sys.argv[1:4]
+env = os.environ
+text = f"""dbs:
+  - path: {db}
+    replicas:
+      - type: s3
+        bucket: {env['LITESTREAM_BUCKET']}
+        path: {prefix}
+        endpoint: {env['LITESTREAM_ENDPOINT']}
+        region: {env.get('LITESTREAM_REGION', 'auto')}
+        access-key-id: {env['LITESTREAM_ACCESS_KEY_ID']}
+        secret-access-key: {env['LITESTREAM_SECRET_ACCESS_KEY']}
+        sync-interval: 1s
+"""
+open(cfg, "w").write(text)
+os.chmod(cfg, 0o600)
+PY
+
+exec /usr/local/bin/litestream replicate -config "$CFG"

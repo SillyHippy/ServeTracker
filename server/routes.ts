@@ -3,7 +3,7 @@ import { randomUUID, createHash } from "crypto";
 import { writeFile, unlink, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import type { Db } from "./db";
-import { UPLOADS_DIR } from "./db";
+import { UPLOADS_DIR, checkpointWal } from "./db";
 import { sendEmail } from "./email";
 import {
   createHelcimInvoice,
@@ -1992,6 +1992,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       user_agent: c.req.header("user-agent") || "",
       details: { case_id: String(response.case_id || response.caseId || ""), case_number: String(response.case_number || "") },
     });
+
+    // Durability: get the attempt + audit row out of the WAL tail and into the base DB file
+    // before the response goes back to the field phone (see server/db.ts).
+    checkpointWal(db);
 
     return c.json(response, 201);
   });

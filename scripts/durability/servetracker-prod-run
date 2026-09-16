@@ -1,0 +1,8 @@
+#!/bin/bash
+# ServeTracker prod app boot wrapper: recover from R2 if needed, then start the server.
+# Used as the `servetracker-proc` supervisor command so recovery always happens first.
+set -uo pipefail
+cd /home/workspace/Projects/PDFUSAEDIT-zo || exit 1
+# Best effort, never blocks startup for more than a few seconds.
+timeout 330 /usr/local/bin/servetracker-restore-from-r2 || echo "[boot-wrapper] restore step failed (continuing)"
+exec bun server/index.ts
