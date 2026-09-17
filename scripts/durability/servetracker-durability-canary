@@ -1,0 +1,27 @@
+#!/bin/bash
+# Durability canary: stamps "I am alive" data onto the fragile 9p workspace every minute, in
+# two independent formats, so the NEXT container restart tells us exactly how much data the
+# filesystem drops (instead of guessing from an incident):
+#   1. a tiny SQLite DB with synchronous=FULL (same durability class as the prod DB)
+#   2. a plain append-only text file (baseline for ordinary file writes)
+# Read by servetracker-canary-report (called on every boot).
+set -uo pipefail
+DATA_DIR="${SERVETRACKER_DATA_DIR:-/home/workspace/Projects/PDFUSAEDIT-zo/data}"
+DB="$DATA_DIR/durability-canary.db"
+LOG="$DATA_DIR/durability-canary.log"
+TS=$(date -u +%FT%TZ)
+EPOCH=$(date -u +%s)
+
+timeout 20 sqlite3 "$DB" "
+  PRAGMA journal_mode=WAL;
+  PRAGMA synchronous=FULL;
+  CREATE TABLE IF NOT EXISTS canary (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, epoch INTEGER NOT NULL, kind TEXT NOT NULL);
+  INSERT INTO canary (ts, epoch, kind) VALUES ('$TS', $EPOCH, 'db');
+  DELETE FROM canary WHERE id <= (SELECT MAX(id) - 2000 FROM canary);
+" >/dev/null 2>&1 || echo "canary sqlite write failed at $TS" >&2
+
+printf '%s file\n' "$TS" >> "$LOG"
+# keep the flat file bounded
+lines=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+if [ "${lines:-0}" -gt 4000 ]; then tail -2000 "$LOG" > "$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"; fi
+exit 0

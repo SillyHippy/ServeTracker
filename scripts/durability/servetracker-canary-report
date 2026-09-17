@@ -1,0 +1,41 @@
+#!/bin/bash
+# Report the measured 9p durability loss window from the canary stamps.
+# Run at every boot (called by /usr/local/bin/servetracker-prod-run) and on demand:
+#   servetracker-canary-report            -> prints + alerts only when a gap looks bad
+#   servetracker-canary-report --always   -> always prints/alerts (use right after a restart)
+set -uo pipefail
+ALWAYS=0
+[ "${1:-}" = "--always" ] && ALWAYS=1
+DATA_DIR="${SERVETRACKER_DATA_DIR:-/home/workspace/Projects/PDFUSAEDIT-zo/data}"
+DB="$DATA_DIR/durability-canary.db"
+LOG="$DATA_DIR/durability-canary.log"
+NOW=$(date -u +%s)
+STAMP=$(date -u +%FT%TZ)
+line=""
+
+db_last=$(timeout 20 sqlite3 "file:$DB?mode=ro" "select max(epoch) from canary;" 2>/dev/null | head -1)
+file_last=$(tail -1 "$LOG" 2>/dev/null | awk '{print $1}' | tr -d '\r')
+file_epoch=""
+[ -n "$file_last" ] && file_epoch=$(date -u -d "$file_last" +%s 2>/dev/null || echo "")
+
+db_gap=""; file_gap=""
+[ -n "${db_last:-}" ] && db_gap=$(( NOW - db_last ))
+[ -n "${file_epoch:-}" ] && file_gap=$(( NOW - file_epoch ))
+
+line="canary report: sqlite_gap=${db_gap:-n/a}s file_gap=${file_gap:-n/a}s (0 = nothing lost)"
+
+# A gap of more than 3 minutes on either format means the filesystem dropped data across
+# the last restart, or the canary cron is not running.
+bad=0
+[ -n "${db_gap:-}" ] && [ "$db_gap" -gt 180 ] && bad=1
+[ -n "${file_gap:-}" ] && [ "$file_gap" -gt 180 ] && bad=1
+
+if [ "$bad" = "1" ] || [ "$ALWAYS" = "1" ]; then
+  printf '%s %s\n' "$STAMP" "$line"
+  /usr/local/bin/zo-telegram-alert "ServeTracker durability canary @ ${STAMP}
+sqlite canary gap: ${db_gap:-n/a}s
+plain-file canary gap: ${file_gap:-n/a}s
+(0s = nothing lost; a big gap after a restart = that much data was dropped by the 9p filesystem)" >/dev/null 2>&1 || true
+fi
+[ "$bad" = "1" ] && exit 1
+exit 0
