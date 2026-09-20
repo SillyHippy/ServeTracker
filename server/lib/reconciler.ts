@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
-import { DATA_DIR, DB_PATH, UPLOADS_DIR, type Db } from "../db";
+import { DATA_DIR, DB_PATH, UPLOADS_DIR, serveIsTombstoned, type Db } from "../db";
 import {
   hotBufferTmpDir,
   downloadArchive,
@@ -166,6 +166,12 @@ export async function reconcileLostServes(
         const serveId = filename.replace(/\.zip$/, "").trim();
         if (!serveId) continue;
 
+        // Local tombstone is authoritative even if the R2 object is still uploading.
+        if (serveIsTombstoned(db, serveId)) {
+          stats.skippedTombstoned++;
+          continue;
+        }
+
         // 1. MUST check R2 tombstones first: NEVER restore tombstoned ID
         try {
           const tombstoned = await hasTombstone(serveId);
@@ -269,8 +275,7 @@ export async function reconcileLostServes(
           if (parentCaseId) {
             const parentCase = db.query("SELECT id FROM client_cases WHERE id = ?").get(parentCaseId);
             if (!parentCase) {
-              stats.failed++;
-              stats.errors.push(`${serveId}: parent case ${parentCaseId} no longer exists`);
+              stats.errors++;
               console.warn(
                 `[Reconciler] UNRESOLVABLE ${serveId}: parent case ${parentCaseId} is gone; ` +
                   `archive kept in R2 for manual review`,
@@ -282,14 +287,18 @@ export async function reconcileLostServes(
           if (parentRecipientId) {
             const parentRecipient = db.query("SELECT id FROM serve_recipients WHERE id = ?").get(parentRecipientId);
             if (!parentRecipient) {
-              stats.failed++;
-              stats.errors.push(`${serveId}: parent recipient ${parentRecipientId} no longer exists`);
+              stats.errors++;
               console.warn(
                 `[Reconciler] UNRESOLVABLE ${serveId}: parent recipient ${parentRecipientId} is gone; ` +
                   `archive kept in R2 for manual review`,
               );
               continue;
             }
+          }
+
+          if (serveIsTombstoned(db, serveId)) {
+            stats.skippedTombstoned++;
+            continue;
           }
 
           // Single SQLite transaction for attempt + photos + audit + renumber + recompute

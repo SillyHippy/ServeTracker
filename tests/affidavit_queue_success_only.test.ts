@@ -79,4 +79,69 @@ describe("affidavit queue lists only successfully served people", () => {
     expect(String(mine[0].personServed)).toMatch(/Toni/i);
     expect(stevenId).toBeTruthy();
   });
+
+  test("1-person unsuccessful-only case is not awaiting signature", async () => {
+    const cli = await admin.post("/api/clients", {
+      name: "Queue Fail Only LLC",
+      email: "queue-fail-only@example.test",
+      phone: "555-0189",
+    });
+    expectStatus(cli, 201, "create client");
+    const clientId = cli.data.client?.id || cli.data.id;
+    const cse = await admin.post("/api/cases", {
+      client_id: clientId,
+      case_number: "PG-2026-QUEUE-FAIL-ONLY",
+      case_name: "Lonnie Mock Queue",
+      defendant_respondent: "Lonnie Queue Fixture",
+      home_address: "2 Queue St, Tulsa, OK",
+      documents_to_serve: "Notice",
+      assigned_to: "usr_admin_default",
+      recipients: [{ full_name: "Lonnie Queue Fixture", role: "Defendant / Respondent" }],
+    });
+    expectStatus(cse, 201, "create 1-person case");
+    const failCaseId = cse.data.case?.id || cse.data.id;
+    const recs = await admin.get(`/api/recipients?case_id=${failCaseId}`);
+    const recId = (recs.data || [])[0]?.id;
+    const fail = await admin.post("/api/serves", {
+      case_id: failCaseId,
+      case_number: "PG-2026-QUEUE-FAIL-ONLY",
+      recipient_id: recId,
+      person_being_served: "Lonnie Queue Fixture",
+      status: "failed",
+      notes: "not home",
+      sendEmail: false,
+      isTest: true,
+    });
+    expectStatus(fail, 201, "failed attempt");
+    const res = await admin.get("/api/affidavits/queue");
+    expectStatus(res, 200, "queue");
+    const mine = (res.data.queue || []).filter((q: { caseId: string }) => q.caseId === failCaseId);
+    expect(mine).toEqual([]);
+  });
+
+  test("blank case_id completed leftover does not enqueue a later Open job with the same case number", async () => {
+    const cli = await admin.post("/api/clients", {
+      name: "Queue Orphan LLC",
+      email: "queue-orphan@example.test",
+      phone: "555-0190",
+    });
+    expectStatus(cli, 201, "create orphan client");
+    const clientId = cli.data.client?.id || cli.data.id;
+    const cse = await admin.post("/api/cases", {
+      client_id: clientId,
+      case_number: "PG-26-22",
+      case_name: "Lonnie Orphan Queue",
+      defendant_respondent: "Lonnie Orphan Queue",
+      home_address: "3 Queue St, Tulsa, OK",
+      documents_to_serve: "Notice",
+      assigned_to: "usr_admin_default",
+      recipients: [{ full_name: "Lonnie Orphan Queue", role: "Defendant / Respondent" }],
+    });
+    expectStatus(cse, 201, "create orphan case");
+    const orphanCaseId = cse.data.case?.id || cse.data.id;
+    const res = await admin.get("/api/affidavits/queue");
+    expectStatus(res, 200, "queue");
+    const mine = (res.data.queue || []).filter((q: { caseId: string }) => q.caseId === orphanCaseId);
+    expect(mine).toEqual([]);
+  });
 });

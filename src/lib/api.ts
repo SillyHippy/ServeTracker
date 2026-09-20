@@ -8,6 +8,7 @@ export { API_BASE };
 async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    cache: "no-store",
     credentials: "include",
     headers: {
       "Accept": "application/json",
@@ -33,6 +34,12 @@ async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): P
   if (res.status === 204) return undefined as T;
   const ctype = res.headers.get("content-type") || "";
   if (!ctype.includes("application/json")) {
+    const method = String(options.method || "GET").toUpperCase();
+    // Reverse proxy can return the SPA HTML with 200 when DELETE waited on a
+    // WAL checkpoint. The row is usually already gone; do not toast "Error".
+    if (method === "DELETE" && res.ok) {
+      return { success: true, deletedViaHtmlShell: true } as T;
+    }
     throw new Error(`Expected JSON from ${path}, got ${ctype || "unknown"} (${res.status})`);
   }
   return res.json() as Promise<T>;

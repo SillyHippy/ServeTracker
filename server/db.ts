@@ -24,7 +24,9 @@ export function createDb() {
   // Keep every commit fsynced, never mmap on 9p, and keep the WAL short so the DB file
   // itself gets rewritten (and synced) often instead of resting in a long-lived WAL.
   db.exec("PRAGMA synchronous = FULL;");
-  db.exec("PRAGMA wal_autocheckpoint = 128;");
+  // Litestream owns the WAL. sqlite autocheckpoint TRUNCATE fights the replicator
+  // and stalls every serve POST/DELETE for the full busy_timeout (5–10s).
+  db.exec("PRAGMA wal_autocheckpoint = 0;");
   db.exec("PRAGMA mmap_size = 0;");
   initSchema(db);
   runMigrations(db);
@@ -33,11 +35,12 @@ export function createDb() {
 }
 
 /**
- * Flush the WAL back into the main DB file so the newest writes live in the base file
- * (which is what survives a container restart) rather than only in the -wal tail.
- * Cheap at ServeTracker's write volume; failures from busy readers are ignored.
+ * Optional WAL hint. Never TRUNCATE/RESTART on the request path while Litestream
+ * is replicating — that waits the full busy_timeout and is what left the phone
+ * on "Saving..." (~10s per POST) and turned DELETE into HTML 200 at the proxy.
+ * PASSIVE never blocks writers. Litestream + boot restore cover recycle loss.
  */
-export function checkpointWal(db: Db, mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "TRUNCATE") {
+export function checkpointWal(db: Db, mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE" = "PASSIVE") {
   try {
     db.query(`PRAGMA wal_checkpoint(${mode})`).get();
   } catch {
@@ -48,7 +51,7 @@ export function checkpointWal(db: Db, mode: "PASSIVE" | "FULL" | "RESTART" | "TR
 let walTimer: ReturnType<typeof setInterval> | null = null;
 function startWalCheckpointTimer(db: Db) {
   if (walTimer) return;
-  walTimer = setInterval(() => checkpointWal(db, "TRUNCATE"), 60_000);
+  walTimer = setInterval(() => checkpointWal(db, "PASSIVE"), 60_000);
   (walTimer as unknown as { unref?: () => void }).unref?.();
 }
 
@@ -297,6 +300,17 @@ function runMigrations(db: Database) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_case ON serve_attempts(case_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_event ON serve_attempts(event_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_fingerprint ON serve_attempts(payload_fingerprint);");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS serve_tombstones (
+      serve_id TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL,
+      actor_id TEXT DEFAULT '',
+      actor_role TEXT DEFAULT '',
+      reason TEXT DEFAULT '',
+      payload_fingerprint TEXT DEFAULT ''
+    );
+  `);
 
   // Backfill occurred_at and entered_at for older rows
   db.exec(`
@@ -661,6 +675,37 @@ function runMigrations(db: Database) {
   `);
 
   db.exec("PRAGMA user_version = 6;");
+}
+
+export function recordServeTombstone(
+  db: Database,
+  row: {
+    serve_id: string;
+    deleted_at: string;
+    actor_id?: string;
+    actor_role?: string;
+    reason?: string;
+    payload_fingerprint?: string;
+  },
+): void {
+  db.query(
+    `INSERT OR REPLACE INTO serve_tombstones
+      (serve_id, deleted_at, actor_id, actor_role, reason, payload_fingerprint)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.serve_id,
+    row.deleted_at,
+    row.actor_id || "",
+    row.actor_role || "",
+    row.reason || "",
+    row.payload_fingerprint || "",
+  );
+}
+
+export function serveIsTombstoned(db: Database, serveId: string): boolean {
+  if (!serveId) return false;
+  const hit = db.query("SELECT 1 AS ok FROM serve_tombstones WHERE serve_id = ?").get(serveId) as { ok?: number } | null;
+  return Boolean(hit);
 }
 
 export type Db = Database;

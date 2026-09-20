@@ -118,6 +118,21 @@ app.get("*", async (c) => {
   return c.text("PDFUSAEDIT API running. Build the frontend with `bun run build`.", 200);
 });
 
+app.onError((err, c) => {
+  console.error("[api] unhandled:", err);
+  const path = (() => {
+    try {
+      return new URL(c.req.url).pathname;
+    } catch {
+      return c.req.path || "";
+    }
+  })();
+  if (path.includes("/api/")) {
+    return c.json({ error: err instanceof Error ? err.message : "Internal Server Error" }, 500);
+  }
+  return c.text("Internal Server Error", 500);
+});
+
 const port = Number(process.env.PORT) || 3150;
 
 // Dual-Shield self-heal: R2 is only a TEMPORARY hot buffer. Every attempt is

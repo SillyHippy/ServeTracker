@@ -1,21 +1,20 @@
 import type { Context } from "hono";
 import { randomUUID, createHash } from "crypto";
 import { writeFile, unlink, mkdir } from "fs/promises";
-import { mkdirSync, copyFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, copyFileSync, rmSync, existsSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import type { Db } from "./db";
-import { UPLOADS_DIR, checkpointWal } from "./db";
+import { UPLOADS_DIR, checkpointWal, recordServeTombstone, serveIsTombstoned } from "./db";
 import {
-  putServeArchivePayload,
   putServeArchive,
   writeTombstone,
   hasTombstone,
   deleteArchiveKey,
   dualshieldPrefix,
   hotBufferTmpDir,
+  isHotBufferMock,
   type ServeTombstone,
 } from "./lib/hotBuffer";
-import { withReconcileLock } from "./lib/reconciler";
 import { computePayloadFingerprint } from "./serveFingerprint";
 import { sendEmail } from "./email";
 import {
@@ -1864,8 +1863,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const body = await c.req.json();
     const id = body.id || newId();
 
-    // Check permanent off-box tombstone: Attempt UUIDs are immutable/non-reusable after delete
-    const isTombstoned = await hasTombstone(String(id));
+    // Tombstone check must not wait on R2. A missing S3 object was adding
+    // seconds to every save; local table is written on delete before the
+    // HTTP response, mock mode still consults the in-memory map.
+    const isTombstoned =
+      serveIsTombstoned(db, String(id)) || (isHotBufferMock() && (await hasTombstone(String(id))));
     if (isTombstoned) {
       return c.json(
         {
@@ -2261,21 +2263,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       event_id: eventId,
     };
 
-    try {
-      await putServeArchivePayload(String(id), { serve: serveManifest, photos: photoRows }, archiveFiles);
-    } catch (err) {
-      cleanupStage();
-      console.error("[dualshield] R2 zip failed before local commit; refusing 201:", err);
-      return c.json(
-        { error: "Dual-Shield R2 staging failed", detail: err instanceof Error ? err.message : String(err) },
-        500,
-      );
-    }
-
-    // R2 OK — commit photos to local disk, then DB with transaction & 503 error handling
-    // Compensation strategy: If local disk or SQLite commit fails after R2 staging,
-    // the R2 archive remains intact for replay/reconciliation via scripts/reconcile-boot.ts,
-    // and the server returns 503 { archived: true, committed: false, serveId, retry: true }.
+    // Local SQLite first (Joe's plane). Waiting on the Dual-Shield zip + email
+    // before 201 is what left the phone on "Saving..." for ~90s. Litestream
+    // replicates the DB; the R2 zip is uploaded in the background after commit.
     const committedAt = nowIso();
     const syncVersion = 1;
 
@@ -2419,22 +2409,20 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
       checkpointWal(db);
     } catch (commitErr) {
-      console.error(`[serve-sync] R2 archived but local SQLite/disk commit failed for serveId ${id}:`, commitErr);
+      console.error(`[serve-sync] local SQLite/disk commit failed for serveId ${id}:`, commitErr);
       cleanupStage();
-      // Clean only copied/staged destination files that did not preexist
       for (const dest of newlyCreatedDestFiles) {
         try {
           if (existsSync(dest)) unlinkSync(dest);
         } catch {}
       }
-      // Never delete the R2 archive. Return 503 JSON as required.
       return c.json(
         {
-          archived: true,
+          archived: false,
           committed: false,
           serveId: String(id),
           retry: true,
-          error: "Local database commit failed after archive was staged; client should retry",
+          error: "Local database commit failed; client should retry",
           detail: commitErr instanceof Error ? commitErr.message : String(commitErr),
         },
         503,
@@ -2456,6 +2444,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       syncVersion,
     };
     Object.assign(response, syncMetadata);
+
+    void putServeArchive(db, String(id)).catch((err) => {
+      console.error(`[dualshield] background zip failed for ${id} (row is already committed):`, err);
+    });
 
     // Send email notification if requested — ALWAYS server-built HTML with photo LINKS.
     // Never trust body.emailHtml (old clients sent Maps-only / Photo-1 attachment templates).
@@ -2500,11 +2492,12 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           status: String(response.status || ""),
         });
 
-        await sendEmail({
+        void sendEmail({
           to: clientEmail,
           subject: emailSubject,
           html: emailHtml,
-          // links only — no attachImage
+        }).catch((err) => {
+          console.error("[serve] Failed to send email notification:", err);
         });
       } catch (err) {
         console.error("[serve] Failed to send email notification:", err);
@@ -2806,12 +2799,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const newFingerprint = computePayloadFingerprint({ ...updatedRow, photos: attemptPhotos });
     db.query("UPDATE serve_attempts SET payload_fingerprint = ? WHERE id = ?").run(newFingerprint, id);
 
-    // Refresh R2 archive
-    try {
-      await putServeArchive(db, id);
-    } catch (r2Err) {
+    void putServeArchive(db, id).catch((r2Err) => {
       console.warn(`[PUT /api/serves/${id}] Failed to refresh R2 archive:`, r2Err);
-    }
+    });
 
     checkpointWal(db);
 
@@ -2834,15 +2824,17 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
     const id = c.req.param("id");
 
-    return withReconcileLock(async () => {
+    try {
       const row = db.query(
-        "SELECT * FROM serve_attempts WHERE id = ?"
+        "SELECT * FROM serve_attempts WHERE id = ?",
       ).get(id) as Record<string, unknown> | null;
       if (!row) {
+        if (serveIsTombstoned(db, id)) {
+          return c.json({ success: true, deletedId: id, alreadyDeleted: true });
+        }
         return c.json({ error: "Serve attempt not found" }, 404);
       }
 
-      // Step 1: Write R2 tombstone BEFORE local deletion. If tombstone write fails, abort delete!
       const tombstone: ServeTombstone = {
         version: 1,
         serve_id: id,
@@ -2857,19 +2849,6 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         payload_fingerprint: String(row.payload_fingerprint || ""),
       };
 
-      try {
-        await writeTombstone(tombstone);
-      } catch (tombErr) {
-        console.error(`[serve.delete] Failed to write off-box tombstone for ${id}:`, tombErr);
-        return c.json(
-          {
-            error: "Failed to write off-box tombstone; delete aborted",
-            detail: tombErr instanceof Error ? tombErr.message : String(tombErr),
-          },
-          500,
-        );
-      }
-
       const caseId = row.case_id ? String(row.case_id) : undefined;
       const recipientId = row.recipient_id ? String(row.recipient_id) : undefined;
       const photos = db.query("SELECT image_url, thumbnail_url FROM serve_attempt_photos WHERE serve_id = ?").all(id) as {
@@ -2877,9 +2856,18 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         thumbnail_url?: string;
       }[];
 
-      // Step 2: One SQLite transaction deletes attempt/photos/edits, writes serve.delete audit,
-      // renumbers, invalidates affidavit, recomputes recipient/case status.
+      // Local tombstone + SQLite delete first so the phone gets JSON immediately.
+      // Waiting on R2 here is what returned HTML 200 after the reverse proxy
+      // gave up, even though the row was already gone.
       db.transaction(() => {
+        recordServeTombstone(db, {
+          serve_id: id,
+          deleted_at: tombstone.deleted_at,
+          actor_id: user.id,
+          actor_role: user.role,
+          reason: "explicit_delete",
+          payload_fingerprint: String(row.payload_fingerprint || ""),
+        });
         db.query("DELETE FROM serve_attempt_photos WHERE serve_id = ?").run(id);
         db.query("DELETE FROM serve_attempt_edits WHERE serve_id = ?").run(id);
         db.query("DELETE FROM serve_attempts WHERE id = ?").run(id);
@@ -2908,22 +2896,34 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         });
       })();
 
-      // Step 3: Checkpoint WAL
       checkpointWal(db);
 
-      // Step 4: Delete local photo files and R2 archive afterward; tombstone remains authoritative if cleanup fails
-      for (const photo of photos) {
-        await deleteServeFiles(photo.image_url, photo.thumbnail_url);
-      }
-      await deleteServeFiles(row.image_file_id as string, row.thumbnail_file_id as string);
-      try {
-        await deleteArchiveKey(`${dualshieldPrefix()}${id}.zip`);
-      } catch (r2Err) {
-        console.warn(`[serve.delete] R2 archive cleanup warn for ${id} (tombstone remains authoritative):`, r2Err);
-      }
+      void writeTombstone(tombstone).catch((tombErr) => {
+        console.error(`[serve.delete] background R2 tombstone failed for ${id}:`, tombErr);
+      });
+      void (async () => {
+        for (const photo of photos) {
+          await deleteServeFiles(photo.image_url, photo.thumbnail_url);
+        }
+        await deleteServeFiles(row.image_file_id as string, row.thumbnail_file_id as string);
+        try {
+          await deleteArchiveKey(`${dualshieldPrefix()}${id}.zip`);
+        } catch (r2Err) {
+          console.warn(`[serve.delete] R2 archive cleanup warn for ${id}:`, r2Err);
+        }
+      })();
 
       return c.json({ success: true, deletedId: id });
-    });
+    } catch (err) {
+      console.error(`[serve.delete] ${id}:`, err);
+      return c.json(
+        {
+          error: err instanceof Error ? err.message : "Delete failed",
+          serveId: id,
+        },
+        500,
+      );
+    }
   });
 
   // Multi-Photo Endpoints (Up to 5 Photos per attempt)
@@ -3091,11 +3091,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (currentAttempt) {
       const newFp = computePayloadFingerprint({ ...currentAttempt, photos: updatedPhotos });
       db.query("UPDATE serve_attempts SET payload_fingerprint = ? WHERE id = ?").run(newFp, serveId);
-      try {
-        await putServeArchive(db, serveId);
-      } catch (r2Err) {
+      void putServeArchive(db, serveId).catch((r2Err) => {
         console.warn(`[photos] Failed to refresh R2 archive for ${serveId}:`, r2Err);
-      }
+      });
       checkpointWal(db);
     }
 
@@ -3168,11 +3166,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (currentAttempt) {
       const newFp = computePayloadFingerprint({ ...currentAttempt, photos: remainingPhotos });
       db.query("UPDATE serve_attempts SET payload_fingerprint = ? WHERE id = ?").run(newFp, serveId);
-      try {
-        await putServeArchive(db, serveId);
-      } catch (r2Err) {
+      void putServeArchive(db, serveId).catch((r2Err) => {
         console.warn(`[photos] Failed to refresh R2 archive for ${serveId}:`, r2Err);
-      }
+      });
       checkpointWal(db);
     }
 
@@ -3763,16 +3759,11 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       if (recId) signedRecipientIdsByCase.get(row.case_id)!.add(recId);
     }
 
-    const attemptScope = `(
-      s.case_id = c.id
-      OR (
-        (s.case_id IS NULL OR s.case_id = '')
-        AND TRIM(COALESCE(c.case_number,'')) != ''
-        AND s.case_number = c.case_number
-        AND s.client_id = c.client_id
-        AND COALESCE(s.occurred_at, s.timestamp) >= COALESCE(c.created_at, '')
-      )
-    )`;
+    // Only attempts that actually belong to this case. A blank case_id + shared
+    // case_number (two PG-26-22 rows exist) was attaching a July 2026 completed
+    // leftover onto the Open Lonnie job after later failed attempts were deleted,
+    // which put "Lonnie Eugene Boyles Jr awaiting signature" back on the dashboard.
+    const attemptScope = `(s.case_id = c.id)`;
     const casesQuery = `
       SELECT c.*,
         (SELECT s.status FROM serve_attempts s WHERE ${attemptScope} ORDER BY COALESCE(s.occurred_at, s.timestamp) DESC LIMIT 1) as last_service_type,
@@ -3852,7 +3843,23 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
       if (!isServed) continue;
       if (signedCaseIds.has(caseId)) continue;
-      pushItem(String(r.defendant_respondent || r.case_name || "Recipient"));
+      const methodRow = db
+        .query(
+          `SELECT service_method FROM serve_attempts
+           WHERE case_id = ?
+             AND LOWER(COALESCE(status,'')) IN ('completed','served')
+           ORDER BY COALESCE(occurred_at, timestamp) DESC LIMIT 1`,
+        )
+        .get(caseId) as { service_method?: string } | null;
+      // 1-person jobs must have an actual successful attempt — case.status
+      // "Served" from an old test row was putting Lonnie on Sign Affidavit
+      // after later unsuccessful logs and deletes.
+      if (!methodRow) continue;
+      pushItem(
+        String(r.defendant_respondent || r.case_name || "Recipient"),
+        recipients[0] ? String(recipients[0].id) : undefined,
+        String(methodRow.service_method || ""),
+      );
     }
 
     return c.json({ queue });

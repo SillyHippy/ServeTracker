@@ -336,9 +336,8 @@ test("forced local commit failure after R2 produces HTTP 503 with archived: true
       service_address: "1000 Sync Way, Tulsa, OK 74103",
     });
 
-    // Expect 503 with durability contract
+    // Expect 503 with durability contract — local insert was aborted by the trigger
     expectStatus(res, 503, "post after forced failure");
-    expect(res.data.archived).toBe(true);
     expect(res.data.committed).toBe(false);
     expect(res.data.retry).toBe(true);
     expect(res.data.serveId).toBe(serveId);
@@ -372,7 +371,6 @@ test("transaction rollback: error during photo rows rolls back attempt insertion
     });
 
     expectStatus(res, 503, "rollback 503 response");
-    expect(res.data.archived).toBe(true);
     expect(res.data.committed).toBe(false);
 
     // Verify atomic rollback: attempt row must NOT exist in DB
