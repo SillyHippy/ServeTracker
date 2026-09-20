@@ -79,6 +79,7 @@ async function helcimApiRequest<T = any>(
       "User-Agent": "ZoComputer/1.0",
     },
     body: data ? JSON.stringify(data) : undefined,
+    signal: AbortSignal.timeout(4000),
   });
 
   if (!res.ok) {

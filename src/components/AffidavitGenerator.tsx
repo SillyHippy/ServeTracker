@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { FileText, Printer, PenLine, Loader2 } from 'lucide-react';
+import { FileText, Printer, PenLine, Loader2, AlertTriangle } from 'lucide-react';
 import {
   generateAffidavitHtml,
   generateBatchAffidavitsHtml,
@@ -17,6 +17,7 @@ import { ServeAttemptData } from '@/types/ServeAttemptData';
 import { ClientData } from '@/components/ClientForm';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/lib/api';
+import { getPendingForCase, subscribePending } from '@/lib/offlineQueue';
 import { useAuth } from '@/context/AuthContext';
 import AffidavitSignatureDialog from '@/components/AffidavitSignatureDialog';
 import AffidavitExecutionAudit from '@/components/AffidavitExecutionAudit';
@@ -139,12 +140,37 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const [checkingSigned, setCheckingSigned] = useState(false);
   const [signOpen, setSignOpen] = useState(false);
   const [isRenderingSigned, setIsRenderingSigned] = useState(false);
+  const [fetchFailed, setFetchFailed] = useState(false);
+  const [hasPendingOutbox, setHasPendingOutbox] = useState(false);
+  const [pendingOutboxCount, setPendingOutboxCount] = useState(0);
   const [affidavitKind, setAffidavitKind] = useState<AffidavitKind>(() => inferAffidavitKind(serves));
   const { toast } = useToast();
 
   const courtNumber = String(caseNumber || '').trim();
   const fakeCourt = !courtNumber || courtNumber.toLowerCase() === 'unknown';
   const lookupKey = String(caseRecordId || caseId || '').trim() || (fakeCourt ? '' : courtNumber);
+  // Block printing and signing if there are unverified outbox attempts for this case
+  useEffect(() => {
+    const checkOutbox = async () => {
+      const key = String(caseRecordId || caseId || courtNumber || '').trim();
+      if (!key) {
+        setHasPendingOutbox(false);
+        setPendingOutboxCount(0);
+        return;
+      }
+      const items = await getPendingForCase(key);
+      const unverified = items.filter(
+        (item) => !['verified', 'skipped'].includes(item.state)
+      );
+      setHasPendingOutbox(unverified.length > 0);
+      setPendingOutboxCount(unverified.length);
+    };
+    void checkOutbox();
+    return subscribePending(() => {
+      void checkOutbox();
+    });
+  }, [caseRecordId, caseId, courtNumber, isOpen]);
+
 
   // Always pull Documents to Serve, caption fields, and THIS case's attempts from the live record.
   // History cards can mix duplicate case numbers (PG-26-22) — UUID lookup is authoritative.
@@ -189,10 +215,10 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             });
           }
         }
-        if (Array.isArray(data.attempts) && data.attempts.length > 0) {
+        setFetchFailed(false);
+        if (Array.isArray(data.attempts)) {
+          // CRITICAL: When server fetch succeeds, use its attempts EVEN IF EMPTY!
           setResolvedAttempts(data.attempts as ServeAttemptData[]);
-        } else {
-          setResolvedAttempts(serves);
         }
         if (data.assignedServer) setAssignedServer(data.assignedServer);
         if (data.notaryBlock) setNotaryInfo(data.notaryBlock);
@@ -206,10 +232,11 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           setCheckingSigned(false);
         }
       } catch (err) {
-        console.warn('Affidavit: could not load case documents, using prop fallback', err);
+        console.error('Affidavit: could not load case documents from server', err);
         if (!cancelled) {
-          setResolvedDocs((documentsToServe || '').trim());
-          setResolvedAttempts(serves);
+          setFetchFailed(true);
+          // On fetch failure do not silently print stale client-prop rows!
+          setResolvedAttempts([]);
         }
       } finally {
         if (!cancelled) setIsLoadingCase(false);
@@ -226,6 +253,22 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   }, [resolvedAttempts, isOpen]);
 
   const handlePrintOrSave = async () => {
+    if (hasPendingOutbox) {
+      toast({
+        title: "Sync Pending — Print Blocked",
+        description: `This case has ${pendingOutboxCount} offline attempt(s) waiting in your outbox. Upload and verify them before printing the affidavit.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (fetchFailed) {
+      toast({
+        title: "Server Records Required",
+        description: "Could not load verified attempts from server. Printing blocked to prevent false affidavit.",
+        variant: "destructive",
+      });
+      return;
+    }
     // Re-fetch once more right before print so Edit Case saves are never stale
     let docs = resolvedDocs;
     let court = resolvedCourt;
@@ -251,7 +294,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           if (data.assignedServer) setAssignedServer(data.assignedServer);
           if (data.notaryBlock) setNotaryInfo(data.notaryBlock);
           setResolvedDocs(docs);
-          if (Array.isArray(data.attempts) && data.attempts.length > 0) {
+          if (Array.isArray(data.attempts)) {
             attemptsForPrint = data.attempts as ServeAttemptData[];
             setResolvedAttempts(attemptsForPrint);
           }
@@ -320,6 +363,22 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
 
   // Print all recipient affidavits in a single continuous stream with exhibits once at the end
   const handlePrintAll = async () => {
+    if (hasPendingOutbox) {
+      toast({
+        title: "Sync Pending — Print Blocked",
+        description: `This case has ${pendingOutboxCount} offline attempt(s) waiting in your outbox. Upload and verify them before printing the affidavit.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (fetchFailed) {
+      toast({
+        title: "Server Records Required",
+        description: "Could not load verified attempts from server. Printing blocked to prevent false affidavit.",
+        variant: "destructive",
+      });
+      return;
+    }
     let docs = resolvedDocs;
     let court = resolvedCourt;
     let plaintiff = resolvedPlaintiff;
@@ -344,7 +403,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           if (data.assignedServer) setAssignedServer(data.assignedServer);
           if (data.notaryBlock) setNotaryInfo(data.notaryBlock);
           setResolvedDocs(docs);
-          if (Array.isArray(data.attempts) && data.attempts.length > 0) {
+          if (Array.isArray(data.attempts)) {
             attemptsForPrint = data.attempts as ServeAttemptData[];
             setResolvedAttempts(attemptsForPrint);
           }
@@ -431,6 +490,22 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
 
   // Print the server-rendered SIGNED version (render endpoint embeds signature).
   const handlePrintSigned = async () => {
+    if (hasPendingOutbox) {
+      toast({
+        title: "Sync Pending — Print Blocked",
+        description: `This case has ${pendingOutboxCount} offline attempt(s) waiting in your outbox. Upload and verify them before printing the affidavit.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    if (fetchFailed) {
+      toast({
+        title: "Server Records Required",
+        description: "Could not load verified attempts from server. Printing blocked to prevent false affidavit.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!caseId) return;
     setIsRenderingSigned(true);
     try {
@@ -515,6 +590,25 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
         </DialogHeader>
 
         <div className="space-y-3 py-2 text-sm">
+          {hasPendingOutbox && (
+            <div className="bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-800 rounded-lg p-3 text-amber-900 dark:text-amber-200 text-xs flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+              <div>
+                <span className="font-semibold block">Sync Pending — Printing & Signing Blocked</span>
+                This case has {pendingOutboxCount} attempt(s) waiting in this device's offline outbox.
+                Only verified server rows may appear on a court affidavit. Upload them to the server before generating or signing this affidavit.
+              </div>
+            </div>
+          )}
+          {fetchFailed && (
+            <div className="bg-red-50 dark:bg-red-950 border border-red-300 dark:border-red-800 rounded-lg p-3 text-red-900 dark:text-red-200 text-xs flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 mt-0.5" />
+              <div>
+                <span className="font-semibold block">Server Records Unavailable</span>
+                Failed to load verified attempts from the server. Printing and signing are blocked to prevent generating an affidavit from stale data.
+              </div>
+            </div>
+          )}
           <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-1.5">
             <div className="space-y-1.5">
               <span className="text-slate-500 font-medium">Type:</span>
@@ -651,8 +745,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
               onClick={handlePrintAll}
               variant="outline"
               className="h-11 w-full sm:w-auto border-blue-600 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 flex items-center justify-center gap-1.5"
-              disabled={isLoadingCase}
-              title="Prints all recipient affidavits in one continuous job, with exhibits once at the end"
+              disabled={isLoadingCase || hasPendingOutbox || fetchFailed}
+              title={hasPendingOutbox ? "Blocked: outbox sync pending" : fetchFailed ? "Blocked: server records unavailable" : "Prints all recipient affidavits in one continuous job, with exhibits once at the end"}
             >
               <Printer className="w-4 h-4 text-blue-600" />
               <span>Print All ({recipientsList.length} Packets)</span>
@@ -661,7 +755,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           {hasActiveSigned && caseId ? (
             <Button
               onClick={handlePrintSigned}
-              disabled={isRenderingSigned}
+              disabled={isRenderingSigned || hasPendingOutbox || fetchFailed}
               className="h-11 w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white flex items-center justify-center gap-2"
             >
               {isRenderingSigned ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
@@ -671,7 +765,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             <Button
               onClick={handlePrintOrSave}
               className="h-11 w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center gap-2"
-              disabled={isLoadingCase}
+              disabled={isLoadingCase || hasPendingOutbox || fetchFailed}
+            title={hasPendingOutbox ? "Blocked: outbox sync pending" : fetchFailed ? "Blocked: server records unavailable" : undefined}
             >
               <Printer className="w-4 h-4" />
               <span>{recipientsList.length > 1 ? `Print ${activeRecipientName.split(' ')[0]}` : "Print / Save PDF"}</span>
@@ -682,7 +777,8 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
               onClick={() => setSignOpen(true)}
               variant={hasActiveSigned ? "outline" : "secondary"}
               className="h-11 w-full sm:w-auto flex items-center justify-center gap-2"
-              title="Applies the assigned server's electronic signature only — does not notarize"
+              disabled={isLoadingCase || hasPendingOutbox || fetchFailed}
+              title={hasPendingOutbox ? "Blocked: outbox sync pending" : fetchFailed ? "Blocked: server records unavailable" : "Applies the assigned server's electronic signature only — does not notarize"}
             >
               <PenLine className="w-4 h-4" />
               <span>

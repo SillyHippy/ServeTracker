@@ -22,6 +22,7 @@ import NudgeServerDialog from "./NudgeServerDialog";
 import EditCaseDialog from "./EditCaseDialog";
 import ServerAssignmentPanel from "./ServerAssignmentPanel";
 import MarkPaidDialog from "./MarkPaidDialog";
+import { ReserviceJobDialog } from "./ReserviceJobDialog";
 import { mergeServeAndCaseData } from "@/utils/dataNormalization";
 import { ServeAttemptData } from "@/types/ServeAttemptData";
 
@@ -66,6 +67,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
   const [activeDocCase, setActiveDocCase] = useState<{ caseId: string; caseNumber: string; defendantName: string } | null>(null);
   const [assignOptions, setAssignOptions] = useState<Array<{ id: string; label: string; ineligible?: string }>>([]);
   const [markPaidTarget, setMarkPaidTarget] = useState<ClientCase | null>(null);
+  const [reserviceCase, setReserviceCase] = useState<ClientCase | null>(null);
   const [newCase, setNewCase] = useState({
     case_number: "",
     case_name: "",
@@ -680,6 +682,18 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                         personBeingServed={clientCase.defendant_respondent || clientCase.case_name}
                         documentsToServe={clientCase.documents_to_serve || ""}
                       />
+                      {clientCase.status === "served" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setReserviceCase(clientCase)}
+                          className="h-9 w-full justify-center px-1 text-[11px] font-semibold text-indigo-700 border-indigo-300 hover:bg-indigo-50"
+                          title="Duplicate this served job for re-service without modifying this record"
+                        >
+                          <Copy className="h-3.5 w-3.5 mr-1 shrink-0 text-indigo-600" />
+                          <span className="truncate">Re-service</span>
+                        </Button>
+                      )}
                       <EditCaseDialog
                         clientCase={clientCase}
                         onUpdate={updateCase}
@@ -880,6 +894,24 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
         />
       )}
 
+      <ReserviceJobDialog
+        open={Boolean(reserviceCase)}
+        onOpenChange={(open) => !open && setReserviceCase(null)}
+        caseItem={reserviceCase ? {
+          id: reserviceCase.$id || (reserviceCase as any).id,
+          case_number: reserviceCase.case_number,
+          case_name: reserviceCase.case_name,
+          defendant_respondent: reserviceCase.defendant_respondent,
+          home_address: reserviceCase.home_address,
+          work_address: reserviceCase.work_address,
+          documents_to_serve: reserviceCase.documents_to_serve,
+          client_id: reserviceCase.client_id,
+          status: reserviceCase.status,
+        } : null}
+        onSuccess={async () => {
+          await fetchClientCases();
+        }}
+      />
       <MarkPaidDialog
         open={Boolean(markPaidTarget)}
         onOpenChange={(open) => !open && setMarkPaidTarget(null)}

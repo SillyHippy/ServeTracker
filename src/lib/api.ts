@@ -1,7 +1,7 @@
 import { createServeEmailBody } from "@/utils/email";
 import { generateThumbnail } from "@/utils/thumbnailGenerator";
 import { API_BASE } from "@/lib/publicBase";
-import { enqueueServe, isNetworkFailure, newOfflineId, startOfflineSync } from "@/lib/offlineQueue";
+import { enqueueServe, isNetworkFailure, newOfflineId, startOfflineSync, saveStopDeliveriesToOutbox, syncOutbox } from "@/lib/offlineQueue";
 
 export { API_BASE };
 
@@ -18,7 +18,16 @@ async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): P
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `Request failed: ${res.status}`);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
+    const err: any = new Error(parsed?.error || parsed?.message || parsed?.detail || text || `Request failed: ${res.status}`);
+    err.status = res.status;
+    err.data = parsed;
+    throw err;
   }
 
   if (res.status === 204) return undefined as T;
@@ -317,34 +326,69 @@ export const api = {
       }
     }
 
-    // Server sends the notification with photo LINKS (no attachments).
-    // Do NOT send a second client-side email with imageUrl/imageData — that
-    // re-attached only Photo 1 and dropped the rest.
     const payload: Record<string, unknown> = {
       ...serveData,
       thumbnailData,
       sendEmail: serveData.sendEmail !== false,
       id: serveData.id || newOfflineId(),
     };
-    try {
+
+    // If caller is an internal offline sync replay, send raw POST to server
+    if (serveData._offlineReplay) {
       return await apiFetch<Record<string, unknown>>("/api/serves", {
         method: "POST",
         body: JSON.stringify(payload),
       });
-    } catch (err) {
-      if (serveData._offlineReplay) throw err;
-      if (isNetworkFailure(err) || (typeof navigator !== "undefined" && navigator.onLine === false)) {
-        const queued = await enqueueServe(payload, err instanceof Error ? err.message : "offline");
-        return {
-          id: queued.id,
-          offlineQueued: true,
-          status: payload.status,
-          case_number: payload.case_number || payload.caseNumber,
-          person_being_served: payload.person_being_served || payload.personBeingServed,
-        };
-      }
-      throw err;
     }
+
+    // Direct caller: MUST NOT bypass write-ahead!
+    // 1. Write-ahead into local outbox first
+    const outboxItems = await saveStopDeliveriesToOutbox([{
+      payload,
+      photos: Array.isArray(serveData.photos) ? (serveData.photos as any) : undefined,
+    }]);
+
+    // 2. Perform sync with real post and confirm handlers
+    const syncRes = await syncOutbox({
+      targetIds: outboxItems.map((item) => item.id),
+      forceAll: true,
+      postFn: (p) => api.createServeAttempt({ ...p, _offlineReplay: true }),
+      confirmFn: (id, fp) => api.confirmServeAttempt(id, fp),
+    });
+
+    const singleResult = syncRes.results.find((r) => r.id === outboxItems[0]?.id);
+    if (singleResult?.receipt) {
+      return singleResult.receipt;
+    }
+    return {
+      id: outboxItems[0]?.id || (payload.id as string),
+      state: singleResult?.state || "pending",
+      status: payload.status,
+      case_number: payload.case_number || payload.caseNumber,
+      person_being_served: payload.person_being_served || payload.personBeingServed,
+    };
+  },
+
+  async confirmServeAttempt(serveId: string, fingerprint: string) {
+    try {
+      return await apiFetch<{ status?: number; confirmed?: boolean; [k: string]: unknown }>(
+        `/api/serves/${serveId}/confirm?fingerprint=${encodeURIComponent(fingerprint)}`
+      );
+    } catch (err: any) {
+      return {
+        status: typeof err?.status === "number" ? err.status : undefined,
+        confirmed: false,
+        error: err?.data?.error || err?.data?.message || err?.message || "Confirmation failed",
+        data: err?.data,
+      };
+    }
+  },
+
+  async duplicateJobForReservice(sourceCaseId: string) {
+    return apiFetch<Record<string, unknown>>(`/api/cases/${sourceCaseId}/reservice`, {
+      method: "POST",
+      body: JSON.stringify({ action: "reservice" }),
+    });
   },
 
   async updateServeAttempt(serveId: string | Record<string, unknown>, serveData: Record<string, unknown>) {
@@ -786,11 +830,13 @@ export async function checkApiConnection() {
 export default api;
 
 if (typeof window !== "undefined") {
-  startOfflineSync((payload) =>
-    apiFetch("/api/serves", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    })
+  startOfflineSync(
+    (payload) =>
+      apiFetch("/api/serves", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    (id, fingerprint) => api.confirmServeAttempt(id, fingerprint)
   );
 }
 // cache-bust-1780205190

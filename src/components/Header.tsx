@@ -24,9 +24,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { useAuth } from "@/context/AuthContext";
-import { flushPending, subscribePending, type PendingServe } from "@/lib/offlineQueue";
+import { subscribePending, type PendingServe } from "@/lib/offlineQueue";
 import { api } from "@/lib/api";
 import NotificationBell from "./NotificationBell";
+import { PendingSyncDrawer } from "./PendingSyncDrawer";
 
 export function Header() {
   const navigate = useNavigate();
@@ -35,21 +36,11 @@ export function Header() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { user, isAdmin, isServer, signOut } = useAuth();
   const [pendingCount, setPendingCount] = useState(0);
+  const [isPendingDrawerOpen, setIsPendingDrawerOpen] = useState(false);
 
   useEffect(() => {
     return subscribePending((items: PendingServe[]) => setPendingCount(items.length));
   }, []);
-
-  const handleFlush = async () => {
-    const result = await flushPending((payload) =>
-      api.createServeAttempt({ ...payload, _offlineReplay: true })
-    );
-    if (result.ok) {
-      toast({ title: "Synced", description: `${result.ok} pending attempt${result.ok === 1 ? "" : "s"} uploaded.` });
-    } else if (result.fail) {
-      toast({ title: "Still offline", description: "Could not upload pending attempts yet.", variant: "destructive" });
-    }
-  };
 
   const handleLogout = async () => {
     await signOut();
@@ -133,7 +124,7 @@ export function Header() {
                 className={mobileNavLink({ isActive: false })}
                 onClick={() => {
                   setIsMenuOpen(false);
-                  void handleFlush();
+                  setIsPendingDrawerOpen(true);
                 }}
               >
                 <CloudOff className="h-5 w-5 text-amber-600" />
@@ -209,7 +200,19 @@ export function Header() {
               )}
             </div>
             <div className="flex items-center gap-3 shrink-0 pl-1.5">
-              <NotificationBell />
+              {pendingCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="md:hidden text-amber-700 hover:bg-amber-50 px-2 h-9"
+                onClick={() => setIsPendingDrawerOpen(true)}
+                title="Pending sync outbox"
+              >
+                <CloudOff className="h-4 w-4 mr-1 text-amber-600" />
+                <span className="text-xs font-semibold">{pendingCount}</span>
+              </Button>
+            )}
+            <NotificationBell />
               <Button 
                 variant="default" 
                 size="sm" 
@@ -322,8 +325,8 @@ export function Header() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleFlush}
-                  className="flex items-center text-amber-700 border-amber-300"
+                  onClick={() => setIsPendingDrawerOpen(true)}
+                  className="flex items-center text-amber-700 border-amber-300 hover:bg-amber-50"
                 >
                   <CloudOff className="h-4 w-4 mr-1" />
                   Pending {pendingCount}
@@ -349,6 +352,7 @@ export function Header() {
           </>
         )}
       </div>
+      <PendingSyncDrawer open={isPendingDrawerOpen} onOpenChange={setIsPendingDrawerOpen} />
     </header>
   );
 }

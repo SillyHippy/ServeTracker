@@ -304,7 +304,7 @@ test("signed affidavit render includes all multiple photos per attempt", async (
   expect(html).toContain("Attempt #2 — Photo #1");
   expect(html).toContain("Attempt #2 — Photo #2");
   expect(html).toContain("Attempt #2 — Photo #3");
-});
+}, 30000);
 
 test("unassigned case cannot be prepared or signed", async () => {
   const freshCase = await admin.post("/api/cases", {

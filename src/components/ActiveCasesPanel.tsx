@@ -32,6 +32,7 @@ import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/context/AuthContext";
 import FieldSheetButton from "./FieldSheetButton";
+import { ReserviceJobDialog } from "./ReserviceJobDialog";
 import NudgeServerDialog from "./NudgeServerDialog";
 import ServerAssignmentPanel from "./ServerAssignmentPanel";
 import EditCaseDialog from "./EditCaseDialog";
@@ -128,6 +129,7 @@ export default function ActiveCasesPanel({
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [markPaidTarget, setMarkPaidTarget] = useState<ActiveCaseItem | null>(null);
   const [docsTarget, setDocsTarget] = useState<ActiveCaseItem | null>(null);
+  const [reserviceCase, setReserviceCase] = useState<ActiveCaseItem | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const fetchActiveCases = async () => {
@@ -546,6 +548,19 @@ export default function ActiveCasesPanel({
                       <FileText className="h-3.5 w-3.5 mr-1" />
                       Documents
                     </Button>
+                    {canonicalStatus(item.status) === "served" && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs px-2 text-indigo-700 border-indigo-300 hover:bg-indigo-50 font-semibold"
+                        onClick={() => setReserviceCase(item)}
+                        title="Create separate re-service job without altering this served record"
+                      >
+                        <Copy className="h-3.5 w-3.5 mr-1 text-indigo-600" />
+                        Re-service
+                      </Button>
+                    )}
                     <AffidavitGenerator
                       buttonClassName="h-8 text-xs px-2 font-semibold"
                       client={{
@@ -615,6 +630,12 @@ export default function ActiveCasesPanel({
         )}
       </CardContent>
 
+      <ReserviceJobDialog
+        open={Boolean(reserviceCase)}
+        onOpenChange={(open) => !open && setReserviceCase(null)}
+        caseItem={reserviceCase}
+        onSuccess={fetchActiveCases}
+      />
       <MarkPaidDialog
         open={Boolean(markPaidTarget)}
         onOpenChange={(open) => !open && setMarkPaidTarget(null)}

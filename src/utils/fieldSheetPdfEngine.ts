@@ -5,6 +5,16 @@ function clean(val: unknown): string {
   return String(val ?? "").trim();
 }
 
+/** Parse optional field intelligence from clean operational notes. */
+function subjectIntel(notes: unknown): { age: string; sex: string; vehicle: string } {
+  const text = clean(notes);
+  const age = text.match(/(?:approx(?:imate)?\.?\s*age|age)\s*:\s*(\d{1,3})/i)?.[1] || "[   ]";
+  const rawSex = text.match(/sex\s*:\s*(female|male|f|m)\b/i)?.[1] || "";
+  const sex = /^f/i.test(rawSex) ? "F" : /^m/i.test(rawSex) ? "M" : "[ M / F ]";
+  const vehicle = text.match(/vehicle\s*:\s*([^;\n]+)/i)?.[1]?.trim() || "[                           ]";
+  return { age, sex, vehicle };
+}
+
 /**
  * Generates a clean, professional, single-page Letter PDF (612 x 792 pt)
  * for the Field Sheet using pdf-lib.
@@ -134,9 +144,9 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
   // Phone / Contact Box on Right
   if (data.contactInfo) {
     const phoneBoxW = 175;
-    const phoneBoxH = 48;
+    const phoneBoxH = 58;
     const phoneBoxX = 612 - margin - phoneBoxW - 8;
-    const phoneBoxY = y - bannerHeight + 8;
+    const phoneBoxY = y - bannerHeight + 3;
 
     page.drawRectangle({
       x: phoneBoxX,
@@ -148,21 +158,21 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
       borderWidth: 1,
     });
 
-    page.drawText("CONTACT / PHONE:", {
+    page.drawText("POSSIBLE CONTACT / PHONE:", {
       x: phoneBoxX + 6,
-      y: phoneBoxY + phoneBoxH - 11,
-      size: 7.5,
+      y: phoneBoxY + phoneBoxH - 10,
+      size: 7,
       font: fontBold,
       color: darkGray,
     });
 
-    const contactLines = wrapText(clean(data.contactInfo), fontBold, 9, phoneBoxW - 12);
-    contactLines.slice(0, 2).forEach((line, idx) => {
+    const contactLines = wrapText(clean(data.contactInfo), fontRegular, 7.2, phoneBoxW - 12);
+    contactLines.slice(0, 5).forEach((line, idx) => {
       page.drawText(line, {
         x: phoneBoxX + 6,
-        y: phoneBoxY + phoneBoxH - 23 - idx * 11,
-        size: 9,
-        font: fontBold,
+        y: phoneBoxY + phoneBoxH - 20 - idx * 8,
+        size: 7.2,
+        font: fontRegular,
         color: black,
       });
     });
@@ -363,7 +373,8 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
   y -= (tableH + 10);
 
   // ================= 6. PHYSICAL DESCRIPTION CHECKLIST =================
-  const descBoxH = 46;
+  const intel = subjectIntel(data.notes);
+  const descBoxH = 58;
   page.drawRectangle({
     x: margin,
     y: y - descBoxH,
@@ -382,7 +393,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     color: darkGray,
   });
 
-  page.drawText("Age: [   ]  |  Sex: [ M / F ]  |  Height: [      ]  |  Weight: [      ]  |  Hair: [            ]  |  Eyes: [         ]  |  Glasses: [ Y / N ]", {
+  page.drawText(`Age: ${intel.age}  |  Sex: ${intel.sex}  |  Height: [      ]  |  Weight: [      ]  |  Hair: [            ]  |  Eyes: [         ]  |  Glasses: [ Y / N ]`, {
     x: margin + 6,
     y: y - 26,
     size: 8.5,
@@ -390,9 +401,17 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     color: black,
   });
 
-  page.drawText("Military Status: [  ] Active Duty   [  ] Not Active   |   Relationship: [  ] Defendant/Subject   [  ] Spouse/Co-Resident", {
+  page.drawText(`Vehicle / Plate: ${intel.vehicle}`.slice(0, 118), {
     x: margin + 6,
     y: y - 38,
+    size: 8.5,
+    font: fontBold,
+    color: black,
+  });
+
+  page.drawText("Military Status: [  ] Active Duty   [  ] Not Active   |   Relationship: [  ] Defendant/Subject   [  ] Spouse/Co-Resident", {
+    x: margin + 6,
+    y: y - 50,
     size: 8.5,
     font: fontRegular,
     color: black,

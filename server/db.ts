@@ -17,12 +17,12 @@ export function createDb() {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA foreign_keys = ON;");
-  // Durability hardening for hosts where the data directory sits on a network filesystem
-  // (9p): a hard container restart can drop recently written WAL tail frames, silently
-  // losing committed rows (2026-09-16: a serve attempt + its notification/sms rows vanished
-  // after a restart even though the client email and SMS had already been dispatched).
-  // Keep every commit fsynced, never mmap, and keep the WAL short so the DB file itself is
-  // rewritten (and synced) often instead of resting in a long-lived WAL.
+  // Durability hardening for this host: "/" is a 9p network filesystem whose write-back
+  // cache can drop recently written WAL tail frames when the container is hard-restarted
+  // (2026-09-16: a committed serve attempt + its notification/sms rows vanished after an
+  // 18:49 restart, even though the client email and the SMS had already been dispatched).
+  // Keep every commit fsynced, never mmap on 9p, and keep the WAL short so the DB file
+  // itself gets rewritten (and synced) often instead of resting in a long-lived WAL.
   db.exec("PRAGMA synchronous = FULL;");
   db.exec("PRAGMA wal_autocheckpoint = 128;");
   db.exec("PRAGMA mmap_size = 0;");
@@ -113,6 +113,9 @@ function initSchema(db: Database) {
       image_data TEXT DEFAULT '',
       timestamp TEXT NOT NULL,
       attempt_number INTEGER DEFAULT 1,
+      payload_fingerprint TEXT DEFAULT '',
+      sync_version INTEGER DEFAULT 1,
+      committed_at TEXT DEFAULT '',
       FOREIGN KEY (client_id) REFERENCES clients(id)
     );
 
@@ -288,8 +291,12 @@ function runMigrations(db: Database) {
   // Rows sharing an event_id are one physical encounter (one stop, one GPS fix,
   // one photo set) that delivered papers to more than one legal recipient.
   addCol("event_id", "TEXT DEFAULT ''");
+  addCol("payload_fingerprint", "TEXT DEFAULT ''");
+  addCol("sync_version", "INTEGER DEFAULT 1");
+  addCol("committed_at", "TEXT DEFAULT ''");
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_case ON serve_attempts(case_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_serves_event ON serve_attempts(event_id);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_serves_fingerprint ON serve_attempts(payload_fingerprint);");
 
   // Backfill occurred_at and entered_at for older rows
   db.exec(`
@@ -300,6 +307,11 @@ function runMigrations(db: Database) {
     UPDATE serve_attempts 
     SET entered_at = timestamp 
     WHERE entered_at IS NULL OR entered_at = '';
+
+    UPDATE serve_attempts 
+    SET committed_at = timestamp 
+    WHERE (committed_at IS NULL OR committed_at = '')
+      AND timestamp IS NOT NULL AND timestamp != '';
   `);
 
   // Self-event backfill: every pre-existing row is its own encounter, so

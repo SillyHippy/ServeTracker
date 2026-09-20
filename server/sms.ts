@@ -9,7 +9,7 @@ function getDb(): Database {
     _smsDb = new Database(DB_PATH);
     _smsDb.exec("PRAGMA journal_mode = WAL;");
     _smsDb.exec("PRAGMA busy_timeout = 5000;");
-    // Same durability hardening as server/db.ts (keep commits fsynced, no mmap).
+    // Same durability hardening as server/db.ts (9p rootfs: keep commits fsynced, no mmap).
     _smsDb.exec("PRAGMA synchronous = FULL;");
     _smsDb.exec("PRAGMA mmap_size = 0;");
   }
@@ -39,11 +39,11 @@ export function normalizePhoneNumber(raw: string): string {
 }
 
 export async function sendSms(params: SendSmsParams): Promise<{ success: boolean; id?: string; error?: string }> {
-  const isEnabled = (process.env.SMS_GATEWAY_ENABLED || "false") === "true";
-  const user = process.env.SMS_GATEWAY_USER || "";
-  const pass = process.env.SMS_GATEWAY_PASS || "";
+  const isEnabled = (process.env.SMS_GATEWAY_ENABLED || "true") === "true";
+  const user = process.env.SMS_GATEWAY_USER || "PHASM1";
+  const pass = process.env.SMS_GATEWAY_PASS || "k4j1hqitisdysd";
   const apiUrl = process.env.SMS_GATEWAY_API_URL || "https://api.sms-gate.app/3rdparty/v1/messages";
-  const deviceId = process.env.SMS_GATEWAY_DEVICE_ID || "";
+  const deviceId = process.env.SMS_GATEWAY_DEVICE_ID || "clN0YGvvkHt4r7tCrB6wQ";
 
   if (!isEnabled) {
     console.log("[SMS] SMS Gateway is disabled in environment");

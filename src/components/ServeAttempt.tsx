@@ -21,6 +21,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ServeAttemptData, ServeRecipient } from "@/types/ServeAttemptData";
 import { PhotoUploader, PhotoSlot } from "./PhotoUploader";
+import { saveStopDeliveriesToOutbox, syncOutbox, StorageQuotaError, newOfflineId } from "@/lib/offlineQueue";
 import {
   buildStopDeliveriesFromForm,
   defaultCompanionMethods,
@@ -465,13 +466,13 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         entityName: entityName || corporateAgent, entity_name: entityName || corporateAgent,
         recipientTitle, recipient_title: recipientTitle,
       };
-      // One POST per legal delivery. Same event_id = one physical stop.
-      // NewServe.onComplete must NOT createServeAttempt again.
-      let saved: any = null;
-      for (const delivery of deliveries) {
+      // Build payloads for all deliveries at this stop
+      const deliveryPayloads = deliveries.map((delivery) => {
         const deliveryStatus = delivery.status || data.status;
-        const serveData = {
+        const id = newOfflineId();
+        return {
           ...shared,
+          id,
           status: deliveryStatus,
           recipient_id: delivery.recipientId === "default_pbs" ? "" : delivery.recipientId,
           person_being_served: delivery.personName,
@@ -484,23 +485,124 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
             ? [data.notes, delivery.notes].filter(Boolean).join(" — ") || "not home"
             : (data.notes || ""),
         };
-        saved = await api.createServeAttempt(serveData);
-      }
-      const names = deliveries.map((d) => d.personName).filter(Boolean).join(" · ");
-      if ((saved as any)?.offlineQueued) {
-        toast({ title: "Saved on this phone", description: "No signal — will upload when you are back online." });
-      } else {
-        toast({ title: "Serve recorded", description: `Saved ${deliveries.length} ${deliveries.length === 1 ? "person" : "people"} at this stop${names ? `: ${names}` : ""}` });
+      });
+
+      // 1. WRITE-AHEAD: Save all deliveries in ONE transaction into outbox before first network POST
+      let outboxItems;
+      try {
+        outboxItems = await saveStopDeliveriesToOutbox(
+          deliveryPayloads.map((payload) => ({
+            payload,
+            photos: photos as any,
+          }))
+        );
+      } catch (saveErr) {
+        if (saveErr instanceof StorageQuotaError) {
+          toast({
+            title: "Storage Quota Exceeded",
+            description: "Storage quota exceeded on this device. Free up storage to save photos. Form has not been reset.",
+            variant: "destructive",
+          });
+          return;
+        }
+        throw saveErr;
       }
 
-      form.reset(); setLocation(null); setGpsStatus("idle");
-      setSelectedClient(null); setSelectedCase(null); setPhotos([]);
-      setAcceptedBy(""); setRefusedToIdentify(false); setPostingLocation("front_door");
-      setCorporateAgent(""); setEntityName(""); setRecipientTitle("Registered Agent");
-      setServiceMethod("personal");
-      setCompanionMethods({});
-      setIsManualLog(false); setStep("select");
-      if (onComplete) onComplete({ ...shared, ...(saved || {}), id: (saved as any)?.id || eventId });
+      // 2. Run unified sync for these stop items
+      const syncRes = await syncOutbox({
+        targetIds: outboxItems.map((item) => item.id),
+        forceAll: true,
+        postFn: (p) => api.createServeAttempt({ ...p, _offlineReplay: true }),
+        confirmFn: (id, fp) => api.confirmServeAttempt(id, fp),
+      });
+
+      // 3. Truthful UX reporting: evaluate per-delivery outcomes
+      const outcomes = outboxItems.map((item) => {
+        const r = syncRes.results.find((res) => res.id === item.id);
+        const state = r?.state || item.state;
+        return {
+          id: item.id,
+          name: item.personName || "Recipient",
+          state,
+          receipt: r?.receipt,
+          error: r?.error || item.lastError,
+        };
+      });
+
+      const allSkipped = outcomes.every((o) => o.state === "skipped");
+      const allVerified = outcomes.every((o) => o.state === "verified");
+      const allPending = outcomes.every((o) => o.state === "pending" || o.state === "posting");
+      const names = outcomes.map((o) => o.name).filter(Boolean).join(", ");
+
+      if (allSkipped) {
+        toast({
+          title: "Already Served",
+          description: `No new attempt was recorded for ${names} (already served).`,
+        });
+      } else if (allVerified) {
+        toast({
+          title: "Serve recorded and verified",
+          description: `Verified ${outcomes.length} ${outcomes.length === 1 ? "person" : "people"} at this stop${names ? `: ${names}` : ""}.`,
+        });
+      } else if (allPending) {
+        toast({
+          title: "Saved on this phone (Outbox)",
+          description: "No signal — saved locally and will upload and verify automatically when connected.",
+        });
+      } else {
+        // Multi-recipient partial / mixed outcomes: report each individually
+        const summary = outcomes
+          .map((o) => {
+            if (o.state === "verified") return `${o.name}: Serve recorded and verified.`;
+            if (o.state === "skipped") return `${o.name}: No new attempt recorded (already served).`;
+            if (o.state === "archived") return `${o.name}: Archived awaiting restore.`;
+            if (o.state === "conflict") return `${o.name}: Conflict (409) — duplicate ID.`;
+            if (o.state === "blocked") return `${o.name}: Blocked (${o.error || "error"}).`;
+            return `${o.name}: Saved to outbox (offline).`;
+          })
+          .join("\n");
+
+        toast({
+          title: "Stop recorded (partial outcomes)",
+          description: summary,
+        });
+      }
+
+      // 4. Reset the stop ONLY when every delivery reached a terminal good state
+      //    (verified server-side, or deliberately skipped as already served).
+      //    On archived / conflict / blocked / offline-pending the field server
+      //    must keep the form on screen with the photos and typed data intact,
+      //    otherwise they walk away believing a serve was recorded that was not.
+      const canLeaveStop =
+        outcomes.length > 0 &&
+        outcomes.every((o) => o.state === "verified" || o.state === "skipped");
+
+      if (canLeaveStop) {
+        form.reset(); setLocation(null); setGpsStatus("idle");
+        setSelectedClient(null); setSelectedCase(null); setPhotos([]);
+        setAcceptedBy(""); setRefusedToIdentify(false); setPostingLocation("front_door");
+        setCorporateAgent(""); setEntityName(""); setRecipientTitle("Registered Agent");
+        setServiceMethod("personal");
+        setCompanionMethods({});
+        setIsManualLog(false); setStep("select");
+      } else if (!allPending) {
+        // Stay on the stop so nothing is lost; the outbox drawer shows what is
+        // still outstanding and the user can retry from there.
+        toast({
+          title: "Not finished — stay on this serve",
+          description:
+            "Some attempts are not confirmed saved. Your photos and details are kept; retry from the Sync panel before leaving.",
+          variant: "destructive",
+        });
+      }
+
+      // Only tell the parent we are done when the stop is genuinely finished.
+      // onComplete navigates to /history; firing it on conflict/blocked/archived
+      // silently parks the serve in the phone's outbox where the field server
+      // never sees it again.
+      if (onComplete && canLeaveStop) {
+        onComplete({ ...shared, id: outboxItems[0]?.id || eventId, outcomes });
+      }
     } catch (err) {
       console.error("Error saving:", err);
       const msg = err instanceof Error ? err.message : "Failed to save attempt.";

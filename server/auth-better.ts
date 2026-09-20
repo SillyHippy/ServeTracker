@@ -8,13 +8,13 @@ const db = new Database(DB_PATH);
 db.run("PRAGMA journal_mode = WAL;");
 db.run("PRAGMA busy_timeout = 5000;");
 
-const baseURL = process.env.PUBLIC_BASE_URL || "http://localhost:3150";
+const baseURL = process.env.PUBLIC_BASE_URL || "https://servetracker.justlegalsolutions.org";
 
 export const auth = betterAuth({
   database: db,
   baseURL,
   basePath: "/api/auth",
-  secret: process.env.BETTER_AUTH_SECRET || "change-me-better-auth-secret",
+  secret: process.env.BETTER_AUTH_SECRET || "servetracker_secure_secret_better_auth_2026_881474473915",
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
@@ -53,9 +53,12 @@ export const auth = betterAuth({
     },
   },
   trustedOrigins: [
-    baseURL,
+    "https://servetracker.justlegalsolutions.org",
+    "https://servetracker-beta-sillyhippy.zocomputer.io",
+    "https://servetracker-sillyhippy.zocomputer.io",
     "http://localhost:5173",
     "http://localhost:3150",
+    "http://localhost:3151",
     "http://localhost:3153",
   ],
 });

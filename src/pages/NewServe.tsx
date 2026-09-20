@@ -73,14 +73,8 @@ const NewServe: React.FC<NewServeProps> = ({ clients: propClients, addServe }) =
   };
 
   const handleServeComplete = async (_serveData: ServeAttemptData) => {
-    // ServeAttempt.tsx already POSTs /api/serves once.
-    // Do NOT call createServeAttempt again here — that was causing
-    // duplicate DB rows and duplicate client emails.
-    toast({
-      title: "Serve recorded",
-      description: "Service attempt has been saved successfully.",
-      variant: "success",
-    });
+    // ServeAttempt.tsx already handles truthful feedback per delivery outcome.
+    // Do NOT emit a second unconditional success toast here.
     navigate("/history");
   };
 

@@ -2,6 +2,8 @@
  * Serve attempt notification email — photo LINKS + Maps (no Photo-1-only attachment).
  */
 
+import { humanizePostingLocation, isPostingMethod } from "./serveMethod";
+
 export function escapeHtml(str: unknown): string {
   if (str === null || str === undefined) return "";
   return String(str)
@@ -100,6 +102,13 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
     ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
     : "";
 
+  // Posting location is only relevant to posting service: personal / substituted /
+  // corporate logs used to carry the phone form's "front_door" default, which must
+  // never be echoed to the client next to "Method of Service: Personal Service".
+  const postingLocationText = isPostingMethod(input.serviceMethod)
+    ? humanizePostingLocation(input.postingLocation)
+    : "";
+
   const photoList = Array.isArray(input.photos) ? input.photos : [];
   const base = input.publicBase.replace(/\/$/, "");
 
@@ -168,7 +177,7 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
               ${input.entityName ? `<p style="margin:0 0 8px 0;"><strong>Entity Served:</strong> <strong>${escapeHtml(input.entityName)}</strong></p>` : ""}
               ${input.acceptedBy ? `<p style="margin:0 0 8px 0;"><strong>Accepted By:</strong> <span style="color:#0f172a;font-weight:bold;">${escapeHtml(input.acceptedBy)}${input.recipientTitle ? ` (${escapeHtml(input.recipientTitle)})` : ""}</span></p>` : ""}
               ${input.serviceMethod ? `<p style="margin:0 0 8px 0;"><strong>Method of Service:</strong> ${escapeHtml(methodLabel(input.serviceMethod))}</p>` : ""}
-              ${input.postingLocation ? `<p style="margin:0 0 8px 0;"><strong>Posting Location:</strong> ${escapeHtml(input.postingLocation)}</p>` : ""}
+              ${postingLocationText ? `<p style="margin:0 0 8px 0;"><strong>Posting Location:</strong> ${escapeHtml(postingLocationText)}</p>` : ""}
               <p style="margin:0 0 8px 0;"><strong>Case Number:</strong> ${escapeHtml(input.caseNumber)}</p>
               <p style="margin:0 0 8px 0;"><strong>Person / Matter:</strong> ${escapeHtml(input.caseName)}</p>
               <p style="margin:0 0 8px 0;"><strong>Date & Time:</strong> ${escapeHtml(occurredText)} CT</p>

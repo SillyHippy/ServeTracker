@@ -1,9 +1,22 @@
 import type { Context } from "hono";
 import { randomUUID, createHash } from "crypto";
 import { writeFile, unlink, mkdir } from "fs/promises";
+import { mkdirSync, copyFileSync, rmSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import type { Db } from "./db";
 import { UPLOADS_DIR, checkpointWal } from "./db";
+import {
+  putServeArchivePayload,
+  putServeArchive,
+  writeTombstone,
+  hasTombstone,
+  deleteArchiveKey,
+  dualshieldPrefix,
+  hotBufferTmpDir,
+  type ServeTombstone,
+} from "./lib/hotBuffer";
+import { withReconcileLock } from "./lib/reconciler";
+import { computePayloadFingerprint } from "./serveFingerprint";
 import { sendEmail } from "./email";
 import {
   createHelcimInvoice,
@@ -164,7 +177,7 @@ function escapeHtml(str: unknown): string {
 /** Peer scope for attempt numbering: recipient first, else the immutable case UUID.
  * The case number is a court identifier, not a job identifier: a re-serve may
  * legitimately reuse it and must begin at Attempt 1. */
-function attemptPeerWhere(opts: {
+export function attemptPeerWhere(opts: {
   recipientId?: string | null;
   caseId?: string | null;
   clientId?: string | null;
@@ -191,7 +204,7 @@ function attemptPeerWhere(opts: {
 }
 
 /** Resequence attempt_number 1..N by occurred_at for peers in the same job. */
-function renumberAttemptPeers(
+export function renumberAttemptPeers(
   db: Db,
   opts: {
     recipientId?: string | null;
@@ -216,37 +229,116 @@ function renumberAttemptPeers(
 }
 
 /**
- * Mark a case Served only after every named recipient has a successful,
- * recipient-scoped attempt. A shared-address case must stay active after the
- * first person is served so the remaining people are still selectable.
- * Single-recipient and legacy cases keep the historical one-success behavior.
+ * Recompute recipient and case status:
+ * Deleting or modifying an attempt demotes recipient and case appropriately
+ * without harming multi-recipient cases.
  */
-function maybeMarkCaseServed(db: Db, caseId: string | null | undefined, status: string) {
-  const id = String(caseId || "").trim();
-  if (!id) return false;
-  const s = String(status || "").toLowerCase().trim();
-  if (s !== "completed" && s !== "served") return false;
+export function recomputeRecipientAndCaseStatus(
+  db: Db,
+  caseId: string | null | undefined,
+  recipientId?: string | null | undefined,
+): void {
+  const cId = String(caseId || "").trim();
+  if (!cId) return;
 
+  const caseRow = db.query("SELECT id, status FROM client_cases WHERE id = ?").get(cId) as {
+    id: string;
+    status: string;
+  } | null;
+  if (!caseRow) return;
+
+  // 1. Recompute recipient status
   const recipients = db
-    .query("SELECT id FROM serve_recipients WHERE case_id = ?")
-    .all(id) as { id: string }[];
-  const allRecipientsServed =
-    recipients.length <= 1 ||
-    recipients.every((recipient) =>
-      Boolean(
-        db
-          .query(
-            `SELECT 1 FROM serve_attempts
-             WHERE case_id = ? AND recipient_id = ?
-               AND LOWER(COALESCE(status, '')) IN ('completed', 'served')
-             LIMIT 1`
-          )
-          .get(id, recipient.id)
-      )
-    );
+    .query("SELECT id, status FROM serve_recipients WHERE case_id = ?")
+    .all(cId) as { id: string; status: string }[];
 
-  if (!allRecipientsServed) return false;
-  db.query("UPDATE client_cases SET status = ?, updated_at = ? WHERE id = ?").run("Served", nowIso(), id);
+  const recsToUpdate = recipientId ? recipients.filter((r) => r.id === recipientId) : recipients;
+
+  for (const rec of recsToUpdate) {
+    const successRow = db
+      .query(
+        `SELECT 1 FROM serve_attempts
+         WHERE case_id = ? AND recipient_id = ?
+           AND LOWER(COALESCE(status, '')) IN ('completed', 'served')
+         LIMIT 1`,
+      )
+      .get(cId, rec.id);
+
+    if (successRow) {
+      if (rec.status !== "Served") {
+        db.query("UPDATE serve_recipients SET status = 'Served', updated_at = ? WHERE id = ?").run(
+          nowIso(),
+          rec.id,
+        );
+      }
+    } else {
+      const anyAttempts = db
+        .query(`SELECT 1 FROM serve_attempts WHERE case_id = ? AND recipient_id = ? LIMIT 1`)
+        .get(cId, rec.id);
+      const newStatus = anyAttempts ? "In Progress" : "Pending";
+      if (rec.status === "Served" || rec.status !== newStatus) {
+        db.query("UPDATE serve_recipients SET status = ?, updated_at = ? WHERE id = ?").run(
+          newStatus,
+          nowIso(),
+          rec.id,
+        );
+      }
+    }
+  }
+
+  // 2. Recompute case status
+  // Cases marked Closed are preserved
+  if (String(caseRow.status || "").toLowerCase() === "closed") return;
+
+  const allRecs = db
+    .query("SELECT id FROM serve_recipients WHERE case_id = ?")
+    .all(cId) as { id: string }[];
+
+  let allServed = false;
+  if (allRecs.length <= 1) {
+    // 0 or 1 recipient: a single completed/served attempt on the case marks it Served.
+    // Mirrors pre-sync behavior; attempts logged without recipient_id still count.
+    const anySuccess = db
+      .query(
+        `SELECT 1 FROM serve_attempts
+         WHERE case_id = ? AND LOWER(COALESCE(status, '')) IN ('completed', 'served')
+         LIMIT 1`,
+      )
+      .get(cId);
+    allServed = Boolean(anySuccess);
+  } else {
+    allServed = allRecs.every((r) => {
+      const hasSuccess = db
+        .query(
+          `SELECT 1 FROM serve_attempts
+           WHERE case_id = ? AND recipient_id = ?
+             AND LOWER(COALESCE(status, '')) IN ('completed', 'served')
+           LIMIT 1`,
+        )
+        .get(cId, r.id);
+      return Boolean(hasSuccess);
+    });
+  }
+
+  if (allServed) {
+    if (caseRow.status !== "Served") {
+      db.query("UPDATE client_cases SET status = 'Served', updated_at = ? WHERE id = ?").run(
+        nowIso(),
+        cId,
+      );
+    }
+  } else {
+    if (caseRow.status === "Served") {
+      db.query("UPDATE client_cases SET status = 'Open', updated_at = ? WHERE id = ?").run(
+        nowIso(),
+        cId,
+      );
+    }
+  }
+}
+
+export function maybeMarkCaseServed(db: Db, caseId: string | null | undefined, status?: string) {
+  recomputeRecipientAndCaseStatus(db, caseId);
   return true;
 }
 
@@ -558,6 +650,18 @@ function serveRow(row: Record<string, unknown>, db?: Db, role: "admin" | "server
       oldStatus: e.old_status,
       newStatus: e.new_status,
     })),
+    payloadFingerprint: (row.payload_fingerprint as string) || "",
+    payload_fingerprint: (row.payload_fingerprint as string) || "",
+    syncVersion: Number(row.sync_version || 1),
+    sync_version: Number(row.sync_version || 1),
+    committedAt: (row.committed_at as string) || (row.timestamp as string) || "",
+    committed_at: (row.committed_at as string) || (row.timestamp as string) || "",
+    photoCount: photos.length || (row.image_url ? 1 : 0),
+    photo_count: photos.length || (row.image_url ? 1 : 0),
+    committed: true,
+    persisted: true,
+    serveId: row.id,
+    serve_id: row.id,
   };
 }
 
@@ -920,11 +1024,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       const status = String(r.payment_status || "").toUpperCase();
       return Boolean(r.invoice_id) && (status === "UNPAID" || status === "DUE");
     });
-    await Promise.all(unpaid.map((r) => refreshCaseInvoiceFromHelcim(db, r).catch(() => null)));
-    const refreshed = clientId !== undefined && clientId !== ""
-      ? (db.query("SELECT * FROM client_cases WHERE client_id = ? ORDER BY created_at DESC").all(clientId) as Record<string, unknown>[])
-      : (db.query("SELECT * FROM client_cases ORDER BY created_at DESC").all() as Record<string, unknown>[]);
-    return c.json(refreshed.map((r) => caseRow(r, "admin")));
+    // Never block New Serve / Active Cases on Helcim. A hung GET after a Zo
+    // recycle left the picker at Active Cases (0) even though SQLite had rows.
+    void Promise.all(unpaid.map((r) => refreshCaseInvoiceFromHelcim(db, r).catch(() => null)));
+    return c.json(rows.map((r) => caseRow(r, "admin")));
   });
 
   app.get("/api/cases/:id", async (c: Context) => {
@@ -937,8 +1040,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
     let row = db.query("SELECT * FROM client_cases WHERE id = ?").get(caseObj.id) as Record<string, unknown>;
     if (user.role === "admin") {
-      await refreshCaseInvoiceFromHelcim(db, row).catch(() => null);
-      row = db.query("SELECT * FROM client_cases WHERE id = ?").get(caseObj.id) as Record<string, unknown>;
+      // Fire-and-forget: NEVER let a hung Helcim GET block a case fetch. Same
+      // fix as GET /api/cases — a stalled invoice refresh used to freeze the
+      // case screen after a container recycle.
+      void refreshCaseInvoiceFromHelcim(db, row).catch(() => null);
     }
     return c.json(caseRow(row, user.role));
   });
@@ -1310,6 +1415,16 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     db.query("DELETE FROM affidavit_executions WHERE case_id = ?").run(id);
     db.query("DELETE FROM case_assignment_events WHERE case_id = ?").run(id);
     db.query("DELETE FROM serve_recipients WHERE case_id = ?").run(id);
+    const caseDocs = db.query("SELECT file_path FROM client_documents WHERE case_id = ?").all(id) as { file_path: string }[];
+    for (const d of caseDocs) {
+      await deleteDocumentFile(d.file_path);
+    }
+    db.query("DELETE FROM client_documents WHERE case_id = ?").run(id);
+    try {
+      const { resolve } = await import("path");
+      const caseDocDir = join(resolve(UPLOADS_DIR, "documents"), id);
+      if (existsSync(caseDocDir)) rmSync(caseDocDir, { recursive: true, force: true });
+    } catch {}
     db.query("DELETE FROM client_cases WHERE id = ?").run(id);
     logAuditEvent(db, {
       event_type: "case.delete",
@@ -1320,6 +1435,195 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       user_agent: c.req.header("user-agent") || "",
     });
     return c.json({ success: true });
+  });
+
+  // Re-Service Route (POST /api/cases/:id/reservice) - Admin only, Idempotent
+  app.post("/api/cases/:id/reservice", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+
+    const parentId = c.req.param("id");
+    const parentCase = db.query("SELECT * FROM client_cases WHERE id = ?").get(parentId) as Record<string, unknown> | null;
+    if (!parentCase) {
+      return c.json({ error: "Parent case not found" }, 404);
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const idempotencyKey = String(
+      c.req.header("idempotency-key") || body?.idempotency_key || body?.idempotencyKey || "",
+    ).trim();
+
+    // Idempotent replay: if idempotency key provided, return matching child
+    if (idempotencyKey) {
+      const priorReservice = db.query(
+        `SELECT target_resource_id, details FROM audit_logs
+         WHERE event_type = 'case.reservice'
+         ORDER BY id DESC LIMIT 50`
+      ).all() as { target_resource_id: string; details?: string }[];
+
+      for (const log of priorReservice) {
+        try {
+          const det = typeof log.details === "string" ? JSON.parse(log.details) : (log.details || {});
+          if (det.parent_case_id === parentId && det.idempotency_key === idempotencyKey) {
+            const existingChild = db.query("SELECT * FROM client_cases WHERE id = ?").get(log.target_resource_id) as Record<string, unknown> | null;
+            if (existingChild) {
+              return c.json(caseRow(existingChild, "admin"), 200);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const childId = newId();
+    const ts = nowIso();
+
+    // Documents to copy: explicit selected document IDs
+    const selectedDocIds: string[] = Array.isArray(body?.document_ids)
+      ? (body.document_ids as string[])
+      : (Array.isArray(body?.documentIds) ? (body.documentIds as string[]) : []);
+
+    const copiedDocIds: string[] = [];
+    const { resolve, sep } = await import("path");
+    const baseDocsDir = resolve(UPLOADS_DIR, "documents");
+
+    if (selectedDocIds.length > 0) {
+      const childDocsDir = join(baseDocsDir, childId);
+      mkdirSync(childDocsDir, { recursive: true });
+
+      for (const docId of selectedDocIds) {
+        const doc = db.query("SELECT * FROM client_documents WHERE id = ? AND case_id = ?").get(docId, parentId) as Record<string, unknown> | null;
+        if (!doc) continue;
+
+        const srcRel = String(doc.file_path || "");
+        const srcAbs = resolve(baseDocsDir, srcRel);
+        // Safe path traversal check
+        if (!srcAbs.startsWith(baseDocsDir + sep) && srcAbs !== baseDocsDir) {
+          continue;
+        }
+
+        const newDocId = newId();
+        const newFileId = newId();
+        const cleanName = sanitizeDocumentFilename(String(doc.file_name || "document.pdf"));
+        const targetFilename = `${newFileId}_${cleanName}`;
+        const targetAbs = join(childDocsDir, targetFilename);
+
+        if (existsSync(srcAbs)) {
+          try {
+            copyFileSync(srcAbs, targetAbs);
+            const targetRel = `${childId}/${targetFilename}`;
+            db.query(
+              `INSERT INTO client_documents (id, client_id, case_id, case_number, file_name, file_size, file_type, file_path, file_hash, description, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).run(
+              newDocId,
+              String(parentCase.client_id || ""),
+              childId,
+              String(parentCase.case_number || ""),
+              cleanName,
+              doc.file_size || 0,
+              doc.file_type || "application/pdf",
+              targetRel,
+              doc.file_hash || "",
+              doc.description || "Court Document",
+              ts,
+            );
+            copiedDocIds.push(newDocId);
+          } catch (docErr) {
+            console.warn(`[reservice] Failed to copy document ${docId}:`, docErr);
+          }
+        }
+      }
+    }
+
+    // SQLite transaction for child case + cloned recipients + audit
+    db.transaction(() => {
+      // 1. Insert child case: payment fields blank, quoted_fee blank, invoice blank
+      db.query(
+        `INSERT INTO client_cases (
+          id, client_id, case_number, case_name, court_name, plaintiff_petitioner,
+          defendant_respondent, home_address, work_address, documents_to_serve,
+          notes, service_requirements, contact_info, status, assigned_to, assigned_name,
+          quoted_fee, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        childId,
+        parentCase.client_id,
+        parentCase.case_number || "",
+        parentCase.case_name || "",
+        parentCase.court_name || "",
+        parentCase.plaintiff_petitioner || "",
+        parentCase.defendant_respondent || "",
+        parentCase.home_address || "",
+        parentCase.work_address || "",
+        parentCase.documents_to_serve || "",
+        parentCase.notes || "",
+        parentCase.service_requirements || "",
+        parentCase.contact_info || "",
+        "Open",
+        parentCase.assigned_to || "",
+        parentCase.assigned_name || "",
+        "", // quoted_fee blank
+        ts,
+        ts,
+      );
+
+      // 2. Clone recipients: new recipient IDs, status Active
+      const parentRecipients = db.query("SELECT * FROM serve_recipients WHERE case_id = ?").all(parentId) as Record<string, unknown>[];
+      for (const pr of parentRecipients) {
+        const newRecId = newId();
+        db.query(
+          `INSERT INTO serve_recipients (
+            id, case_id, client_id, full_name, role, description, status,
+            home_address, work_address, notes, personal_service_only, assigned_to, assigned_name,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          newRecId,
+          childId,
+          parentCase.client_id,
+          pr.full_name || "",
+          pr.role || "",
+          pr.description || "",
+          "Active",
+          pr.home_address || "",
+          pr.work_address || "",
+          pr.notes || "",
+          pr.personal_service_only ? 1 : 0,
+          pr.assigned_to || "",
+          pr.assigned_name || "",
+          ts,
+          ts,
+        );
+      }
+
+      // 3. Audit log: case.reservice
+      logAuditEvent(db, {
+        event_type: "case.reservice",
+        actor_user_id: user.id,
+        actor_role: user.role,
+        target_resource_id: childId,
+        ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+        user_agent: c.req.header("user-agent") || "",
+        details: {
+          parent_case_id: parentId,
+          child_case_id: childId,
+          document_ids: copiedDocIds,
+          idempotency_key: idempotencyKey,
+        },
+      });
+
+      // 4. Assignment events for child case only
+      if (parentCase.assigned_to) {
+        applyAssignment(db, childId, String(parentCase.assigned_to), user.id, "assigned");
+      }
+    })();
+
+    checkpointWal(db);
+
+    const childRow = db.query("SELECT * FROM client_cases WHERE id = ?").get(childId) as Record<string, unknown>;
+    return c.json(caseRow(childRow, "admin"), 201);
   });
 
   // Recipients (Person Being Served)
@@ -1560,9 +1864,67 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const body = await c.req.json();
     const id = body.id || newId();
 
+    // Check permanent off-box tombstone: Attempt UUIDs are immutable/non-reusable after delete
+    const isTombstoned = await hasTombstone(String(id));
+    if (isTombstoned) {
+      return c.json(
+        {
+          error: "tombstoned",
+          message: "Serve attempt ID has been deleted and cannot be reused",
+          serveId: String(id),
+        },
+        410,
+      );
+    }
+
+    const incomingFingerprint = computePayloadFingerprint(body);
+
     const existingById = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown> | null;
     if (existingById) {
-      return c.json(serveRow(existingById, db, user.role === "server" ? "server" : "admin"));
+      let existingFingerprint = String(existingById.payload_fingerprint || "").trim();
+      if (!existingFingerprint) {
+        // Safe legacy comparison: compute fingerprint from existing row + photos
+        const existingPhotos = db.query(
+          "SELECT * FROM serve_attempt_photos WHERE serve_id = ? ORDER BY position ASC"
+        ).all(id) as Record<string, unknown>[];
+        existingFingerprint = computePayloadFingerprint({ ...existingById, photos: existingPhotos });
+        if (existingFingerprint === incomingFingerprint) {
+          db.query(
+            "UPDATE serve_attempts SET payload_fingerprint = ?, committed_at = COALESCE(NULLIF(committed_at, ''), timestamp) WHERE id = ?"
+          ).run(existingFingerprint, id);
+          existingById.payload_fingerprint = existingFingerprint;
+        }
+      }
+
+      if (existingFingerprint === incomingFingerprint) {
+        const existingPhotos = db.query("SELECT COUNT(*) as count FROM serve_attempt_photos WHERE serve_id = ?").get(id) as { count: number } | null;
+        const photoCount = existingPhotos ? existingPhotos.count : (existingById.image_url ? 1 : 0);
+        const out = serveRow(existingById, db, user.role === "server" ? "server" : "admin") as Record<string, unknown>;
+        const syncReceipt = {
+          committed: true,
+          persisted: true,
+          idempotent: true,
+          serveId: String(id),
+          payloadFingerprint: existingFingerprint,
+          attemptNumber: Number(existingById.attempt_number || 1),
+          photoCount,
+          committedAt: String(existingById.committed_at || existingById.timestamp || ""),
+          syncVersion: Number(existingById.sync_version || 1),
+        };
+        Object.assign(out, syncReceipt);
+        return c.json(out, 200);
+      } else {
+        return c.json(
+          {
+            error: "id_conflict",
+            message: "A serve attempt with this ID already exists with different payload content",
+            serveId: String(id),
+            existingFingerprint,
+            incomingFingerprint,
+          },
+          409,
+        );
+      }
     }
 
     let coordinates = "";
@@ -1644,6 +2006,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         const out = serveRow(priorSuccess, db, user.role === "server" ? "server" : "admin") as Record<string, unknown>;
         out.skipped = true;
         out.reason = "already_served";
+        out.committed = false;
+        out.persisted = false;
         return c.json(out, 201);
       }
     }
@@ -1703,13 +2067,34 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const serviceAddress = body.serviceAddress || body.service_address || body.address || "";
     const gps = parseLatLng(coordinates || body.coordinates);
 
-    // Save base64 image if provided directly
+    // Dual-Shield R2-first: stage photos + archive payload, putServeArchive MUST
+    // succeed before any local DB/photo commit. Boot reconcile restores if local missing.
+    const stageDir = `${hotBufferTmpDir()}/${id}`;
+    const stagePhotosDir = join(stageDir, "photos");
+    mkdirSync(stagePhotosDir, { recursive: true });
+    const archiveFiles: { arc: string; src: string }[] = [];
+    const stagedCommits: { src: string; dest: string }[] = [];
+    const seenArc = new Set<string>();
+    const addArchiveFile = (src: string, name: string) => {
+      if (!src || !name || seenArc.has(name)) return;
+      seenArc.add(name);
+      archiveFiles.push({ arc: `photos/${name}`, src });
+    };
+    const cleanupStage = () => {
+      try {
+        rmSync(stageDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    };
+
+    // Stage primary base64 image off-site temp (not UPLOADS yet)
     if (body.imageData && body.imageData.length > 100) {
       const fileId = newId();
       const filename = `${fileId}_full.jpg`;
-      const fullPath = join(UPLOADS_DIR, "serves", filename);
+      const stagePath = join(stagePhotosDir, filename);
       const capturedAt = body.capturedAt || body.captured_at || enteredAt;
-      await saveBase64Image(body.imageData, fullPath, {
+      await saveBase64Image(body.imageData, stagePath, {
         capturedAt,
         latitude: gps?.lat,
         longitude: gps?.lng,
@@ -1720,6 +2105,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       imageFileId = fileId;
       thumbnailUrl = imageUrl;
       thumbnailFileId = fileId;
+      addArchiveFile(stagePath, filename);
+      stagedCommits.push({ src: stagePath, dest: join(UPLOADS_DIR, "serves", filename) });
     }
 
     const serveStatus = body.status || "unknown";
@@ -1732,94 +2119,28 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     // Siblings of one physical encounter pass the same eventId. Unset means
     // this row is its own encounter, matching the self-event backfill.
     const eventId = String(body.eventId || body.event_id || "").trim() || id;
+    const caseNameVal = body.caseName || body.case_name || "";
+    const serviceMethodVal = body.serviceMethod || body.service_method || "";
+    const acceptedByVal = body.acceptedBy || body.accepted_by || "";
+    const loggedByName = user.displayName || user.username || "";
 
-    db.query(
-      `INSERT INTO serve_attempts (
-        id, client_id, client_name, case_number, case_name, recipient_id, person_being_served,
-        status, notes, address, service_address, coordinates, image_url, image_file_id,
-        thumbnail_url, thumbnail_file_id, image_data, timestamp, occurred_at, entered_at,
-        attempt_number, attempt_type, gps_source, contact_person, is_manual, result_detail, physical_description, case_id,
-        service_method, accepted_by, logged_by, logged_by_name, attempt_hash, accuracy_meters, device_info,
-        posting_location, entity_name, recipient_title, event_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      id,
-      clientId,
-      clientName,
-      caseNum,
-      body.caseName || body.case_name || "",
-      recipientId,
-      personBeingServed,
-      serveStatus,
-      body.notes || "",
-      body.address || "",
-      serviceAddress,
-      coordinates,
-      imageUrl,
-      imageFileId,
-      thumbnailUrl,
-      thumbnailFileId,
-      "", // Stop writing heavy base64 to SQLite column
-      timestamp,
-      occurredAt,
-      enteredAt,
-      attemptNumber,
-      attemptType,
-      gpsSource,
-      contactPerson,
-      isManual,
-      resultDetail,
-      physicalDescription,
-      caseId,
-      body.serviceMethod || body.service_method || "",
-      body.acceptedBy || body.accepted_by || "",
-      user.id,
-      user.displayName || user.username || "",
-      attemptHash,
-      accuracyMeters,
-      deviceInfo,
-      postingLocation,
-      entityName,
-      recipientTitle,
-      eventId
-    );
-
-    // Assign sequential attempt_number for this person/job (ignore client-supplied number)
-    renumberAttemptPeers(db, {
+    // Preview attempt_number for archive (renumberAttemptPeers still runs after local insert)
+    const peerWhere = attemptPeerWhere({
       recipientId,
       caseId,
       clientId,
       caseNumber: caseNum,
       personBeingServed,
     });
+    const priorPeers = db
+      .query(`SELECT id FROM serve_attempts WHERE ${peerWhere.sql}`)
+      .all(...peerWhere.params) as { id: string }[];
+    const archiveAttemptNumber = priorPeers.length + 1;
 
-    // A new attempt changes affidavit facts → void any signed execution.
-    if (caseId) {
-      invalidateExecutionsForCase(db, caseId, "material_change");
-    }
+    // Build photo rows + stage new photo bytes before R2
+    const photoRows: Record<string, unknown>[] = [];
+    const pendingStamps: { path: string; capturedAt: string; position: number }[] = [];
 
-    // Auto-update case status to 'Served' only for an actual successful serve.
-    // The capture form defaults serviceMethod to "personal" even when Result is
-    // Unsuccessful (status=failed). Presence of a method is NOT success.
-    const statusNorm = String(serveStatus || "").toLowerCase().trim();
-    const isUnsuccessful = [
-      "failed",
-      "unsuccessful",
-      "attempted",
-      "in progress",
-      "in-progress",
-      "unknown",
-    ].includes(statusNorm);
-    const isSuccessful = !isUnsuccessful && (statusNorm === "served" || statusNorm === "completed");
-    if (caseId && isSuccessful) {
-      maybeMarkCaseServed(db, caseId, serveStatus);
-      if (recipientId) {
-        db.query("UPDATE serve_recipients SET status = ?, updated_at = ? WHERE id = ? AND case_id = ?")
-          .run("Served", nowIso(), recipientId, caseId);
-      }
-    }
-
-    // Save multiple photos if provided in creation POST
     if (Array.isArray(body.photos) && body.photos.length > 0) {
       let pos = 1;
       for (const p of body.photos.slice(0, 5)) {
@@ -1832,8 +2153,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
         if (p.imageData && p.imageData.length > 100) {
           const fn = `${id}_p${pos}_full.jpg`;
-          const fp = join(UPLOADS_DIR, "serves", fn);
-          await saveBase64Image(p.imageData, fp, {
+          const stagePath = join(stagePhotosDir, fn);
+          await saveBase64Image(p.imageData, stagePath, {
             capturedAt,
             latitude: gps?.lat,
             longitude: gps?.lng,
@@ -1842,50 +2163,299 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           });
           pUrl = `/uploads/serves/${fn}`;
           pThumbUrl = pUrl;
+          addArchiveFile(stagePath, fn);
+          stagedCommits.push({ src: stagePath, dest: join(UPLOADS_DIR, "serves", fn) });
         } else if (pUrl && pUrl.startsWith("/uploads/")) {
-          // Restamp existing local file if present
-          const fp = join(UPLOADS_DIR, "serves", pUrl.split("/").pop()!);
-          stampServeTrackerPhoto(fp, {
-            capturedAt,
-            latitude: gps?.lat,
-            longitude: gps?.lng,
-            position: pos,
-            address: serviceAddress,
-          });
+          const name = pUrl.split("/").pop()!;
+          const existing = join(UPLOADS_DIR, "serves", name);
+          if (existsSync(existing)) {
+            addArchiveFile(existing, name);
+            pendingStamps.push({ path: existing, capturedAt, position: pos });
+          }
         }
 
-        db.query(
-          `INSERT INTO serve_attempt_photos (id, serve_id, position, image_url, image_file_id, thumbnail_url, thumbnail_file_id, created_at, captured_at, label, coordinates)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(newId(), id, pos, pUrl, pFileId, pThumbUrl, pFileId, nowIso(), capturedAt, label, photoCoords);
+        photoRows.push({
+          id: newId(),
+          serve_id: id,
+          position: pos,
+          image_url: pUrl,
+          image_file_id: pFileId,
+          thumbnail_url: pThumbUrl,
+          thumbnail_file_id: pFileId,
+          created_at: nowIso(),
+          captured_at: capturedAt,
+          label,
+          coordinates: photoCoords,
+        });
 
         if (pos === 1 && !imageUrl) {
-          db.query("UPDATE serve_attempts SET image_url = ?, thumbnail_url = ? WHERE id = ?").run(pUrl, pThumbUrl, id);
+          imageUrl = pUrl;
+          thumbnailUrl = pThumbUrl;
+          imageFileId = pFileId;
+          thumbnailFileId = pFileId;
         }
         pos++;
       }
     } else if (imageUrl) {
-      // Create position 1 entry in photos table
-      db.query(
-        `INSERT OR IGNORE INTO serve_attempt_photos (id, serve_id, position, image_url, image_file_id, thumbnail_url, thumbnail_file_id, created_at, captured_at, label, coordinates)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        newId(),
-        id,
-        1,
-        imageUrl,
-        imageFileId,
-        thumbnailUrl,
-        thumbnailFileId,
-        nowIso(),
-        body.capturedAt || body.captured_at || enteredAt,
-        "ServeTracker Photo 1",
-        coordinates
+      const name = imageUrl.startsWith("/uploads/") ? imageUrl.split("/").pop()! : "";
+      if (name && !seenArc.has(name)) {
+        const existing = join(UPLOADS_DIR, "serves", name);
+        const staged = join(stagePhotosDir, name);
+        if (existsSync(staged)) addArchiveFile(staged, name);
+        else if (existsSync(existing)) addArchiveFile(existing, name);
+      }
+      photoRows.push({
+        id: newId(),
+        serve_id: id,
+        position: 1,
+        image_url: imageUrl,
+        image_file_id: imageFileId,
+        thumbnail_url: thumbnailUrl,
+        thumbnail_file_id: thumbnailFileId,
+        created_at: nowIso(),
+        captured_at: body.capturedAt || body.captured_at || enteredAt,
+        label: "ServeTracker Photo 1",
+        coordinates,
+      });
+    }
+
+    const serveManifest: Record<string, unknown> = {
+      id,
+      client_id: clientId,
+      client_name: clientName,
+      case_number: caseNum,
+      case_name: caseNameVal,
+      recipient_id: recipientId,
+      person_being_served: personBeingServed,
+      status: serveStatus,
+      notes: body.notes || "",
+      address: body.address || "",
+      service_address: serviceAddress,
+      coordinates,
+      image_url: imageUrl,
+      image_file_id: imageFileId,
+      thumbnail_url: thumbnailUrl,
+      thumbnail_file_id: thumbnailFileId,
+      image_data: "",
+      timestamp,
+      occurred_at: occurredAt,
+      entered_at: enteredAt,
+      attempt_number: archiveAttemptNumber,
+      attempt_type: attemptType,
+      gps_source: gpsSource,
+      contact_person: contactPerson,
+      is_manual: isManual,
+      result_detail: resultDetail,
+      physical_description: physicalDescription,
+      case_id: caseId,
+      service_method: serviceMethodVal,
+      accepted_by: acceptedByVal,
+      logged_by: user.id,
+      logged_by_name: loggedByName,
+      attempt_hash: attemptHash,
+      accuracy_meters: accuracyMeters,
+      device_info: deviceInfo,
+      posting_location: postingLocation,
+      entity_name: entityName,
+      recipient_title: recipientTitle,
+      event_id: eventId,
+    };
+
+    try {
+      await putServeArchivePayload(String(id), { serve: serveManifest, photos: photoRows }, archiveFiles);
+    } catch (err) {
+      cleanupStage();
+      console.error("[dualshield] R2 zip failed before local commit; refusing 201:", err);
+      return c.json(
+        { error: "Dual-Shield R2 staging failed", detail: err instanceof Error ? err.message : String(err) },
+        500,
       );
     }
 
+    // R2 OK — commit photos to local disk, then DB with transaction & 503 error handling
+    // Compensation strategy: If local disk or SQLite commit fails after R2 staging,
+    // the R2 archive remains intact for replay/reconciliation via scripts/reconcile-boot.ts,
+    // and the server returns 503 { archived: true, committed: false, serveId, retry: true }.
+    const committedAt = nowIso();
+    const syncVersion = 1;
+
+    const newlyCreatedDestFiles: string[] = [];
+    try {
+      mkdirSync(join(UPLOADS_DIR, "serves"), { recursive: true });
+      for (const { src, dest } of stagedCommits) {
+        const existed = existsSync(dest);
+        copyFileSync(src, dest);
+        if (!existed) {
+          newlyCreatedDestFiles.push(dest);
+        }
+      }
+      for (const s of pendingStamps) {
+        stampServeTrackerPhoto(s.path, {
+          capturedAt: s.capturedAt,
+          latitude: gps?.lat,
+          longitude: gps?.lng,
+          position: s.position,
+          address: serviceAddress,
+        });
+      }
+
+      // SQLite transaction for attempt row + photo rows + renumbering + case updates + audit
+      const commitTx = db.transaction(() => {
+        db.query(
+          `INSERT INTO serve_attempts (
+            id, client_id, client_name, case_number, case_name, recipient_id, person_being_served,
+            status, notes, address, service_address, coordinates, image_url, image_file_id,
+            thumbnail_url, thumbnail_file_id, image_data, timestamp, occurred_at, entered_at,
+            attempt_number, attempt_type, gps_source, contact_person, is_manual, result_detail, physical_description, case_id,
+            service_method, accepted_by, logged_by, logged_by_name, attempt_hash, accuracy_meters, device_info,
+            posting_location, entity_name, recipient_title, event_id,
+            payload_fingerprint, sync_version, committed_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          id,
+          clientId,
+          clientName,
+          caseNum,
+          caseNameVal,
+          recipientId,
+          personBeingServed,
+          serveStatus,
+          body.notes || "",
+          body.address || "",
+          serviceAddress,
+          coordinates,
+          imageUrl,
+          imageFileId,
+          thumbnailUrl,
+          thumbnailFileId,
+          "", // Stop writing heavy base64 to SQLite column
+          timestamp,
+          occurredAt,
+          enteredAt,
+          attemptNumber,
+          attemptType,
+          gpsSource,
+          contactPerson,
+          isManual,
+          resultDetail,
+          physicalDescription,
+          caseId,
+          serviceMethodVal,
+          acceptedByVal,
+          user.id,
+          loggedByName,
+          attemptHash,
+          accuracyMeters,
+          deviceInfo,
+          postingLocation,
+          entityName,
+          recipientTitle,
+          eventId,
+          incomingFingerprint,
+          1,
+          committedAt
+        );
+
+        // Assign sequential attempt_number for this person/job (ignore client-supplied number)
+        renumberAttemptPeers(db, {
+          recipientId,
+          caseId,
+          clientId,
+          caseNumber: caseNum,
+          personBeingServed,
+        });
+
+        // A new attempt changes affidavit facts → void any signed execution.
+        if (caseId) {
+          invalidateExecutionsForCase(db, caseId, "material_change");
+        }
+
+        // Auto-update case & recipient status
+        if (caseId) {
+          recomputeRecipientAndCaseStatus(db, caseId, recipientId);
+        }
+
+        for (const pr of photoRows) {
+          db.query(
+            `INSERT INTO serve_attempt_photos (id, serve_id, position, image_url, image_file_id, thumbnail_url, thumbnail_file_id, created_at, captured_at, label, coordinates)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            pr.id,
+            pr.serve_id,
+            pr.position,
+            pr.image_url,
+            pr.image_file_id,
+            pr.thumbnail_url,
+            pr.thumbnail_file_id,
+            pr.created_at,
+            pr.captured_at,
+            pr.label,
+            pr.coordinates
+          );
+        }
+
+        // Transactionally coherent audit log
+        logAuditEvent(db, {
+          event_type: "serve.create",
+          actor_user_id: user.id,
+          actor_role: user.role,
+          target_resource_id: id,
+          ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+          user_agent: c.req.header("user-agent") || "",
+          details: { case_id: caseId, recipient_id: recipientId, attempt_number: archiveAttemptNumber },
+        });
+      });
+
+      commitTx();
+
+      // SELECT back the attempt and verify fingerprint
+      const verifiedRow = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown> | null;
+      if (!verifiedRow) {
+        throw new Error(`Serve attempt ${id} not found immediately after transaction commit`);
+      }
+      if (verifiedRow.payload_fingerprint !== incomingFingerprint) {
+        throw new Error(`Persisted fingerprint mismatch for ${id}: expected ${incomingFingerprint}, got ${verifiedRow.payload_fingerprint}`);
+      }
+
+      checkpointWal(db);
+    } catch (commitErr) {
+      console.error(`[serve-sync] R2 archived but local SQLite/disk commit failed for serveId ${id}:`, commitErr);
+      cleanupStage();
+      // Clean only copied/staged destination files that did not preexist
+      for (const dest of newlyCreatedDestFiles) {
+        try {
+          if (existsSync(dest)) unlinkSync(dest);
+        } catch {}
+      }
+      // Never delete the R2 archive. Return 503 JSON as required.
+      return c.json(
+        {
+          archived: true,
+          committed: false,
+          serveId: String(id),
+          retry: true,
+          error: "Local database commit failed after archive was staged; client should retry",
+          detail: commitErr instanceof Error ? commitErr.message : String(commitErr),
+        },
+        503,
+      );
+    }
+
+    cleanupStage();
+
     const row = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown>;
-    const response = serveRow(row, db, user.role);
+    const response = serveRow(row, db, user.role) as Record<string, unknown>;
+    const syncMetadata = {
+      committed: true,
+      persisted: true,
+      serveId: String(id),
+      payloadFingerprint: incomingFingerprint,
+      attemptNumber: Number(row.attempt_number || 1),
+      photoCount: photoRows.length,
+      committedAt,
+      syncVersion,
+    };
+    Object.assign(response, syncMetadata);
 
     // Send email notification if requested — ALWAYS server-built HTML with photo LINKS.
     // Never trust body.emailHtml (old clients sent Maps-only / Photo-1 attachment templates).
@@ -1983,21 +2553,79 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }).catch(() => {});
     });
 
-    logAuditEvent(db, {
-      event_type: "serve.create",
-      actor_user_id: user.id,
-      actor_role: user.role,
-      target_resource_id: String(id),
-      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
-      user_agent: c.req.header("user-agent") || "",
-      details: { case_id: String(response.case_id || response.caseId || ""), case_number: String(response.case_number || "") },
-    });
+    // Audit logged transactionally in commitTx
 
     // Durability: get the attempt + audit row out of the WAL tail and into the base DB file
     // before the response goes back to the field phone (see server/db.ts).
     checkpointWal(db);
 
     return c.json(response, 201);
+  });
+
+  // Confirm endpoint: verify attempt durability and payload fingerprint
+  app.get("/api/serves/:id/confirm", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const id = c.req.param("id");
+    const expectedFingerprint = String(c.req.query("fingerprint") || "").trim();
+    if (!expectedFingerprint) {
+      return c.json({ error: "fingerprint_required", message: "Fingerprint query parameter is required" }, 400);
+    }
+
+    const row = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown> | null;
+    if (!row) {
+      return c.json({ error: "not_found", message: "Serve attempt not found", serveId: id }, 404);
+    }
+
+    // RBAC: admin sees all; server only own or assigned attempt
+    if (user.role === "server") {
+      const isOwner = row.logged_by === user.id;
+      let isAssigned = false;
+      if (row.case_id) {
+        const cse = db.query("SELECT assigned_to FROM client_cases WHERE id = ?").get(row.case_id) as { assigned_to?: string } | null;
+        isAssigned = Boolean(cse && (cse.assigned_to === user.id || cse.assigned_to === user.username));
+      }
+      if (!isOwner && !isAssigned) {
+        return c.json({ error: "Forbidden: Not assigned to this attempt" }, 403);
+      }
+    }
+
+    const photoRow = db.query("SELECT COUNT(*) as count FROM serve_attempt_photos WHERE serve_id = ?").get(id) as { count: number } | null;
+    const photoCount = photoRow ? photoRow.count : (row.image_url ? 1 : 0);
+
+    let actualFingerprint = String(row.payload_fingerprint || "").trim();
+    if (!actualFingerprint) {
+      const photos = db.query("SELECT * FROM serve_attempt_photos WHERE serve_id = ? ORDER BY position ASC").all(id) as Record<string, unknown>[];
+      actualFingerprint = computePayloadFingerprint({ ...row, photos });
+      // GET confirm NEVER mutates/backfills payload_fingerprint in DB
+    }
+
+    if (actualFingerprint !== expectedFingerprint) {
+      return c.json(
+        {
+          confirmed: false,
+          error: "fingerprint_mismatch",
+          message: "Stored serve fingerprint does not match requested fingerprint",
+          serveId: id,
+          expectedFingerprint,
+          actualFingerprint,
+          photoCount,
+        },
+        409,
+      );
+    }
+
+    return c.json({
+      confirmed: true,
+      persisted: true,
+      committed: true,
+      serveId: id,
+      payloadFingerprint: actualFingerprint,
+      attemptNumber: Number(row.attempt_number || 1),
+      photoCount,
+      committedAt: String(row.committed_at || row.timestamp || ""),
+      syncVersion: Number(row.sync_version || 1),
+      status: row.status,
+    }, 200);
   });
 
   // Resend link-based notification for an existing attempt (fixes old Maps-only emails)
@@ -2172,6 +2800,21 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       invalidateExecutionsForCase(db, String(row.case_id), "material_change");
     }
 
+    // Recompute and update payload fingerprint safely so old replay cannot be falsely accepted
+    const attemptPhotos = db.query("SELECT * FROM serve_attempt_photos WHERE serve_id = ? ORDER BY position ASC").all(id) as Record<string, unknown>[];
+    const updatedRow = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown>;
+    const newFingerprint = computePayloadFingerprint({ ...updatedRow, photos: attemptPhotos });
+    db.query("UPDATE serve_attempts SET payload_fingerprint = ? WHERE id = ?").run(newFingerprint, id);
+
+    // Refresh R2 archive
+    try {
+      await putServeArchive(db, id);
+    } catch (r2Err) {
+      console.warn(`[PUT /api/serves/${id}] Failed to refresh R2 archive:`, r2Err);
+    }
+
+    checkpointWal(db);
+
     const refreshed = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown>;
     logAuditEvent(db, {
       event_type: "serve.update",
@@ -2190,50 +2833,97 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       return c.json({ error: "Forbidden: Field servers cannot delete serve attempts" }, 403);
     }
     const id = c.req.param("id");
-    const row = db.query(
-      "SELECT image_file_id, thumbnail_file_id, recipient_id, client_id, case_number, person_being_served, case_id FROM serve_attempts WHERE id = ?"
-    ).get(id) as {
-      image_file_id: string;
-      thumbnail_file_id: string;
-      recipient_id?: string;
-      client_id?: string;
-      case_number?: string;
-      person_being_served?: string;
-      case_id?: string;
-    } | null;
-    if (!row) {
-      return c.json({ error: "Serve attempt not found" }, 404);
-    }
-    // Deleting an attempt changes affidavit facts → void any signed execution.
-    if (row.case_id) {
-      invalidateExecutionsForCase(db, row.case_id, "material_change");
-    }
-    const photos = db.query("SELECT image_url, thumbnail_url FROM serve_attempt_photos WHERE serve_id = ?").all(id) as {
-      image_url?: string;
-      thumbnail_url?: string;
-    }[];
-    for (const photo of photos) {
-      await deleteServeFiles(photo.image_url, photo.thumbnail_url);
-    }
-    await deleteServeFiles(row.image_file_id, row.thumbnail_file_id);
-    db.query("DELETE FROM serve_attempt_photos WHERE serve_id = ?").run(id);
-    db.query("DELETE FROM serve_attempt_edits WHERE serve_id = ?").run(id);
-    db.query("DELETE FROM serve_attempts WHERE id = ?").run(id);
-    renumberAttemptPeers(db, {
-      recipientId: row.recipient_id,
-      clientId: row.client_id,
-      caseNumber: row.case_number,
-      personBeingServed: row.person_being_served,
+
+    return withReconcileLock(async () => {
+      const row = db.query(
+        "SELECT * FROM serve_attempts WHERE id = ?"
+      ).get(id) as Record<string, unknown> | null;
+      if (!row) {
+        return c.json({ error: "Serve attempt not found" }, 404);
+      }
+
+      // Step 1: Write R2 tombstone BEFORE local deletion. If tombstone write fails, abort delete!
+      const tombstone: ServeTombstone = {
+        version: 1,
+        serve_id: id,
+        deleted_at: nowIso(),
+        actor: {
+          id: user.id,
+          role: user.role,
+          username: user.username,
+        },
+        reason: "explicit_delete",
+        archive_key: `${dualshieldPrefix()}${id}.zip`,
+        payload_fingerprint: String(row.payload_fingerprint || ""),
+      };
+
+      try {
+        await writeTombstone(tombstone);
+      } catch (tombErr) {
+        console.error(`[serve.delete] Failed to write off-box tombstone for ${id}:`, tombErr);
+        return c.json(
+          {
+            error: "Failed to write off-box tombstone; delete aborted",
+            detail: tombErr instanceof Error ? tombErr.message : String(tombErr),
+          },
+          500,
+        );
+      }
+
+      const caseId = row.case_id ? String(row.case_id) : undefined;
+      const recipientId = row.recipient_id ? String(row.recipient_id) : undefined;
+      const photos = db.query("SELECT image_url, thumbnail_url FROM serve_attempt_photos WHERE serve_id = ?").all(id) as {
+        image_url?: string;
+        thumbnail_url?: string;
+      }[];
+
+      // Step 2: One SQLite transaction deletes attempt/photos/edits, writes serve.delete audit,
+      // renumbers, invalidates affidavit, recomputes recipient/case status.
+      db.transaction(() => {
+        db.query("DELETE FROM serve_attempt_photos WHERE serve_id = ?").run(id);
+        db.query("DELETE FROM serve_attempt_edits WHERE serve_id = ?").run(id);
+        db.query("DELETE FROM serve_attempts WHERE id = ?").run(id);
+
+        renumberAttemptPeers(db, {
+          recipientId,
+          caseId,
+          clientId: row.client_id as string,
+          caseNumber: row.case_number as string,
+          personBeingServed: row.person_being_served as string,
+        });
+
+        if (caseId) {
+          recomputeRecipientAndCaseStatus(db, caseId, recipientId);
+          invalidateExecutionsForCase(db, caseId, "material_change");
+        }
+
+        logAuditEvent(db, {
+          event_type: "serve.delete",
+          actor_user_id: user.id,
+          actor_role: user.role,
+          target_resource_id: id,
+          ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
+          user_agent: c.req.header("user-agent") || "",
+          details: { case_id: caseId, recipient_id: recipientId },
+        });
+      })();
+
+      // Step 3: Checkpoint WAL
+      checkpointWal(db);
+
+      // Step 4: Delete local photo files and R2 archive afterward; tombstone remains authoritative if cleanup fails
+      for (const photo of photos) {
+        await deleteServeFiles(photo.image_url, photo.thumbnail_url);
+      }
+      await deleteServeFiles(row.image_file_id as string, row.thumbnail_file_id as string);
+      try {
+        await deleteArchiveKey(`${dualshieldPrefix()}${id}.zip`);
+      } catch (r2Err) {
+        console.warn(`[serve.delete] R2 archive cleanup warn for ${id} (tombstone remains authoritative):`, r2Err);
+      }
+
+      return c.json({ success: true, deletedId: id });
     });
-    logAuditEvent(db, {
-      event_type: "serve.delete",
-      actor_user_id: user.id,
-      actor_role: user.role,
-      target_resource_id: id,
-      ip_address: c.req.header("cf-connecting-ip") || c.req.header("x-forwarded-for") || "",
-      user_agent: c.req.header("user-agent") || "",
-    });
-    return c.json({ success: true });
   });
 
   // Multi-Photo Endpoints (Up to 5 Photos per attempt)
@@ -2395,6 +3085,20 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       invalidateExecutionsForCase(db, serveRowDb.case_id, "material_change");
     }
 
+    // Recompute fingerprint and refresh R2 archive
+    const updatedPhotos = db.query("SELECT * FROM serve_attempt_photos WHERE serve_id = ? ORDER BY position ASC").all(serveId) as Record<string, unknown>[];
+    const currentAttempt = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(serveId) as Record<string, unknown>;
+    if (currentAttempt) {
+      const newFp = computePayloadFingerprint({ ...currentAttempt, photos: updatedPhotos });
+      db.query("UPDATE serve_attempts SET payload_fingerprint = ? WHERE id = ?").run(newFp, serveId);
+      try {
+        await putServeArchive(db, serveId);
+      } catch (r2Err) {
+        console.warn(`[photos] Failed to refresh R2 archive for ${serveId}:`, r2Err);
+      }
+      checkpointWal(db);
+    }
+
     return c.json(
       {
         id: photoId,
@@ -2456,6 +3160,20 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
     if (serveRowDb?.case_id) {
       invalidateExecutionsForCase(db, serveRowDb.case_id, "material_change");
+    }
+
+    // Recompute fingerprint and refresh R2 archive
+    const remainingPhotos = db.query("SELECT * FROM serve_attempt_photos WHERE serve_id = ? ORDER BY position ASC").all(serveId) as Record<string, unknown>[];
+    const currentAttempt = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(serveId) as Record<string, unknown>;
+    if (currentAttempt) {
+      const newFp = computePayloadFingerprint({ ...currentAttempt, photos: remainingPhotos });
+      db.query("UPDATE serve_attempts SET payload_fingerprint = ? WHERE id = ?").run(newFp, serveId);
+      try {
+        await putServeArchive(db, serveId);
+      } catch (r2Err) {
+        console.warn(`[photos] Failed to refresh R2 archive for ${serveId}:`, r2Err);
+      }
+      checkpointWal(db);
     }
 
     return c.json({ success: true, count: remaining.length });

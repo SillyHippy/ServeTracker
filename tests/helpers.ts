@@ -9,6 +9,7 @@ process.env.APP_PASSWORD = "TestAdminPass123!";
 process.env.SESSION_COOKIE_NAME = "serve_tracker_session_test";
 process.env.DISABLE_EMAIL = "true";
 process.env.MOCK_EMAIL = "true";
+process.env.HOTBUFFER_MOCK = "true";
 process.env.HELCIM_MOCK = "true";
 process.env.HELCIM_WEBHOOK_SECRET = "staging-helcim-webhook-secret";
 process.env.SMTP_HOST = "127.0.0.1";

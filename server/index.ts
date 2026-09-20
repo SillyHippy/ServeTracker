@@ -7,8 +7,13 @@ import { createDb, UPLOADS_DIR, DATA_DIR } from "./db";
 
 validateEnv();
 import { authMiddleware, handleAuthMe, handleLogin, handleLogout, initAuth, type AuthUser } from "./auth";
-import { registerRoutes } from "./routes";
+import { registerRoutes, renumberAttemptPeers, recomputeRecipientAndCaseStatus, logAuditEvent } from "./routes";
 import { auth as betterAuthInstance } from "./auth-better";
+import { reconcileLostServes } from "./lib/reconciler";
+import { invalidateExecutionsForCase } from "./affidavitExecution";
+import { checkpointWal } from "./db";
+import { computePayloadFingerprint } from "./serveFingerprint";
+import { isHotBufferMock } from "./lib/hotBuffer";
 
 const db = createDb();
 initAuth(db);
@@ -114,6 +119,37 @@ app.get("*", async (c) => {
 });
 
 const port = Number(process.env.PORT) || 3150;
+
+// Dual-Shield self-heal: R2 is only a TEMPORARY hot buffer. Every attempt is
+// archived there before the local SQLite commit, so if the commit was lost the
+// row must come back on its own. Runs at boot and every 2 minutes, lock-aware,
+// and never restores an id that has an off-box deletion tombstone.
+const runDualShieldReconcile = (tag: string) => {
+  reconcileLostServes(db, {
+    renumberAttemptPeers,
+    recomputeRecipientAndCaseStatus,
+    invalidateExecutionsForCase,
+    logAuditEvent,
+    checkpointWal,
+    computePayloadFingerprint,
+  })
+    .then((stats) => {
+      if (stats.recovered > 0 || stats.errors > 0) {
+        console.log(`[Dual-Shield] ${tag} reconcile:`, JSON.stringify(stats));
+      }
+    })
+    .catch((err) => console.warn(`[Dual-Shield] ${tag} reconcile skipped:`, err));
+};
+
+// DISABLED 2026-09-20: R2 currently holds 337 test-suite archives and the
+// bucket lifecycle was never verified against a real field serve. Restoring
+// them floods production with mock attempts and fires real SMS/push alerts.
+// Re-enable only after the R2 prefix is audited clean (scripts/audit-r2-prefix).
+const RECONCILE_ENABLED = process.env.DUALSHIELD_RECONCILE === "on";
+if (RECONCILE_ENABLED && !isHotBufferMock()) {
+  setTimeout(() => runDualShieldReconcile("boot"), 1500);
+  setInterval(() => runDualShieldReconcile("interval"), 2 * 60 * 1000);
+}
 
 console.log(`PDFUSAEDIT server listening on http://localhost:${port}`);
 console.log(`Database: ${join(DATA_DIR, "pdfusaedit.db")}`);
