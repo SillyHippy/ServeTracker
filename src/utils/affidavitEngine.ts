@@ -498,12 +498,14 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
 
   const documentsLine = (c.documents_to_serve || "").trim();
 
-  // Service address once (not per attempt row) — same idea as the fillable form
+  const attemptLocationOf = (att?: ServeAttemptData | null) =>
+    String(att?.service_address || att?.address || att?.home_address || "").trim();
+
+  // Successful stop first. Never let an earlier failed address become the banner.
   const serviceAddress =
-    physicalAttempts
-      .map((a) => a.service_address || a.address || a.home_address)
-      .find((a) => a && String(a).trim()) ||
-    data.recipient?.home_address ||
+    attemptLocationOf(servedAttempt) ||
+    [...physicalAttempts].reverse().map(attemptLocationOf).find((a) => a) ||
+    String(data.recipient?.home_address || "").trim() ||
     "";
 
   const fmtAttemptDt = (att: ServeAttemptData) => {
@@ -527,7 +529,7 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
   physicalAttempts.forEach((att, idx) => {
     const notes = (att.notes || "").trim();
     if (!notes) return;
-    commentsParts.push(`Attempt ${idx + 1} (${fmtAttemptDt(att)}): ${notes}`);
+    commentsParts.push(`Attempt ${idx + 1}: ${notes}`);
   });
   narrativeAttempts.forEach((att) => {
     const type = attemptTypeOf(att).toUpperCase();
@@ -565,16 +567,17 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
     }
   });
 
-  // Compact attempt bars: Attempt N | Date & Time only (like the fillable template)
+  // Attempt | Date & Time | Location — location is the address clicked/typed for that stop
   const attemptRowsHtml =
     physicalAttempts.length === 0
-      ? `<tr><td colspan="2"><em>No physical field attempts logged.</em></td></tr>`
+      ? `<tr><td colspan="3"><em>No physical field attempts logged.</em></td></tr>`
       : physicalAttempts
           .map(
             (att, idx) => `
             <tr>
               <td class="att-num">Attempt ${idx + 1}</td>
               <td class="att-dt">${fmtAttemptDt(att)}</td>
+              <td class="att-loc">${esc(attemptLocationOf(att) || "Address not recorded")}</td>
             </tr>`
           )
           .join("");
@@ -630,6 +633,7 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
         <tr>
           <th>Attempt</th>
           <th>Date &amp; Time</th>
+          <th>Location</th>
         </tr>
       </thead>
       <tbody>
@@ -720,8 +724,9 @@ const COMMON_CSS = `
   table.attempts { width: 100%; border-collapse: collapse; margin: 4px 0 6px 0; font-size: 9.5pt; }
   table.attempts th, table.attempts td { border: 1px solid #333; padding: 2px 6px; text-align: left; vertical-align: middle; }
   table.attempts th { background-color: #f2f2f2; text-transform: uppercase; font-size: 8pt; }
-  table.attempts td.att-num { width: 28%; font-weight: bold; white-space: nowrap; }
-  table.attempts td.att-dt { width: 72%; }
+  table.attempts td.att-num { width: 16%; font-weight: bold; white-space: nowrap; }
+  table.attempts td.att-dt { width: 26%; white-space: nowrap; }
+  table.attempts td.att-loc { width: 58%; }
   .comments { font-size: 9.5pt; white-space: pre-wrap; border: 1px solid #333; padding: 5px; min-height: 52px; }
   .sig-block { margin-top: 10px; page-break-inside: avoid; }
   .sig-line { border-bottom: 1px solid #000; width: 280px; height: 72px; margin-top: 14px; display: flex; align-items: flex-end; }

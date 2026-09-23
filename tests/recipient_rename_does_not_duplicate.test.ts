@@ -90,3 +90,78 @@ test("Add Person still creates a second recipient when a new name is added", asy
   expect(list.some((r: any) => r.id === recipientId && r.full_name === "JASON JOHN, M.D.")).toBe(true);
   expect(list.some((r: any) => r.id !== recipientId && r.full_name === "DEBORAH CRAWFORD, APRN")).toBe(true);
 });
+
+test("trashing one person and saving deletes that recipient and keeps the other", async () => {
+  const { caseId, recipientId } = await createNamedCase("JASON JOHN, M.D.");
+  const add = await admin.put(`/api/cases/${caseId}`, {
+    recipients: [
+      { id: recipientId, full_name: "JASON JOHN, M.D.", role: "defendant" },
+      { full_name: "DEBORAH CRAWFORD, APRN", role: "defendant" },
+    ],
+  });
+  expectStatus(add, 200, "add second person");
+  const before = await admin.get(`/api/recipients?case_id=${caseId}`);
+  const beforeList = Array.isArray(before.data) ? before.data : before.data.recipients || [];
+  const secondId = String(beforeList.find((r: any) => r.id !== recipientId)?.id || "");
+  expect(secondId).toBeTruthy();
+
+  const serve = await admin.post("/api/serves", {
+    case_id: caseId,
+    case_number: "RN-DEL",
+    recipient_id: secondId,
+    person_being_served: "DEBORAH CRAWFORD, APRN",
+    status: "failed",
+    notes: "no answer",
+    address: "1265 S. Utica Ave., Suite 200, Tulsa, OK 74104",
+    service_address: "1265 S. Utica Ave., Suite 200, Tulsa, OK 74104",
+    sendEmail: false,
+    isTest: true,
+  });
+  expectStatus(serve, 201, "log attempt on removed person");
+  const serveId = String(serve.data.id || serve.data.serve?.id || "");
+
+  const put = await admin.put(`/api/cases/${caseId}`, {
+    recipients: [{ id: recipientId, full_name: "JASON JOHN, M.D.", role: "defendant" }],
+  });
+  expectStatus(put, 200, "save after trash");
+  const recs = await admin.get(`/api/recipients?case_id=${caseId}`);
+  const list = Array.isArray(recs.data) ? recs.data : recs.data.recipients || [];
+  expect(list.length).toBe(1);
+  expect(list[0].id).toBe(recipientId);
+  expect(list.some((r: any) => r.id === secondId)).toBe(false);
+
+  const leftover = await admin.get(`/api/serves?case_id=${caseId}`);
+  expectStatus(leftover, 200, "history after prune");
+  const rows = Array.isArray(leftover.data) ? leftover.data : leftover.data.serves || leftover.data.attempts || [];
+  expect(rows.some((a: any) => String(a.id) === serveId || String(a.recipient_id) === secondId)).toBe(true);
+});
+
+test("DELETE last remaining person is refused", async () => {
+  const { caseId, recipientId } = await createNamedCase("TEMPLE ZENONI, APRN");
+  const del = await admin.delete(`/api/recipients/${recipientId}`);
+  expectStatus(del, 400, "block last-person delete");
+  const recs = await admin.get(`/api/recipients?case_id=${caseId}`);
+  const list = Array.isArray(recs.data) ? recs.data : recs.data.recipients || [];
+  expect(list.length).toBe(1);
+  expect(list[0].id).toBe(recipientId);
+});
+
+test("DELETE of a non-last person removes that recipient only", async () => {
+  const { caseId, recipientId } = await createNamedCase("RACHEL POSEY, D.O.");
+  const add = await admin.put(`/api/cases/${caseId}`, {
+    recipients: [
+      { id: recipientId, full_name: "RACHEL POSEY, D.O.", role: "defendant" },
+      { full_name: "TEMPLE ZENONI, APRN", role: "defendant" },
+    ],
+  });
+  expectStatus(add, 200, "add second person");
+  const before = await admin.get(`/api/recipients?case_id=${caseId}`);
+  const beforeList = Array.isArray(before.data) ? before.data : before.data.recipients || [];
+  const secondId = String(beforeList.find((r: any) => r.id !== recipientId)?.id || "");
+  const del = await admin.delete(`/api/recipients/${secondId}`);
+  expectStatus(del, 200, "delete extra person");
+  const recs = await admin.get(`/api/recipients?case_id=${caseId}`);
+  const list = Array.isArray(recs.data) ? recs.data : recs.data.recipients || [];
+  expect(list.length).toBe(1);
+  expect(list[0].id).toBe(recipientId);
+});

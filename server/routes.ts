@@ -541,6 +541,16 @@ function syncCaseRecipients(
       ).run("rec_" + newId().slice(0, 16), caseId, clientId, item.name, role, home, work, personalOnly, ts, ts);
     }
   }
+
+  // Saved people list is authoritative: drop anyone no longer in it.
+  // Attempts stay on History — serve_attempts has no recipient FK cascade.
+  const removed = existing.filter((r) => !used.has(r.id));
+  if (removed.length > 0) {
+    for (const r of removed) {
+      db.query("DELETE FROM serve_recipients WHERE id = ? AND case_id = ?").run(r.id, caseId);
+    }
+    invalidateExecutionsForCase(db, caseId, "material_change");
+  }
 }
 
 function syncDefendantNameAsSoleRecipient(
@@ -1824,6 +1834,12 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }
     }
     if (existing.case_id) {
+      const remaining = db
+        .query("SELECT COUNT(*) AS n FROM serve_recipients WHERE case_id = ?")
+        .get(existing.case_id) as { n: number } | undefined;
+      if (Number(remaining?.n || 0) <= 1) {
+        return c.json({ error: "Cannot delete the last person on a case" }, 400);
+      }
       invalidateExecutionsForCase(db, String(existing.case_id), "material_change");
     }
     db.query("DELETE FROM serve_recipients WHERE id = ?").run(id);

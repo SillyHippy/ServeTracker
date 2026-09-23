@@ -86,6 +86,94 @@ test("printed affidavit includes more than 6 physical attempts including the new
   expect(html).not.toContain("METHOD OF SERVICE NOT RECORDED");
 });
 
+test("attempt table has Location column with each stop's stored address, not comments", () => {
+  const attempts = [
+    att({
+      status: "failed",
+      occurred_at: "2026-09-22T16:47:34.401Z",
+      address: "1265 S. Utica Ave., Suite 200, Tulsa, OK 74104",
+      service_address: "1265 S. Utica Ave., Suite 200, Tulsa, OK 74104",
+      notes: "Staff said she works at Heart Failure Center.",
+    }),
+    att({
+      status: "failed",
+      occurred_at: "2026-09-22T17:16:11.581Z",
+      address: "1120 S. Utica Ave., Tulsa, OK 74104",
+      service_address: "1120 S. Utica Ave., Tulsa, OK 74104",
+      notes: "Spoke to security.",
+    }),
+    att({
+      status: "failed",
+      occurred_at: "2026-09-22T18:00:00.000Z",
+      address: "712 W. 99th St. S., Jenks, OK 74037-3437",
+      service_address: "712 W. 99th St. S., Jenks, OK 74037-3437",
+      notes: "No answer.",
+    }),
+  ];
+  const html = generateAffidavitHtml({
+    case: {
+      case_number: "26-cv-00405-JFJ",
+      case_name: "DEBORAH CRAWFORD, APRN",
+      documents_to_serve: "Summons and Complaint",
+    },
+    recipient: { full_name: "DEBORAH CRAWFORD, APRN" },
+    attempts,
+  } as AffidavitPayload);
+
+  expect(html).toContain("<th>Location</th>");
+  expect(html).toContain("att-loc");
+  expect(html).toContain("1265 S. Utica Ave., Suite 200, Tulsa, OK 74104");
+  expect(html).toContain("1120 S. Utica Ave., Tulsa, OK 74104");
+  expect(html).toContain("712 W. 99th St. S., Jenks, OK 74037-3437");
+  expect(html).toContain("Attempt 1: Staff said she works at Heart Failure Center.");
+  expect(html).not.toContain("Attempt 1 — 1265 S. Utica Ave.");
+});
+
+test("26-cv-00405-JFJ Rachel: Service Address is the successful stop, not the first failed Utica stop", () => {
+  const attempts = [
+    att({
+      status: "failed",
+      occurred_at: "2026-09-22T17:16:11.581Z",
+      address: "1120 S. Utica Ave., Tulsa, OK 74104",
+      service_address: "1120 S. Utica Ave., Tulsa, OK 74104",
+      recipient_id: "rec_5b1a7f4eddf34980",
+      person_being_served: "RACHEL POSEY NFODJO, D.O.",
+      notes: "Spoke to security.",
+    }),
+    att({
+      status: "completed",
+      service_method: "personal",
+      occurred_at: "2026-09-23T01:25:40.054Z",
+      address: "3445 E. 75th Pl., Tulsa, OK 74136-5975",
+      service_address: "3445 E. 75th Pl., Tulsa, OK 74136-5975",
+      recipient_id: "rec_5b1a7f4eddf34980",
+      person_being_served: "RACHEL POSEY NFODJO, D.O.",
+    }),
+  ];
+  const html = generateAffidavitHtml({
+    case: {
+      case_number: "26-cv-00405-JFJ",
+      case_name: "RACHEL POSEY NFODJO, D.O.",
+      documents_to_serve: "Summons and Complaint",
+    },
+    recipient: {
+      id: "rec_5b1a7f4eddf34980",
+      full_name: "RACHEL POSEY NFODJO, D.O.",
+      home_address: "3445 E. 75th Pl., Tulsa, OK 74136-5975",
+    },
+    attempts,
+  } as AffidavitPayload);
+
+  expect(html).toContain("<strong>Service Address:</strong> 3445 E. 75th Pl., Tulsa, OK 74136-5975");
+  expect(html).toContain("att-loc");
+  expect(html).toContain("1120 S. Utica Ave., Tulsa, OK 74104");
+  expect(html).toContain("3445 E. 75th Pl., Tulsa, OK 74136-5975");
+  expect(html.indexOf("Service Address:")).toBeGreaterThan(-1);
+  const banner = html.match(/<strong>Service Address:<\/strong>\s*([^<]+)/);
+  expect(banner?.[1].trim()).toBe("3445 E. 75th Pl., Tulsa, OK 74136-5975");
+  expect(banner?.[1]).not.toContain("1120 S. Utica");
+});
+
 test("override kind prints Affidavit of Non-Service even if a successful serve exists", () => {
   const attempts = [
     att({ status: "completed", service_method: "personal", occurred_at: "2026-08-19T00:16:18.417Z" }),
