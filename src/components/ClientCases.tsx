@@ -25,6 +25,7 @@ import MarkPaidDialog from "./MarkPaidDialog";
 import { ReserviceJobDialog } from "./ReserviceJobDialog";
 import { mergeServeAndCaseData } from "@/utils/dataNormalization";
 import { ServeAttemptData } from "@/types/ServeAttemptData";
+import EditServeDialog from "./EditServeDialog";
 
 interface ClientCase {
   $id: string;
@@ -68,6 +69,8 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
   const [assignOptions, setAssignOptions] = useState<Array<{ id: string; label: string; ineligible?: string }>>([]);
   const [markPaidTarget, setMarkPaidTarget] = useState<ClientCase | null>(null);
   const [reserviceCase, setReserviceCase] = useState<ClientCase | null>(null);
+  const [editingServe, setEditingServe] = useState<ServeAttemptData | null>(null);
+  const [isEditServeOpen, setIsEditServeOpen] = useState(false);
   const [newCase, setNewCase] = useState({
     case_number: "",
     case_name: "",
@@ -122,10 +125,8 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
     const fetchServes = async () => {
       try {
         console.log("Fetching serves for client:", client.id);
-        const allServes = await api.getServeAttempts();
-        const clientServes = allServes.filter(serve => serve.clientId === client.id);
-        console.log("Client serves:", clientServes);
-        setServes(clientServes as ServeAttemptData[]);
+        const clientServes = await api.getClientServeAttempts(client.id);
+        setServes(clientServes as unknown as ServeAttemptData[]);
       } catch (error) {
         console.error("Error fetching serves:", error);
         setServes([]);
@@ -307,18 +308,23 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
     }
   };
 
+  const openEditServe = (serve: ServeAttemptData) => {
+    setEditingServe(serve);
+    setIsEditServeOpen(true);
+  };
+
   const updateServe = async (serveData: any) => {
     try {
-      await api.updateServeAttempt(serveData.id, serveData);
-      // Refresh serves
-      const allServes = await api.getServeAttempts();
-      const clientServes = allServes.filter(serve => serve.clientId === client.id);
-      setServes(clientServes as ServeAttemptData[]);
+      const id = serveData.id || serveData.$id;
+      await api.updateServeAttempt(id, serveData);
+      const clientServes = await api.getClientServeAttempts(client.id);
+      setServes(clientServes as unknown as ServeAttemptData[]);
       toast({
         title: "Serve updated",
         description: "Service attempt has been updated successfully",
         variant: "default",
       });
+      return true;
     } catch (error) {
       console.error("Error updating serve:", error);
       toast({
@@ -326,6 +332,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       });
+      return false;
     }
   };
 
@@ -866,7 +873,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
             serves={mergedServes} 
             clients={[client]}
             onDelete={deleteServe}
-            onEdit={updateServe}
+            onEdit={openEditServe}
           />
         </TabsContent>
 
@@ -891,6 +898,18 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
           onOpenChange={(open) => {
             if (!open) setActiveDocCase(null);
           }}
+        />
+      )}
+
+      {editingServe && (
+        <EditServeDialog
+          serve={editingServe}
+          open={isEditServeOpen}
+          onOpenChange={(open) => {
+            setIsEditServeOpen(open);
+            if (!open) setEditingServe(null);
+          }}
+          onSave={updateServe}
         />
       )}
 

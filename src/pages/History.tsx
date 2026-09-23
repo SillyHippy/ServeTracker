@@ -5,7 +5,8 @@ import MemoryMonitor from "@/components/MemoryMonitor";
 import { ClientData } from "@/components/ClientForm";
 import { ServeAttemptData } from "@/types/ServeAttemptData";
 import { Button } from "@/components/ui/button";
-import { History as HistoryIcon, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { History as HistoryIcon, RefreshCw, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import EditServeDialog from "@/components/EditServeDialog";
 import { api } from "@/lib/api";
@@ -41,6 +42,8 @@ const History: React.FC<HistoryProps> = ({
   const [localServes, setLocalServes] = useState<ServeAttemptData[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalServes, setTotalServes] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const { toast } = useToast();
 
   // Calculate pagination
@@ -50,19 +53,44 @@ const History: React.FC<HistoryProps> = ({
   // Fetch paginated serves
   useEffect(() => {
     fetchServeHistory();
-  }, [currentPage, clients]);
+  }, [currentPage, clients, searchQuery]);
 
   const fetchServeHistory = async () => {
     try {
       console.log(`Fetching serves for page ${currentPage}...`);
       setIsSyncing(true);
       
-      const serves = await api.getServeAttempts(SERVES_PER_PAGE, offset);
-      
+      const q = searchQuery.trim();
+      let serves: ServeAttemptData[] = [];
+      if (q) {
+        const raw = await api.getServeAttempts(500, 0);
+        const needle = q.toLowerCase();
+        serves = (raw || []).filter((s: any) => {
+          const hay = [
+            s.caseNumber, s.case_number, s.caseName, s.case_name,
+            s.personBeingServed, s.person_being_served,
+            s.clientName, s.client_name, s.address, s.serviceAddress,
+            s.service_address, s.notes, s.status,
+          ].map((v) => String(v || "").toLowerCase()).join(" ");
+          return hay.includes(needle);
+        });
+        setTotalServes(serves.length);
+      } else {
+        serves = await api.getServeAttempts(SERVES_PER_PAGE, offset);
+        if (currentPage === 1) {
+          try {
+            const totalCount = await api.getTotalServeAttemptsCount();
+            setTotalServes(totalCount);
+          } catch (error) {
+            console.error("Error getting total count:", error);
+            setTotalServes(serves.length);
+          }
+        }
+      }
+
       if (serves && serves.length > 0) {
         const validatedServes = validateServes(serves);
         const enhancedServes = addClientNamesToServes(validatedServes, clients);
-        // Merge case caption + Documents to Serve onto serve rows for Affidavit
         let mergedServes = enhancedServes;
         try {
           const allCases = await api.getCases();
@@ -72,22 +100,10 @@ const History: React.FC<HistoryProps> = ({
         } catch (e) {
           console.warn("History: could not merge case documents", e);
         }
-        const sortedServes = sortServesByDate(mergedServes);
-        setLocalServes(sortedServes);
-        
-        // Get total count for pagination (only fetch once)
-        if (currentPage === 1) {
-          try {
-            const totalCount = await api.getTotalServeAttemptsCount();
-            setTotalServes(totalCount);
-          } catch (error) {
-            console.error("Error getting total count:", error);
-            setTotalServes(serves.length); // Fallback
-          }
-        }
+        setLocalServes(sortServesByDate(mergedServes));
       } else {
         setLocalServes([]);
-        if (currentPage === 1) {
+        if (currentPage === 1 && !q) {
           setTotalServes(0);
         }
       }
@@ -192,6 +208,42 @@ const History: React.FC<HistoryProps> = ({
       <div className="flex flex-wrap justify-between items-center mb-4">
         <h1 className="text-3xl font-bold tracking-tight">Serve History</h1>
         <div className="flex gap-2">
+          <form
+            className="flex items-center gap-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setCurrentPage(1);
+              setSearchQuery(searchInput.trim());
+            }}
+          >
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Search case, person, address…"
+                className="pl-8 h-10 w-[220px] sm:w-[280px]"
+                aria-label="Search serve history"
+              />
+            </div>
+            <Button type="submit" variant="outline" className="h-10" disabled={isSyncing}>
+              Search
+            </Button>
+            {searchQuery && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-10"
+                onClick={() => {
+                  setSearchInput("");
+                  setSearchQuery("");
+                  setCurrentPage(1);
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </form>
           <Button 
             variant="outline" 
             onClick={handleRefresh}

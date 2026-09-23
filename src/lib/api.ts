@@ -299,11 +299,16 @@ export const api = {
   },
 
   async getClientServeAttempts(clientId: string) {
-    const result = await apiFetch<{ documents: Record<string, unknown>[] }>(
-      `/api/serves?client_id=${clientId}&limit=500`
+    const result = await apiFetch<any>(
+      `/api/serves?client_id=${encodeURIComponent(clientId)}&limit=500`
     );
-    return result.documents.sort(
-      (a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime()
+    const rows: Record<string, unknown>[] = Array.isArray(result)
+      ? result
+      : (result?.documents || []);
+    return rows.sort(
+      (a, b) =>
+        new Date(String(b.occurred_at || b.timestamp || 0)).getTime() -
+        new Date(String(a.occurred_at || a.timestamp || 0)).getTime()
     );
   },
 
