@@ -3,6 +3,7 @@
 # Litestream only protects the database; the uploads directory lives on the same 9p
 # filesystem and can lose recently written files across a container restart.
 # Silent on success (cron watchdog pattern); prints on failure.
+# Never re-put keys listed in pruned-excludes.lst (snapshot-gated retention).
 set -uo pipefail
 ENVF=/etc/zo/litestream-prod.env
 [ -f "$ENVF" ] || { echo "uploads-sync: missing $ENVF"; exit 1; }
@@ -11,8 +12,20 @@ export AWS_ACCESS_KEY_ID="${LITESTREAM_ACCESS_KEY_ID}" AWS_SECRET_ACCESS_KEY="${
 SRC="${UPLOADS_SRC:-/home/workspace/Projects/PDFUSAEDIT-zo/data/uploads}"
 PREFIX="${UPLOADS_PREFIX:-uploads-prod}"
 LOG=/dev/shm/uploads-sync.log
+EXCL_FILE="${PRUNED_EXCLUDES:-/home/workspace/Documents/Backups/servetracker/snapshot-gated/jls/pruned-excludes.lst}"
+LOCK=/dev/shm/servetracker-uploads-prune.lock
+if [ -f "$LOCK" ]; then
+  echo "uploads-sync: prune lock present; skipping"
+  exit 0
+fi
+EXCL_ARGS=()
+if [ -f "$EXCL_FILE" ]; then
+  while IFS= read -r pat || [ -n "${pat:-}" ]; do
+    [ -n "${pat:-}" ] && EXCL_ARGS+=(--exclude "$pat")
+  done < "$EXCL_FILE"
+fi
 out=$(timeout 600 /usr/local/bin/aws --endpoint-url "$LITESTREAM_ENDPOINT" s3 sync "$SRC" \
-        "s3://${LITESTREAM_BUCKET}/${PREFIX}/" --size-only --only-show-errors 2>&1)
+        "s3://${LITESTREAM_BUCKET}/${PREFIX}/" --size-only --only-show-errors "${EXCL_ARGS[@]}" 2>&1)
 rc=$?
 printf '%s rc=%s %s\n' "$(date -u +%FT%TZ)" "$rc" "$(printf '%s' "$out" | tail -c 400)" >> "$LOG"
 if [ "$rc" != "0" ]; then

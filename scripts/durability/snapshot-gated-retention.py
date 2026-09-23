@@ -360,6 +360,33 @@ def verify_snapshot(cfg: Config, snap_id: str, manifest_path: Path) -> dict[str,
             "verification_mode": "zo-cas-inode-byte-hash-and-database-check"}
 
 
+def exclude_list_path(cfg: Config) -> Path:
+    return cfg.backup_root / "pruned-excludes.lst"
+
+
+def prune_lock_path() -> Path:
+    return Path("/dev/shm/servetracker-uploads-prune.lock")
+
+
+def remember_pruned(cfg: Config, state: dict[str, Any], keys: list[str]) -> None:
+    """Persist pruned R2 keys so the local→R2 uploads watcher cannot re-put them."""
+    existing = [str(k) for k in (state.get("pruned_keys") or []) if str(k).strip()]
+    for key in keys:
+        if key and key not in existing:
+            existing.append(key)
+    state["pruned_keys"] = existing[-20000:]
+    prefix = f"{cfg.prefix}/"
+    rels: list[str] = []
+    for key in existing:
+        if key.startswith(prefix):
+            rels.append(key[len(prefix):])
+        elif cfg.instance == "saas" and key.startswith("tenants/"):
+            rels.append(key[len("tenants/"):])
+    path = exclude_list_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(sorted(set(rels))) + ("\n" if rels else ""))
+
+
 def aws_delete(cfg: Config, key: str) -> None:
     if not cfg.bucket or not cfg.endpoint:
         raise RuntimeError("R2 configuration incomplete")
@@ -369,12 +396,17 @@ def aws_delete(cfg: Config, key: str) -> None:
         raise RuntimeError(f"refusing key outside tenants/: {key}")
     target = f"s3://{cfg.bucket}/{key}"
     run([str(AWS), "--endpoint-url", cfg.endpoint, "s3", "rm", target, "--only-show-errors"], env=cfg.aws_env())
-    verify = subprocess.run(
-        [str(AWS), "--endpoint-url", cfg.endpoint, "s3api", "head-object", "--bucket", cfg.bucket, "--key", key],
-        env=cfg.aws_env(), text=True, capture_output=True, timeout=60,
-    )
-    if verify.returncode == 0:
-        raise RuntimeError(f"R2 delete verification failed; object still exists: {key}")
+    last_err = "object still exists"
+    for _ in range(5):
+        time.sleep(1)
+        verify = subprocess.run(
+            [str(AWS), "--endpoint-url", cfg.endpoint, "s3api", "head-object", "--bucket", cfg.bucket, "--key", key],
+            env=cfg.aws_env(), text=True, capture_output=True, timeout=60,
+        )
+        if verify.returncode != 0:
+            return
+        last_err = f"object still exists: {key}"
+    raise RuntimeError(f"R2 delete verification failed; {last_err}")
 
 
 def mark_pruned(cfg: Config, object_id: str, snap_id: str) -> None:
@@ -446,11 +478,21 @@ def prune(cfg: Config, state: dict[str, Any], *, required: int, grace: int, dry_
             continue
         eligible.append(row)
     deleted = 0
-    for row in eligible:
-        if not dry_run:
-            aws_delete(cfg, row["r2_key"])
-            mark_pruned(cfg, str(row["id"]), str(chosen[-1]["snapshot_id"]))
-            deleted += 1
+    if eligible and not dry_run:
+        remember_pruned(cfg, state, [str(row["r2_key"]) for row in eligible])
+        atomic_json(cfg.state_path, state)
+        lock = prune_lock_path()
+        lock.write_text(iso())
+        try:
+            time.sleep(4)
+            for row in eligible:
+                aws_delete(cfg, row["r2_key"])
+                mark_pruned(cfg, str(row["id"]), str(chosen[-1]["snapshot_id"]))
+                deleted += 1
+        finally:
+            lock.unlink(missing_ok=True)
+    elif dry_run:
+        deleted = 0
     return {"eligible": len(eligible), "deleted": deleted, "dry_run": dry_run,
             "snapshots": [r["snapshot_id"] for r in chosen]}
 
