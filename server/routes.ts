@@ -446,6 +446,130 @@ function recipientHasPersonalOnlyKey(rec: unknown): boolean {
   return obj.personal_service_only !== undefined || obj.personalServiceOnly !== undefined;
 }
 
+type RecipientSyncRow = { id: string; full_name?: string };
+
+function recipientPayloadId(rec: unknown): string {
+  if (!rec || typeof rec !== "object") return "";
+  const obj = rec as Record<string, unknown>;
+  return String(obj.id || obj.$id || "").trim();
+}
+
+function recipientPayloadName(rec: unknown): string {
+  if (typeof rec === "string") return rec.trim();
+  if (!rec || typeof rec !== "object") return "";
+  const obj = rec as Record<string, unknown>;
+  return String(obj.full_name || obj.name || "").trim();
+}
+
+function applyRecipientIdentity(
+  db: Db,
+  recipientId: string,
+  name: string,
+  role: string,
+  home: string,
+  work: string,
+  personalOnly: number,
+  ts: string,
+) {
+  db.query(
+    `UPDATE serve_recipients
+     SET full_name = ?, role = ?, home_address = ?, work_address = ?, personal_service_only = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(name, role, home, work, personalOnly, ts, recipientId);
+  db.query(
+    `UPDATE serve_attempts SET person_being_served = ?, case_name = ? WHERE recipient_id = ?`
+  ).run(name, name, recipientId);
+}
+
+/** Rename updates the existing person. Add Person (no id, extra name) still inserts. */
+function syncCaseRecipients(
+  db: Db,
+  caseId: string,
+  clientId: string,
+  recipients: unknown[],
+  fallbackHome: string,
+  fallbackWork: string,
+  ts: string,
+) {
+  const existing = db
+    .query("SELECT id, full_name FROM serve_recipients WHERE case_id = ?")
+    .all(caseId) as RecipientSyncRow[];
+  const incoming: { rec: unknown; name: string; id: string }[] = [];
+  for (const rec of recipients) {
+    const name = recipientPayloadName(rec);
+    if (!name) continue;
+    incoming.push({ rec, name, id: recipientPayloadId(rec) });
+  }
+  if (incoming.length === 0) return;
+
+  const used = new Set<string>();
+  for (const item of incoming) {
+    const obj = typeof item.rec === "object" && item.rec ? (item.rec as Record<string, unknown>) : {};
+    const role = obj.role ? String(obj.role).trim() : "Defendant / Respondent";
+    const home = obj.home_address !== undefined ? String(obj.home_address || "").trim() : fallbackHome;
+    const work = obj.work_address !== undefined ? String(obj.work_address || "").trim() : fallbackWork;
+    const personalOnly = recipientPersonalOnlyValue(item.rec);
+
+    let target: RecipientSyncRow | undefined;
+    if (item.id) target = existing.find((r) => r.id === item.id && !used.has(r.id));
+    if (!target) {
+      target = existing.find(
+        (r) => String(r.full_name || "").toLowerCase() === item.name.toLowerCase() && !used.has(r.id)
+      );
+    }
+    if (!target && incoming.length === 1 && used.size === 0) {
+      if (existing.length === 1) {
+        target = existing[0];
+      } else if (existing.length > 1) {
+        const withHistory = existing.filter((r) => {
+          const n = db
+            .query("SELECT COUNT(*) AS n FROM serve_attempts WHERE recipient_id = ?")
+            .get(r.id) as { n: number } | undefined;
+          return Number(n?.n || 0) > 0;
+        });
+        if (withHistory.length === 1) target = withHistory[0];
+      }
+    }
+
+    if (target) {
+      used.add(target.id);
+      applyRecipientIdentity(db, target.id, item.name, role, home, work, personalOnly, ts);
+    } else {
+      db.query(
+        `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, personal_service_only, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("rec_" + newId().slice(0, 16), caseId, clientId, item.name, role, home, work, personalOnly, ts, ts);
+    }
+  }
+}
+
+function syncDefendantNameAsSoleRecipient(
+  db: Db,
+  caseId: string,
+  clientId: string,
+  defendantName: string,
+  home: string,
+  work: string,
+  ts: string,
+) {
+  const name = defendantName.trim();
+  if (!name) return;
+  const existing = db
+    .query("SELECT id, full_name FROM serve_recipients WHERE case_id = ?")
+    .all(caseId) as RecipientSyncRow[];
+  if (existing.some((r) => String(r.full_name || "") === name)) return;
+  if (existing.length === 1) {
+    applyRecipientIdentity(db, existing[0].id, name, "Defendant / Respondent", home, work, 0, ts);
+    return;
+  }
+  if (existing.length === 0) {
+    db.query(
+      `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run("rec_" + newId().slice(0, 16), caseId, clientId, name, "Defendant / Respondent", home, work, ts, ts);
+  }
+}
+
 function servedRecipientIdSet(db: Db, caseIds: Array<string | unknown>): Set<string> {
   const ids = [...new Set(caseIds.map((id) => String(id || "").trim()).filter(Boolean))];
   const out = new Set<string>();
@@ -1175,56 +1299,26 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }
     }
 
-    // Auto-create or sync serve_recipients if recipients list or defendant_respondent provided
     if (Array.isArray(body.recipients) && body.recipients.length > 0) {
-      for (const rec of body.recipients) {
-        const name = typeof rec === "string" ? rec.trim() : String(rec?.full_name || rec?.name || "").trim();
-        if (!name) continue;
-        const role = (typeof rec === "object" && rec?.role) ? String(rec.role).trim() : "Defendant / Respondent";
-        const home = (typeof rec === "object" && rec?.home_address) ? String(rec.home_address).trim() : (body.home_address || "");
-        const work = (typeof rec === "object" && rec?.work_address) ? String(rec.work_address).trim() : (body.work_address || "");
-        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name) as { id: string } | null;
-        const personalOnly = recipientPersonalOnlyValue(rec);
-        if (!existingRec) {
-          db.query(
-            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, personal_service_only, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(
-            "rec_" + newId().slice(0, 16),
-            id,
-            body.client_id,
-            name,
-            role,
-            home,
-            work,
-            personalOnly,
-            ts,
-            ts
-          );
-        } else if (recipientHasPersonalOnlyKey(rec)) {
-          db.query("UPDATE serve_recipients SET personal_service_only = ?, role = ?, updated_at = ? WHERE id = ?")
-            .run(personalOnly, role, ts, existingRec.id);
-        }
-      }
+      syncCaseRecipients(
+        db,
+        id,
+        String(body.client_id || ""),
+        body.recipients,
+        String(body.home_address || ""),
+        String(body.work_address || ""),
+        ts
+      );
     } else if (body.defendant_respondent && body.defendant_respondent.trim()) {
-      const recId = "rec_" + id.slice(0, 16);
-      const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND full_name = ?").get(id, body.defendant_respondent.trim());
-      if (!existingRec) {
-        db.query(
-          `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          recId,
-          id,
-          body.client_id,
-          body.defendant_respondent.trim(),
-          "Defendant / Respondent",
-          body.home_address || "",
-          body.work_address || "",
-          ts,
-          ts
-        );
-      }
+      syncDefendantNameAsSoleRecipient(
+        db,
+        id,
+        String(body.client_id || ""),
+        String(body.defendant_respondent || ""),
+        String(body.home_address || ""),
+        String(body.work_address || ""),
+        ts
+      );
     }
 
     if (body.client_id) {
@@ -1350,55 +1444,27 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     if (Array.isArray(body.recipients) && body.recipients.length > 0) {
-      for (const rec of body.recipients) {
-        const name = typeof rec === "string" ? rec.trim() : String(rec?.full_name || rec?.name || "").trim();
-        if (!name) continue;
-        const role = (typeof rec === "object" && rec?.role) ? String(rec.role).trim() : "Defendant / Respondent";
-        const home = (typeof rec === "object" && rec?.home_address) ? String(rec.home_address).trim() : (homeAddress || "");
-        const work = (typeof rec === "object" && rec?.work_address) ? String(rec.work_address).trim() : (workAddress || "");
-        const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND LOWER(full_name) = LOWER(?)").get(id, name) as { id: string } | null;
-        const personalOnly = recipientPersonalOnlyValue(rec);
-        if (!existingRec) {
-          const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
-          db.query(
-            `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, personal_service_only, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(
-            "rec_" + newId().slice(0, 16),
-            id,
-            caseObj.client_id,
-            name,
-            role,
-            home,
-            work,
-            personalOnly,
-            ts,
-            ts
-          );
-        } else if (recipientHasPersonalOnlyKey(rec)) {
-          db.query("UPDATE serve_recipients SET personal_service_only = ?, role = ?, updated_at = ? WHERE id = ?")
-            .run(personalOnly, role, ts, existingRec.id);
-        }
-      }
+      const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
+      syncCaseRecipients(
+        db,
+        id,
+        String(caseObj.client_id),
+        body.recipients,
+        String(homeAddress || ""),
+        String(workAddress || ""),
+        ts
+      );
     } else if (body.defendant_respondent && body.defendant_respondent.trim()) {
-      const existingRec = db.query("SELECT id FROM serve_recipients WHERE case_id = ? AND full_name = ?").get(id, body.defendant_respondent.trim());
-      if (!existingRec) {
-        const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
-        db.query(
-          `INSERT INTO serve_recipients (id, case_id, client_id, full_name, role, home_address, work_address, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          "rec_" + newId().slice(0, 16),
-          id,
-          caseObj.client_id,
-          body.defendant_respondent.trim(),
-          "Defendant / Respondent",
-          body.home_address || "",
-          body.work_address || "",
-          ts,
-          ts
-        );
-      }
+      const caseObj = db.query("SELECT client_id FROM client_cases WHERE id = ?").get(id) as { client_id: string };
+      syncDefendantNameAsSoleRecipient(
+        db,
+        id,
+        String(caseObj.client_id),
+        String(body.defendant_respondent),
+        String(homeAddress || ""),
+        String(workAddress || ""),
+        ts
+      );
     }
 
     const row = db.query("SELECT * FROM client_cases WHERE id = ?").get(id) as Record<string, unknown>;
