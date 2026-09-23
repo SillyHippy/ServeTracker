@@ -1,34 +1,7 @@
 #!/bin/bash
 # Copy new ServeTracker field photos to R2 every few seconds (no bun restart).
-# Litestream does not cover /data/uploads. inotify is unreliable on 9p, so poll+sync.
-# Never re-put keys listed in pruned-excludes.lst (snapshot-gated retention).
+# Never re-put keys listed in pruned-excludes.lst (Python set filter — not aws --exclude argv).
 set -uo pipefail
-ENVF=/etc/zo/litestream-prod.env
-[ -f "$ENVF" ] || { echo "uploads-watch: missing $ENVF"; exit 1; }
-set -a; . "$ENVF"; set +a
-export AWS_ACCESS_KEY_ID="${LITESTREAM_ACCESS_KEY_ID}" AWS_SECRET_ACCESS_KEY="${LITESTREAM_SECRET_ACCESS_KEY}"
-SRC="${UPLOADS_SRC:-/home/workspace/Projects/PDFUSAEDIT-zo/data/uploads}"
-PREFIX="${UPLOADS_PREFIX:-uploads-prod}"
-LOG=/dev/shm/uploads-watch.log
-INTERVAL="${UPLOADS_SYNC_INTERVAL:-3}"
-EXCL_FILE="${PRUNED_EXCLUDES:-/home/workspace/Documents/Backups/servetracker/snapshot-gated/jls/pruned-excludes.lst}"
-LOCK=/dev/shm/servetracker-uploads-prune.lock
-while true; do
-  if [ -f "$LOCK" ]; then
-    sleep "$INTERVAL"
-    continue
-  fi
-  EXCL_ARGS=()
-  if [ -f "$EXCL_FILE" ]; then
-    while IFS= read -r pat || [ -n "${pat:-}" ]; do
-      [ -n "${pat:-}" ] && EXCL_ARGS+=(--exclude "$pat")
-    done < "$EXCL_FILE"
-  fi
-  out=$(timeout 90 /usr/local/bin/aws --endpoint-url "$LITESTREAM_ENDPOINT" s3 sync "$SRC" \
-        "s3://${LITESTREAM_BUCKET}/${PREFIX}/" --size-only --only-show-errors "${EXCL_ARGS[@]}" 2>&1)
-  rc=$?
-  if [ "$rc" != "0" ]; then
-    printf '%s rc=%s %s\n' "$(date -u +%FT%TZ)" "$rc" "$(printf '%s' "$out" | tail -c 300)" >> "$LOG"
-  fi
-  sleep "$INTERVAL"
-done
+FILTER="${UPLOADS_FILTER:-/usr/local/bin/servetracker-uploads-sync-filtered}"
+[ -x "$FILTER" ] || FILTER="$(dirname "$0")/uploads-sync-filtered.py"
+exec /usr/bin/python3 "$FILTER" --loop

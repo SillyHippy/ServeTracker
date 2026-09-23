@@ -395,9 +395,10 @@ def aws_delete(cfg: Config, key: str) -> None:
     if cfg.instance == "saas" and not key.startswith("tenants/"):
         raise RuntimeError(f"refusing key outside tenants/: {key}")
     target = f"s3://{cfg.bucket}/{key}"
-    run([str(AWS), "--endpoint-url", cfg.endpoint, "s3", "rm", target, "--only-show-errors"], env=cfg.aws_env())
     last_err = "object still exists"
-    for _ in range(5):
+    # Delete, verify absence, and re-delete if the uploads watcher races a put back.
+    for attempt in range(8):
+        run([str(AWS), "--endpoint-url", cfg.endpoint, "s3", "rm", target, "--only-show-errors"], env=cfg.aws_env())
         time.sleep(1)
         verify = subprocess.run(
             [str(AWS), "--endpoint-url", cfg.endpoint, "s3api", "head-object", "--bucket", cfg.bucket, "--key", key],
@@ -405,7 +406,7 @@ def aws_delete(cfg: Config, key: str) -> None:
         )
         if verify.returncode != 0:
             return
-        last_err = f"object still exists: {key}"
+        last_err = f"object still exists after delete attempt {attempt + 1}: {key}"
     raise RuntimeError(f"R2 delete verification failed; {last_err}")
 
 
@@ -484,7 +485,8 @@ def prune(cfg: Config, state: dict[str, Any], *, required: int, grace: int, dry_
         lock = prune_lock_path()
         lock.write_text(iso())
         try:
-            time.sleep(4)
+            # Give any in-flight uploads-watch walk time to notice the lock/excludes.
+            time.sleep(8)
             for row in eligible:
                 aws_delete(cfg, row["r2_key"])
                 mark_pruned(cfg, str(row["id"]), str(chosen[-1]["snapshot_id"]))
@@ -495,6 +497,116 @@ def prune(cfg: Config, state: dict[str, Any], *, required: int, grace: int, dry_
         deleted = 0
     return {"eligible": len(eligible), "deleted": deleted, "dry_run": dry_run,
             "snapshots": [r["snapshot_id"] for r in chosen]}
+
+
+def list_prefix_keys(cfg: Config, prefix: str) -> list[str]:
+    out = run(
+        [str(AWS), "--endpoint-url", cfg.endpoint, "s3", "ls", f"s3://{cfg.bucket}/{prefix}", "--recursive"],
+        env=cfg.aws_env(),
+    ).stdout
+    keys: list[str] = []
+    for ln in out.splitlines():
+        parts = ln.split(None, 3)
+        if len(parts) >= 4:
+            keys.append(parts[3])
+    return keys
+
+
+def hydrate_saas_r2_orphans(cfg: Config) -> dict[str, Any]:
+    """Download tenant R2 objects onto Zo and ledger them so they can enter snapshots.
+
+    Never deletes R2. Existing local files are hashed in place. New ledger rows
+    use the on-disk SHA-256 so the next two verified snapshots can prune later.
+    """
+    if cfg.instance != "saas":
+        return {"downloaded": 0, "ledgered": 0, "already_local": 0}
+    existing = {
+        str(row["r2_key"])
+        for row in pg_query_json(cfg, "SELECT r2_key FROM storage_objects WHERE COALESCE(r2_key,'') LIKE 'tenants/%'")
+    }
+    keys = [k for k in list_prefix_keys(cfg, "tenants/") if k.startswith("tenants/")]
+    downloaded = 0
+    ledgered = 0
+    already_local = 0
+    for key in keys:
+        dest = cfg.uploads / key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.is_file():
+            tmp = dest.with_suffix(dest.suffix + ".hydrate")
+            run(
+                [str(AWS), "--endpoint-url", cfg.endpoint, "s3", "cp",
+                 f"s3://{cfg.bucket}/{key}", str(tmp), "--only-show-errors"],
+                env=cfg.aws_env(), timeout=180,
+            )
+            os.replace(tmp, dest)
+            downloaded += 1
+        else:
+            already_local += 1
+        if key in existing:
+            continue
+        digest = sha256_file(dest)
+        size = dest.stat().st_size
+        parts = key.split("/")
+        org = parts[1] if len(parts) > 1 else ""
+        fname = parts[-1]
+        serve_id = fname.split("_")[0][:64]
+        oid = hashlib.sha256(key.encode()).hexdigest()[:32]
+        esc = lambda s: str(s).replace("'", "''")
+        pg_exec(cfg, f"""
+          INSERT INTO storage_objects
+            (id, org_id, object_type, local_path, r2_key, sha256, size_bytes,
+             created_at, local_verified_at, r2_verified_at, status, serve_id, photo_id)
+          SELECT '{esc(oid)}','{esc(org)}','serve_photo','{esc(str(dest))}','{esc(key)}',
+                 '{esc(digest)}',{int(size)},'{iso()}','{iso()}','{iso()}','r2_verified',
+                 '{esc(serve_id)}',''
+          WHERE NOT EXISTS (SELECT 1 FROM storage_objects WHERE r2_key='{esc(key)}')
+        """)
+        ledgered += 1
+        existing.add(key)
+    return {"downloaded": downloaded, "ledgered": ledgered, "already_local": already_local, "r2_keys": len(keys)}
+
+
+def reapply_pruned(cfg: Config, *, dry_run: bool) -> dict[str, Any]:
+    """Delete R2 keys that were already pruned and then re-uploaded by the watcher.
+
+    Only keys already in pruned_keys, still on R2, and still present locally.
+    Never touches litestream/ or Dual-Shield prefixes.
+    """
+    if cfg.instance != "jls":
+        raise RuntimeError("reapply-pruned is JLS uploads-prod only")
+    state = load_state(cfg)
+    pruned = {str(k) for k in (state.get("pruned_keys") or []) if str(k).startswith(cfg.prefix + "/")}
+    live = set(list_prefix_keys(cfg, cfg.prefix + "/"))
+    deleted = 0
+    skipped_no_local = 0
+    candidates = sorted(pruned & live)
+    remember_pruned(cfg, state, [])
+    atomic_json(cfg.state_path, state)
+    lock = prune_lock_path()
+    lock.write_text(iso())
+    try:
+        time.sleep(8)
+        for key in candidates:
+            rel = key[len(cfg.prefix) + 1:]
+            local = cfg.uploads / rel
+            if not local.is_file():
+                skipped_no_local += 1
+                continue
+            if not dry_run:
+                aws_delete(cfg, key)
+            deleted += 1
+        remember_pruned(cfg, state, [])
+        atomic_json(cfg.state_path, state)
+    finally:
+        lock.unlink(missing_ok=True)
+    return {
+        "ok": True,
+        "instance": cfg.instance,
+        "candidates": len(candidates),
+        "deleted": deleted,
+        "skipped_no_local": skipped_no_local,
+        "dry_run": dry_run,
+    }
 
 
 def record_snapshot_pg(cfg: Config, run_id: str, snap_id: str, status: str, manifest: Path,
@@ -516,6 +628,7 @@ def record_snapshot_pg(cfg: Config, run_id: str, snap_id: str, status: str, mani
 
 def cycle(cfg: Config, args: argparse.Namespace) -> dict[str, Any]:
     cfg.backup_root.mkdir(parents=True, exist_ok=True)
+    hydrate = hydrate_saas_r2_orphans(cfg) if cfg.instance == "saas" else {}
     run_id = utcnow().strftime("%Y%m%dT%H%M%SZ")
     run_dir = cfg.backup_root / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -547,8 +660,11 @@ def cycle(cfg: Config, args: argparse.Namespace) -> dict[str, Any]:
     atomic_json(cfg.state_path, state)
     pruned = prune(cfg, state, required=args.required_snapshots, grace=args.grace_seconds, dry_run=args.dry_run)
     atomic_json(cfg.state_path, state)
-    return {"ok": True, "instance": cfg.instance, "run_id": run_id, "snapshot_id": snap_id,
-            "objects": len(objects), "files_checked": verification["files_checked"], "prune": pruned}
+    result = {"ok": True, "instance": cfg.instance, "run_id": run_id, "snapshot_id": snap_id,
+              "objects": len(objects), "files_checked": verification["files_checked"], "prune": pruned}
+    if hydrate:
+        result["hydrate"] = hydrate
+    return result
 
 
 def audit(cfg: Config) -> dict[str, Any]:
@@ -566,7 +682,7 @@ def audit(cfg: Config) -> dict[str, Any]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--instance", choices=["jls", "saas"], required=True)
-    ap.add_argument("--action", choices=["cycle", "audit", "prune"], default="cycle")
+    ap.add_argument("--action", choices=["cycle", "audit", "prune", "hydrate", "reapply-pruned"], default="cycle")
     ap.add_argument("--required-snapshots", type=int, default=2)
     ap.add_argument("--grace-seconds", type=int, default=21600)
     ap.add_argument("--dry-run", action="store_true")
@@ -586,6 +702,10 @@ def main() -> int:
                 result = cycle(cfg, args)
             elif args.action == "audit":
                 result = audit(cfg)
+            elif args.action == "hydrate":
+                result = {"ok": True, "instance": cfg.instance, **hydrate_saas_r2_orphans(cfg)}
+            elif args.action == "reapply-pruned":
+                result = reapply_pruned(cfg, dry_run=args.dry_run)
             else:
                 state = load_state(cfg)
                 result = prune(cfg, state, required=args.required_snapshots,
