@@ -288,7 +288,7 @@ def make_manifest(cfg: Config, run_id: str, run_dir: Path, dbinfo: dict[str, Any
         "allowed_prefix": cfg.prefix + "/",
         "database": dbinfo,
         "objects": objects,
-        "policy": {"required_verified_snapshots": 2, "default_grace_seconds": 21600},
+        "policy": {"required_verified_snapshots": 2, "default_grace_seconds": 0},
     }
     manifest["signature_alg"] = "hmac-sha256"
     manifest["signature"] = manifest_signature(manifest)
@@ -684,7 +684,8 @@ def main() -> int:
     ap.add_argument("--instance", choices=["jls", "saas"], required=True)
     ap.add_argument("--action", choices=["cycle", "audit", "prune", "hydrate", "reapply-pruned"], default="cycle")
     ap.add_argument("--required-snapshots", type=int, default=2)
-    ap.add_argument("--grace-seconds", type=int, default=21600)
+    ap.add_argument("--grace-seconds", type=int, default=0,
+                    help="Extra wait after the required verified snapshot pair exists. Default 0 = prune once two verified snapshots exist.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.required_snapshots < 1 or args.grace_seconds < 0:

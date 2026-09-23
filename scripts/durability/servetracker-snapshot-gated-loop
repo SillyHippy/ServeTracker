@@ -1,0 +1,29 @@
+#!/bin/bash
+# Supervisor loop for manifest/hash-bound ServeTracker snapshot retention.
+# Starts with a non-destructive audit, then performs one verified cycle every 3h.
+# Any failure is logged and deletion fails closed inside the Python coordinator.
+set -u
+INSTANCE="${1:?usage: $0 jls|saas}"
+COORD=/usr/local/bin/servetracker-snapshot-gated-retention
+LOG="/dev/shm/servetracker-${INSTANCE}-snapshot-gated.log"
+INTERVAL="${SNAPSHOT_CYCLE_SECONDS:-10800}"
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >>"$LOG"; }
+
+# A restart must prove the last verified snapshot still hashes cleanly. A missing
+# first-run state is expected; the cycle below creates it. Never prune on audit failure.
+if "$COORD" --instance "$INSTANCE" --action audit >>"$LOG" 2>&1; then
+  log "startup audit ok"
+else
+  log "startup audit unavailable/failed; next cycle remains fail-closed"
+fi
+
+while true; do
+  # Gate is two HMAC-signed verified snapshots only — no 6-hour wait.
+  if "$COORD" --instance "$INSTANCE" --action cycle --required-snapshots 2 --grace-seconds 0 >>"$LOG" 2>&1; then
+    log "cycle ok"
+  else
+    log "cycle FAILED; no R2 deletion authorized"
+  fi
+  sleep "$INTERVAL"
+done
