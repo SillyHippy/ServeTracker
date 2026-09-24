@@ -134,6 +134,25 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
     try {
       setIsSaving(true);
 
+      if (status === "completed" && serviceMethod === "authorized-agent" && !corporateAgent.trim()) {
+        toast({
+          title: "Appointed agent required",
+          description: "Enter the attorney / agent of record authorized by appointment to receive service.",
+          variant: "destructive",
+        });
+        setIsSaving(false);
+        return;
+      }
+      if (status === "completed" && ["substituted-residence", "substituted-business", "corporate", "authorized-agent"].includes(serviceMethod) && !refusedToIdentify && !acceptedBy.trim()) {
+        toast({
+          title: "Accepted By required",
+          description: "Enter the name of the person who received the papers.",
+          variant: "destructive",
+        });
+        setIsSaving(false);
+        return;
+      }
+
       // PUT: only notes/status — never coordinates or gps_source
       const payload: ServeAttemptData = {
         ...serve,
@@ -150,8 +169,8 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
         corporate_agent: corporateAgent,
         entityName: corporateAgent,
         entity_name: corporateAgent,
-        recipientTitle,
-        recipient_title: recipientTitle,
+        recipientTitle: serviceMethod === "authorized-agent" && recipientTitle === "Registered Agent" ? "" : recipientTitle,
+        recipient_title: serviceMethod === "authorized-agent" && recipientTitle === "Registered Agent" ? "" : recipientTitle,
       };
       // Strip GPS fields so parents cannot accidentally overwrite them
       delete (payload as any).coordinates;
@@ -294,7 +313,12 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
               <select
                 id="serviceMethod"
                 value={serviceMethod}
-                onChange={(e) => setServiceMethod(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setServiceMethod(v);
+                  if (v === "authorized-agent" && recipientTitle === "Registered Agent") setRecipientTitle("");
+                  if (v === "corporate" && !recipientTitle) setRecipientTitle("Registered Agent");
+                }}
                 className="col-span-3 rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2"
               >
                 <option value="">— Select method —</option>
@@ -386,6 +410,42 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
                   <option value="President / Officer">President / Officer</option>
                   <option value="Authorized Representative">Authorized Representative</option>
                 </select>
+              </div>
+            </div>
+          )}
+          {status === "completed" && serviceMethod === "authorized-agent" && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="appointedAgent" className="text-right">
+                  Appointed agent
+                </Label>
+                <div className="col-span-3 space-y-1">
+                  <input
+                    id="appointedAgent"
+                    type="text"
+                    className="w-full rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2 text-sm"
+                    placeholder="e.g. Timothy Best, Esq."
+                    value={corporateAgent}
+                    onChange={(e) => setCorporateAgent(e.target.value)}
+                  />
+                  <p className="text-[11px] text-slate-500">Attorney / agent of record authorized by appointment (required)</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="aaRecipientTitle" className="text-right">
+                  Recipient role
+                </Label>
+                <div className="col-span-3 space-y-1">
+                  <input
+                    id="aaRecipientTitle"
+                    type="text"
+                    className="w-full rounded-md border shadow-sm focus:border-primary-500 focus:ring-primary-500 h-10 px-2 text-sm"
+                    placeholder="e.g. receptionist, legal assistant"
+                    value={recipientTitle === "Registered Agent" ? "" : recipientTitle}
+                    onChange={(e) => setRecipientTitle(e.target.value)}
+                  />
+                  <p className="text-[11px] text-slate-500">Optional. Physical recipient took papers on behalf of the appointed agent.</p>
+                </div>
               </div>
             </div>
           )}

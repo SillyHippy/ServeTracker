@@ -261,10 +261,17 @@ function executionSentence(
       return `I executed service of process upon <strong>${entity}</strong> by delivering ${docs} to <strong>${
         accepted || "the authorized agent"
       }</strong>, the <strong>${title}</strong> authorized to accept service on behalf of <strong>${entity}</strong>.`;
-    case "authorized-agent":
+    case "authorized-agent": {
+      // acceptedBy = physical recipient; entityName = appointed agent of record;
+      // recipientTitle = optional role of the physical recipient (no corporate default).
+      const appointedRaw = (extraOptions?.entityName || "").trim();
+      const roleRaw = (extraOptions?.recipientTitle || "").trim();
+      const appointed = esc(appointedRaw || "the appointed agent");
+      const roleClause = roleRaw ? `, ${esc(roleRaw)},` : ",";
       return `I executed service upon <strong>${name}</strong> by delivering ${docs} to <strong>${
-        accepted || "the authorized agent"
-      }</strong>, an agent authorized by appointment or by law to receive service of process on behalf of <strong>${name}</strong>, pursuant to 12 O.S. § 2004.`;
+        accepted || "the physical recipient"
+      }</strong>${roleClause} on behalf of <strong>${appointed}</strong>, an agent authorized by appointment to receive service of process on behalf of <strong>${name}</strong>, pursuant to Fed. R. Civ. P. 4(e)(2)(C) and 12 O.S. § 2004.`;
+    }
     case "posting":
       return `I executed service upon <strong>${name}</strong> by posting ${docs} in a conspicuous manner upon ${postLoc} of the premises.`;
     case "non-service":

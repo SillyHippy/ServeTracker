@@ -175,7 +175,7 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
 
             <div style="margin-bottom:20px;padding:16px;background:#f8fafc;border-radius:6px;">
               <p style="margin:0 0 8px 0;"><strong>Recipient / Serving:</strong> <span style="font-size:16px;color:#0f172a;font-weight:bold;">${escapeHtml(input.personBeingServed) || "N/A"}</span></p>
-              ${input.entityName ? `<p style="margin:0 0 8px 0;"><strong>Entity Served:</strong> <strong>${escapeHtml(input.entityName)}</strong></p>` : ""}
+              ${input.entityName ? `<p style="margin:0 0 8px 0;"><strong>${input.serviceMethod === "authorized-agent" ? "Appointed Agent" : "Entity Served"}:</strong> <strong>${escapeHtml(input.entityName)}</strong></p>` : ""}
               ${input.acceptedBy ? `<p style="margin:0 0 8px 0;"><strong>Accepted By:</strong> <span style="color:#0f172a;font-weight:bold;">${escapeHtml(input.acceptedBy)}${input.recipientTitle ? ` (${escapeHtml(input.recipientTitle)})` : ""}</span></p>` : ""}
               ${input.serviceMethod ? `<p style="margin:0 0 8px 0;"><strong>Method of Service:</strong> ${escapeHtml(methodLabel(input.serviceMethod))}</p>` : ""}
               ${postingLocationText ? `<p style="margin:0 0 8px 0;"><strong>Posting Location:</strong> ${escapeHtml(postingLocationText)}</p>` : ""}

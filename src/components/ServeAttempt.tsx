@@ -424,6 +424,10 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         toast({ title: "Entity / Agent required", description: "Enter the entity name or registered agent being served.", variant: "destructive" });
         return;
       }
+      if (serviceMethod === "authorized-agent" && !effectiveEntity) {
+        toast({ title: "Appointed agent required", description: "Enter the attorney / agent of record authorized by appointment to receive service.", variant: "destructive" });
+        return;
+      }
     }
     submitLockRef.current = true;
     setIsSending(true);
@@ -464,7 +468,8 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         postingLocation, posting_location: postingLocation,
         corporateAgent: entityName || corporateAgent, corporate_agent: entityName || corporateAgent,
         entityName: entityName || corporateAgent, entity_name: entityName || corporateAgent,
-        recipientTitle, recipient_title: recipientTitle,
+        recipientTitle: serviceMethod === "authorized-agent" && recipientTitle === "Registered Agent" ? "" : recipientTitle,
+        recipient_title: serviceMethod === "authorized-agent" && recipientTitle === "Registered Agent" ? "" : recipientTitle,
       };
       // Build payloads for all deliveries at this stop
       const deliveryPayloads = deliveries.map((delivery) => {
@@ -940,7 +945,11 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                             <button
                               key={value}
                               type="button"
-                              onClick={() => setServiceMethod(value)}
+                              onClick={() => {
+                                  setServiceMethod(value);
+                                  if (value === "authorized-agent" && recipientTitle === "Registered Agent") setRecipientTitle("");
+                                  if (value === "corporate" && !recipientTitle) setRecipientTitle("Registered Agent");
+                                }}
                               className={`min-h-11 rounded-lg text-xs font-semibold transition border ${
                                 serviceMethod === value
                                   ? "bg-blue-600 text-white border-blue-600"
@@ -1033,7 +1042,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                             <p className="text-[11px] text-slate-500 mt-1">Service during regular office hours on the registered agent</p>
                           )}
                           {serviceMethod === "authorized-agent" && (
-                            <p className="text-[11px] text-slate-500 mt-1">Attorney or agent authorized to accept service — 12 O.S. § 2004(C)(1)(b)</p>
+                            <p className="text-[11px] text-slate-500 mt-1">Physical recipient who took the papers (e.g. receptionist). Affidavit names the appointed agent separately.</p>
                           )}
                         </div>
                         <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
@@ -1097,6 +1106,39 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                               <SelectItem value="Authorized Representative">Authorized Representative</SelectItem>
                             </SelectContent>
                           </Select>
+                        </div>
+                      </div>
+                    )}
+
+                    {serviceMethod === "authorized-agent" && (
+                      <div className="space-y-2">
+                        <div>
+                          <label className="text-xs font-bold block mb-1">
+                            Appointed agent (attorney / agent of record) <span className="text-red-500">*</span>
+                          </label>
+                          <Input
+                            className="h-10 text-sm"
+                            placeholder="e.g. Timothy Best, Esq."
+                            value={entityName || corporateAgent}
+                            onChange={(e) => {
+                              setEntityName(e.target.value);
+                              setCorporateAgent(e.target.value);
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-bold block mb-1">
+                            Recipient title / role
+                          </label>
+                          <Input
+                            className="h-10 text-sm"
+                            placeholder="e.g. receptionist, legal assistant"
+                            value={recipientTitle === "Registered Agent" ? "" : recipientTitle}
+                            onChange={(e) => setRecipientTitle(e.target.value)}
+                          />
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            Optional. Physical recipient took papers on behalf of the appointed agent; the attestation names the appointed agent (Fed. R. Civ. P. 4(e)(2)(C) / 12 O.S. § 2004).
+                          </p>
                         </div>
                       </div>
                     )}
