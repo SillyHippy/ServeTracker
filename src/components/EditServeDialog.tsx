@@ -302,13 +302,14 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
                 <option value="substituted-residence">Substitute (Residence)</option>
                 <option value="substituted-business">Substitute (Business)</option>
                 <option value="corporate">Corporate / Registered Agent</option>
+                <option value="authorized-agent">Authorized Agent (12 O.S. § 2004)</option>
                 <option value="posting">Posting</option>
                 <option value="non-service">Non-Service</option>
               </select>
             </div>
           )}
 
-          {status === "completed" && ["substituted-residence", "substituted-business", "corporate"].includes(serviceMethod) && (
+          {status === "completed" && ["substituted-residence", "substituted-business", "corporate", "authorized-agent"].includes(serviceMethod) && (
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="acceptedBy" className="text-right">
                 Accepted By

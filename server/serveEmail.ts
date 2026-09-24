@@ -85,6 +85,7 @@ function methodLabel(method?: string): string {
   if (m === "substituted-residence") return "Substitute (Residence)";
   if (m === "substituted-business") return "Substitute (Business)";
   if (m === "corporate") return "Corporate / Registered Agent";
+  if (m === "authorized-agent") return "Agent Authorized by Appointment (12 O.S. § 2004)";
   if (m === "posting") return "Posting";
   if (m === "non-service") return "Non-Service";
   return method;

@@ -194,6 +194,8 @@ export function serviceMethodLabel(methodRaw: string): string {
       return "Substituted Service (Business / Office)";
     case "corporate":
       return "Corporate / Registered Agent";
+    case "authorized-agent":
+      return "Agent Authorized by Appointment (12 O.S. § 2004)";
     case "posting":
       return "Posting (Premises)";
     case "non-service":
@@ -259,6 +261,10 @@ function executionSentence(
       return `I executed service of process upon <strong>${entity}</strong> by delivering ${docs} to <strong>${
         accepted || "the authorized agent"
       }</strong>, the <strong>${title}</strong> authorized to accept service on behalf of <strong>${entity}</strong>.`;
+    case "authorized-agent":
+      return `I executed service upon <strong>${name}</strong> by delivering ${docs} to <strong>${
+        accepted || "the authorized agent"
+      }</strong>, an agent authorized by appointment or by law to receive service of process on behalf of <strong>${name}</strong>, pursuant to 12 O.S. § 2004.`;
     case "posting":
       return `I executed service upon <strong>${name}</strong> by posting ${docs} in a conspicuous manner upon ${postLoc} of the premises.`;
     case "non-service":

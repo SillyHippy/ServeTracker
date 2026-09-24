@@ -410,7 +410,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         toast({ title: "Method required", description: "Select how they were served (Personal or Substitute).", variant: "destructive" });
         return;
       }
-      const needsAccepted = ["substituted-residence", "substituted-business", "corporate"].includes(serviceMethod);
+      const needsAccepted = ["substituted-residence", "substituted-business", "corporate", "authorized-agent"].includes(serviceMethod);
       if (needsAccepted && !refusedToIdentify && !acceptedBy.trim()) {
         toast({ title: "Accepted By required", description: "Enter the name of the person who received the papers.", variant: "destructive" });
         return;
@@ -933,6 +933,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                           {([
                             ["substituted-business", "Substitute (Business)"],
                             ["corporate", "Corporate / Registered Agent"],
+                            ["authorized-agent", "Authorized Agent"],
                             ["posting", "Posting"],
                             ["non-service", "Non-Service"],
                           ] as const).map(([value, label]) => (
@@ -1012,7 +1013,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                       </div>
                     )}
 
-                    {["substituted-residence", "substituted-business", "corporate"].includes(serviceMethod) && (
+                    {["substituted-residence", "substituted-business", "corporate", "authorized-agent"].includes(serviceMethod) && (
                       <div className="space-y-2">
                         <div>
                           <label className="text-xs font-bold block mb-1">
@@ -1030,6 +1031,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                           )}
                           {serviceMethod === "corporate" && (
                             <p className="text-[11px] text-slate-500 mt-1">Service during regular office hours on the registered agent</p>
+                          )}
+                          {serviceMethod === "authorized-agent" && (
+                            <p className="text-[11px] text-slate-500 mt-1">Attorney or agent authorized to accept service — 12 O.S. § 2004(C)(1)(b)</p>
                           )}
                         </div>
                         <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
