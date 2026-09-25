@@ -502,11 +502,6 @@ def prune(cfg: Config, state: dict[str, Any], *, required: int, grace: int, dry_
         created = parse_time(str(row.get("created_at") or ""))
         if created >= oldest_verified or created >= age_cutoff:
             continue
-        rel = str(key)
-        if rel.startswith(cfg.prefix + "/"):
-            rel = rel[len(cfg.prefix) + 1:]
-        if cfg.instance == "jls" and rel in live_serve_photo_rels(cfg):
-            continue
         eligible.append(row)
     deleted = 0
     if eligible and not dry_run:

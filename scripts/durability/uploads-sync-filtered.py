@@ -128,7 +128,7 @@ def sync_once() -> dict[str, int]:
         return {"skipped": 1, "uploaded": 0, "excluded": 0, "restored": 0, "missing": 0, "promoted": 0}
     env = load_env()
     live = live_serve_photo_rels()
-    skip = excluded_rels() - live
+    skip = excluded_rels()
     remote = list_remote(env)
     uploaded = 0
     excluded = 0
