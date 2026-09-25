@@ -355,6 +355,8 @@ async function main() {
       try {
         if (!serveExistsInLiveDb(n.serveId)) {
           console.warn(`[verify-snap] KEEPING ${n.key}: serve row missing from live db - reconcile must restore it first`);
+        } else if (n.photos.some((p) => !existsSync(p))) {
+          console.warn(`[verify-snap] KEEPING ${n.key}: local photo missing — guest snap is same 9p domain`);
         } else {
           await deleteArchiveKey(n.key);
           state.serves[n.serveId].purgedAt = new Date().toISOString();

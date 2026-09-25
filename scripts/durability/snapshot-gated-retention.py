@@ -445,6 +445,31 @@ def ensure_pair_ready_at(state: dict[str, Any], signed_runs: list[tuple[dict[str
     return ready or None
 
 
+def live_serve_photo_rels(cfg: Config) -> set[str]:
+    """Relative uploads paths still referenced by live attempt/photo rows."""
+    if cfg.instance != "jls" or cfg.db is None or not Path(cfg.db).exists():
+        return set()
+    rels: set[str] = set()
+    con = sqlite3.connect(f"file:{cfg.db}?mode=ro", uri=True)
+    try:
+        for sql in (
+            "SELECT image_url FROM serve_attempt_photos",
+            "SELECT thumbnail_url FROM serve_attempt_photos",
+            "SELECT image_url FROM serve_attempts",
+            "SELECT thumbnail_url FROM serve_attempts",
+        ):
+            try:
+                for (url,) in con.execute(sql):
+                    u = str(url or "")
+                    if "/uploads/" in u:
+                        rels.add(u.split("/uploads/", 1)[1].lstrip("/"))
+            except sqlite3.Error:
+                continue
+    finally:
+        con.close()
+    return rels
+
+
 def prune(cfg: Config, state: dict[str, Any], *, required: int, grace: int, dry_run: bool) -> dict[str, Any]:
     signed_runs = signed_verified_runs(state)
     if len(signed_runs) < required:
@@ -476,6 +501,11 @@ def prune(cfg: Config, state: dict[str, Any], *, required: int, grace: int, dry_
             continue
         created = parse_time(str(row.get("created_at") or ""))
         if created >= oldest_verified or created >= age_cutoff:
+            continue
+        rel = str(key)
+        if rel.startswith(cfg.prefix + "/"):
+            rel = rel[len(cfg.prefix) + 1:]
+        if cfg.instance == "jls" and rel in live_serve_photo_rels(cfg):
             continue
         eligible.append(row)
     deleted = 0

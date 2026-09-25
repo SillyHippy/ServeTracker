@@ -240,6 +240,28 @@ export async function putServeArchivePayload(
   }
 }
 
+/** Immediate uploads-prod PUT so a 9p recycle cannot drop the only JPEG copy. */
+export async function putServePhotosToUploadsPrefix(localPaths: string[]): Promise<void> {
+  if (isHotBufferMock() || !localPaths.length) return;
+  loadR2Env();
+  const bucket = process.env.LITESTREAM_BUCKET || "servetracker-saas";
+  const endpoint = process.env.LITESTREAM_ENDPOINT || "";
+  const prefix = (process.env.UPLOADS_PREFIX || "uploads-prod").replace(/\/$/, "");
+  for (const src of localPaths) {
+    if (!src || !existsSync(src)) continue;
+    const name = src.split("/").pop() || "";
+    if (!name) continue;
+    const key = `${prefix}/serves/${name}`;
+    const put = await run(
+      awsArgv(["--endpoint-url", endpoint, "s3", "cp", src, `s3://${bucket}/${key}`, "--only-show-errors"]),
+      awsEnv(),
+    );
+    if (put.code !== 0) {
+      throw new Error(`uploads-prod put failed for ${name}: ${put.stderr || put.stdout}`);
+    }
+  }
+}
+
 /** DB-backed put when row already exists. Prefer putServeArchivePayload on create. */
 export async function putServeArchive(db: Db, serveId: string): Promise<void> {
   loadR2Env();

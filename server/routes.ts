@@ -7,6 +7,7 @@ import type { Db } from "./db";
 import { UPLOADS_DIR, checkpointWal, recordServeTombstone, serveIsTombstoned } from "./db";
 import {
   putServeArchive,
+  putServePhotosToUploadsPrefix,
   writeTombstone,
   hasTombstone,
   deleteArchiveKey,
@@ -2511,7 +2512,23 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       );
     }
 
+    const pendingDir = join("/dev/shm/servetracker-photo-pending", String(id));
+    try {
+      mkdirSync(pendingDir, { recursive: true });
+      for (const { dest } of stagedCommits) {
+        if (existsSync(dest)) {
+          copyFileSync(dest, join(pendingDir, dest.split("/").pop() || "photo.jpg"));
+        }
+      }
+    } catch (err) {
+      console.error(`[serve-sync] pending photo copy failed for ${id}:`, err);
+    }
     cleanupStage();
+
+    const dests = stagedCommits.map((s) => s.dest);
+    void putServePhotosToUploadsPrefix(dests).catch((err) => {
+      console.error(`[serve-sync] uploads-prod put failed for ${id} (row is already committed):`, err);
+    });
 
     const row = db.query("SELECT * FROM serve_attempts WHERE id = ?").get(id) as Record<string, unknown>;
     const response = serveRow(row, db, user.role) as Record<string, unknown>;
