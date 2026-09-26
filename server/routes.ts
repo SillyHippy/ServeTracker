@@ -1847,6 +1847,39 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     return c.json({ success: true });
   });
 
+  // Client Outbox Reconciliation Handshake:
+  // Verifies which serve IDs from the phone's 48-hour buffer exist in SQLite.
+  // Returns missing_ids so the phone can auto-re-post any serve lost during a container rollback.
+  app.post("/api/serves/reconcile", async (c: Context) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const clientIds: string[] = Array.isArray(body?.client_ids) ? body.client_ids : [];
+      if (clientIds.length === 0) {
+        return c.json({ missing_ids: [], checked: 0, found: 0 });
+      }
+
+      // Bound batch to 500 ids max
+      const boundedIds = clientIds.filter((id) => typeof id === "string" && id.trim().length > 0).slice(0, 500);
+      if (boundedIds.length === 0) {
+        return c.json({ missing_ids: [], checked: 0, found: 0 });
+      }
+
+      const placeholders = boundedIds.map(() => "?").join(",");
+      const rows = db.query(`SELECT id FROM serve_attempts WHERE id IN (${placeholders})`).all(...boundedIds) as { id: string }[];
+      const foundSet = new Set(rows.map((r) => r.id));
+      const missingIds = boundedIds.filter((id) => !foundSet.has(id));
+
+      return c.json({
+        missing_ids: missingIds,
+        checked: boundedIds.length,
+        found: foundSet.size,
+      });
+    } catch (err: any) {
+      console.warn("[/api/serves/reconcile] Handshake error:", err);
+      return c.json({ error: err?.message || "Reconciliation failed", missing_ids: [] }, 500);
+    }
+  });
+
   // Serve Attempts Count
   app.get("/api/serves/count", (c: Context) => {
     const user = getUserOrAdmin(c);

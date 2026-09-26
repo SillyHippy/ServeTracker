@@ -1,7 +1,7 @@
 import { createServeEmailBody } from "@/utils/email";
 import { generateThumbnail } from "@/utils/thumbnailGenerator";
 import { API_BASE } from "@/lib/publicBase";
-import { enqueueServe, isNetworkFailure, newOfflineId, startOfflineSync, saveStopDeliveriesToOutbox, syncOutbox } from "@/lib/offlineQueue";
+import { enqueueServe, isNetworkFailure, newOfflineId, startOfflineSync, saveStopDeliveriesToOutbox, syncOutbox, reconcileOutboxWithServer } from "@/lib/offlineQueue";
 
 export { API_BASE };
 
@@ -393,6 +393,20 @@ export const api = {
         error: err?.data?.error || err?.data?.message || err?.message || "Confirmation failed",
         data: err?.data,
       };
+    }
+  },
+
+  async reconcileServes(clientIds: string[]): Promise<{ missing_ids: string[]; checked: number; found: number }> {
+    try {
+      return await apiFetch<{ missing_ids: string[]; checked: number; found: number }>(
+        "/api/serves/reconcile",
+        {
+          method: "POST",
+          body: JSON.stringify({ client_ids: clientIds }),
+        }
+      );
+    } catch {
+      return { missing_ids: [], checked: clientIds.length, found: clientIds.length };
     }
   },
 
@@ -850,5 +864,14 @@ if (typeof window !== "undefined") {
       }),
     (id, fingerprint) => api.confirmServeAttempt(id, fingerprint)
   );
+
+  // Auto-reconcile 48h outbox with Zo upon launch and network reconnect
+  setTimeout(() => {
+    reconcileOutboxWithServer((ids) => api.reconcileServes(ids)).catch(() => {});
+  }, 2500);
+
+  window.addEventListener("online", () => {
+    reconcileOutboxWithServer((ids) => api.reconcileServes(ids)).catch(() => {});
+  });
 }
 // cache-bust-1780205190

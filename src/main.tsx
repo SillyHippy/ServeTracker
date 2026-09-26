@@ -22,6 +22,11 @@ function detectRouterBasename(): string {
 
 // Register service worker and auto-prompt for push notification permissions
 if (typeof window !== "undefined") {
+  // Request persistent storage to protect 48h IndexedDB outbox from OS eviction
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().catch(() => {});
+  }
+
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("/sw.js").then((reg) => {

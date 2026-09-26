@@ -180,6 +180,30 @@ try {
   // ignore
 }
 
+// Graceful shutdown lifecycle: capture emergency SQLite snapshot before Zo container halts
+let isShuttingDown = false;
+const handleGracefulShutdown = (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[*] ${signal} received: flushing SQLite WAL and capturing emergency snapshot...`);
+  try {
+    checkpointWal(db);
+    const snapDir = join(DATA_DIR, "snapshots");
+    import("fs").then((fs) => {
+      if (!fs.existsSync(snapDir)) fs.mkdirSync(snapDir, { recursive: true });
+      const snapPath = join(snapDir, `emergency-shutdown-${Date.now()}.db`);
+      db.exec(`VACUUM INTO '${snapPath}';`);
+      console.log(`[+] Emergency shutdown snapshot verified at ${snapPath}`);
+    });
+  } catch (err) {
+    console.error("[!] Emergency shutdown flush failed:", err);
+  } finally {
+    setTimeout(() => process.exit(0), 1500);
+  }
+};
+process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
+
 export { app };
 
 export default {

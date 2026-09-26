@@ -684,7 +684,11 @@ export async function syncItem(
 
   // Terminal or already-verified states
   if (item.state === "verified") {
-    await removePending(item.id);
+    // 48-hour safety retention: prune only after 48 hours has elapsed
+    const age = Date.now() - new Date(item.updatedAt || item.createdAt).getTime();
+    if (age > 48 * 60 * 60 * 1000) {
+      await removePending(item.id);
+    }
     return { id: item.id, state: "verified", item };
   }
   if (item.state === "skipped") {
@@ -716,7 +720,7 @@ export async function syncItem(
         item.state = "verified";
         item.updatedAt = new Date().toISOString();
         await updateOutboxItem(item);
-        await removePending(item.id);
+        // Retain verified items in IndexedDB for 48h safety window before unlinking
         return { id: item.id, state: "verified", item, receipt: item.serverReceipt };
       } else if (confStatus === 409 || conf?.error === "fingerprint_mismatch") {
         item.state = "conflict";
@@ -732,9 +736,11 @@ export async function syncItem(
         await updateOutboxItem(item);
         return { id: item.id, state: "posted_unverified", item, receipt: item.serverReceipt };
       } else if (confStatus === 404) {
-        item.lastError = "Confirmation failed (HTTP 404): serve attempt not found on server; retaining in outbox";
+        // Ghost confirmation detected (server rolled back or lost attempt): reset to pending to auto-recover
+        item.state = "pending";
+        item.lastError = "Server lost serve attempt (404); auto-recovering";
         await updateOutboxItem(item);
-        return { id: item.id, state: "posted_unverified", item, receipt: item.serverReceipt };
+        return { id: item.id, state: "pending", item, receipt: item.serverReceipt };
       } else {
         item.lastError = `Confirmation unverified (HTTP ${confStatus || "unknown"}); retaining in outbox`;
         await updateOutboxItem(item);
@@ -796,8 +802,9 @@ export async function syncItem(
 
       if (confStatus === 200 || conf?.confirmed) {
         item.state = "verified";
+        item.updatedAt = new Date().toISOString();
         await updateOutboxItem(item);
-        await removePending(item.id);
+        // Retain in IndexedDB for 48h safety window before unlinking
         return { id: item.id, state: "verified", item, receipt: res };
       } else if (confStatus === 409 || conf?.error === "fingerprint_mismatch") {
         item.state = "conflict";
@@ -964,5 +971,78 @@ export function startOfflineSync(postFn: PostFn, confirmFn: ConfirmFn) {
     if (document.visibilityState === "visible") tick();
   });
   window.setInterval(tick, 30_000);
+  window.setInterval(() => {
+    void pruneExpiredOutbox().catch(() => {});
+  }, 60 * 60 * 1000);
   tick();
+}
+
+/**
+ * 48-Hour Outbox Pruner:
+ * Silently deletes verified serve attempts and associated photos that are
+ * older than maxAgeMs (default: 48 hours).
+ * Unverified, pending, or conflict records are NEVER pruned.
+ */
+export async function pruneExpiredOutbox(maxAgeMs: number = 48 * 60 * 60 * 1000): Promise<number> {
+  const items = await listPending();
+  let pruned = 0;
+  const now = Date.now();
+
+  for (const item of items) {
+    if (item.state === "verified" || item.state === "skipped") {
+      const ts = new Date(item.updatedAt || item.createdAt).getTime();
+      if (now - ts > maxAgeMs) {
+        await removePending(item.id);
+        pruned++;
+      }
+    }
+  }
+
+  return pruned;
+}
+
+/**
+ * Reconciles the local 48-hour outbox against the server.
+ * If Zo Computer rolled back to an older snapshot and is missing any serve,
+ * resets those items to "pending" so syncOutbox automatically re-posts them.
+ */
+export async function reconcileOutboxWithServer(
+  checkMissingFn: (ids: string[]) => Promise<{ missing_ids?: string[] }>
+): Promise<{ checked: number; recovered: number }> {
+  const items = await listPending();
+  const now = Date.now();
+  const recentItems = items.filter((item) => {
+    const age = now - new Date(item.updatedAt || item.createdAt).getTime();
+    return age <= 48 * 60 * 60 * 1000;
+  });
+
+  if (recentItems.length === 0) {
+    return { checked: 0, recovered: 0 };
+  }
+
+  const idsToCheck = recentItems.map((i) => i.id);
+  try {
+    const res = await checkMissingFn(idsToCheck);
+    const missing = new Set(res?.missing_ids || []);
+    let recovered = 0;
+
+    for (const item of recentItems) {
+      if (missing.has(item.id)) {
+        console.warn(`[OfflineOutbox] Reconcile detected missing serve ${item.id} on server; recovering to pending.`);
+        item.state = "pending";
+        item.lastError = "Server snapshot rollback detected; auto-recovering";
+        await updateOutboxItem(item);
+        recovered++;
+      }
+    }
+
+    if (recovered > 0) {
+      void syncOutbox().catch(() => {});
+    }
+
+    return { checked: idsToCheck.length, recovered };
+  } catch (err) {
+    console.warn("[OfflineOutbox] Reconcile check failed non-critically:", err);
+    return { checked: idsToCheck.length, recovered: 0 };
+  }
 }
