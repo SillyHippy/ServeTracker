@@ -7,7 +7,7 @@
     "dev": "bun scripts/dev.ts",
     "dev:server": "bun --watch server/index.ts",
     "dev:client": "vite",
-    "build": "vite build",
+    "build": "vite build && bun scripts/update-sw-precache.ts",
     "start:prod": "bun server/index.ts",
     "migrate:appwrite": "bun scripts/migrate-from-appwrite.ts",
     "lint": "eslint .",

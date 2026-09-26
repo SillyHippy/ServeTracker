@@ -222,7 +222,20 @@ export const api = {
     let path = "/api/recipients";
     if (caseId) path += `?case_id=${caseId}`;
     else if (clientId) path += `?client_id=${clientId}`;
-    return apiFetch<any[]>(path);
+    const cacheKey = `servetracker_cached_recipients_${caseId || clientId || "all"}`;
+    try {
+      const data = await apiFetch<any[]>(path);
+      if (Array.isArray(data)) {
+        try { localStorage.setItem(cacheKey, JSON.stringify(data)); } catch {}
+      }
+      return data;
+    } catch (err) {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) return JSON.parse(cached);
+      } catch {}
+      throw err;
+    }
   },
 
   async createRecipient(recipientData: Record<string, unknown>) {
@@ -261,7 +274,19 @@ export const api = {
   },
 
   async getClients() {
-    return apiFetch<Record<string, unknown>[]>("/api/clients");
+    try {
+      const data = await apiFetch<Record<string, unknown>[]>("/api/clients");
+      if (Array.isArray(data)) {
+        try { localStorage.setItem("serve-tracker-clients", JSON.stringify(data)); } catch {}
+      }
+      return data;
+    } catch (err) {
+      try {
+        const cached = localStorage.getItem("serve-tracker-clients");
+        if (cached) return JSON.parse(cached);
+      } catch {}
+      throw err;
+    }
   },
 
   async createClient(client: Record<string, unknown>) {
@@ -484,11 +509,49 @@ export const api = {
 
   async getCases(clientId?: string) {
     const url = clientId ? `/api/cases?client_id=${clientId}` : "/api/cases";
-    return apiFetch<Record<string, unknown>[]>(url);
+    const cacheKey = clientId ? `servetracker_cached_cases_${clientId}` : "servetracker_cached_cases_all";
+    try {
+      const data = await apiFetch<Record<string, unknown>[]>(url);
+      if (Array.isArray(data)) {
+        try { localStorage.setItem(cacheKey, JSON.stringify(data)); } catch {}
+      }
+      return data;
+    } catch (err) {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) return JSON.parse(cached);
+        if (clientId) {
+          const allCached = localStorage.getItem("servetracker_cached_cases_all");
+          if (allCached) {
+            const parsed = JSON.parse(allCached);
+            return parsed.filter((c: any) => c.client_id === clientId || c.clientId === clientId);
+          }
+        }
+      } catch {}
+      throw err;
+    }
   },
 
   async getClientCases(clientId: string) {
-    return apiFetch<Record<string, unknown>[]>(`/api/cases?client_id=${clientId}`);
+    const cacheKey = `servetracker_cached_cases_${clientId}`;
+    try {
+      const data = await apiFetch<Record<string, unknown>[]>(`/api/cases?client_id=${clientId}`);
+      if (Array.isArray(data)) {
+        try { localStorage.setItem(cacheKey, JSON.stringify(data)); } catch {}
+      }
+      return data;
+    } catch (err) {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) return JSON.parse(cached);
+        const allCached = localStorage.getItem("servetracker_cached_cases_all");
+        if (allCached) {
+          const parsed = JSON.parse(allCached);
+          return parsed.filter((c: any) => c.client_id === clientId || c.clientId === clientId);
+        }
+      } catch {}
+      throw err;
+    }
   },
 
   async createCase(caseData: Record<string, unknown>) {
@@ -815,6 +878,20 @@ export const api = {
 
   async auditAffidavit(caseId: string) {
     return apiFetch<import("@/types/AffidavitExecution").AffidavitAuditResult>(`/api/affidavits/${caseId}/audit`);
+  },
+  async preloadOfflineCache() {
+    try {
+      const cases = await api.getCases();
+      if (Array.isArray(cases)) {
+        for (const c of cases.slice(0, 30)) {
+          if (c.id) {
+            api.getRecipients(String(c.id)).catch(() => {});
+          }
+        }
+      }
+      api.getClients().catch(() => {});
+      api.getServerWorkload().catch(() => {});
+    } catch {}
   },
 };
 

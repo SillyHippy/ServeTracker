@@ -19,8 +19,18 @@ export const ServerWorkloadCard: React.FC = () => {
       setIsLoading(true);
       const res = await api.getServerWorkload();
       setData(res);
+      try { localStorage.setItem("servetracker_cached_workload", JSON.stringify(res)); } catch {}
     } catch (err) {
-      toast({ title: "Workload load failed", description: err instanceof Error ? err.message : "Could not load workload", variant: "destructive" });
+      const cached = localStorage.getItem("servetracker_cached_workload");
+      if (cached) {
+        try {
+          setData(JSON.parse(cached));
+          return;
+        } catch {}
+      }
+      if (typeof navigator !== "undefined" && navigator.onLine) {
+        toast({ title: "Workload load failed", description: err instanceof Error ? err.message : "Could not load workload", variant: "destructive" });
+      }
     } finally {
       setIsLoading(false);
     }

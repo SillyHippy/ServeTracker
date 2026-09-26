@@ -1,13 +1,61 @@
 // ServeTracker PWA Service Worker with Offline Shell Caching
-const CACHE_NAME = 'servetracker-v20260926-pwa-offline';
+const CACHE_NAME = 'servetracker-v1790395673037';
 const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.webmanifest',
-  '/favicon.svg',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/placeholder.svg'
+  "/",
+  "/index.html",
+  "/manifest.webmanifest",
+  "/favicon.svg",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/placeholder.svg",
+  "/assets/index-BuBEXJjh.css",
+  "/assets/navigation-B94O8cue.js",
+  "/assets/Dashboard-CgAq2Qmt.js",
+  "/assets/Settings-C2yH3dtH.js",
+  "/assets/dataSwitch-CEDqCFWh.js",
+  "/assets/popover-BnbN6-b8.js",
+  "/assets/Clients-BknCV8VD.js",
+  "/assets/Billing-CLKBL-ud.js",
+  "/assets/PrivacyPage-Cz3BkUmL.js",
+  "/assets/ActiveCases-1uyjrpvQ.js",
+  "/assets/MarkPaidDialog-BxZbCmcQ.js",
+  "/assets/circle-alert-BSYVGlwi.js",
+  "/assets/download-CSJBf_lL.js",
+  "/assets/alert-dialog-Ci7ghhf-.js",
+  "/assets/ActiveCasesPanel-CbNHAXKY.js",
+  "/assets/MyProfile-CYWnT1GJ.js",
+  "/assets/chevron-right-BRwOEan3.js",
+  "/assets/gps-qftsZAZS.js",
+  "/assets/search-Ck871ieW.js",
+  "/assets/checkbox-DLhW01nJ.js",
+  "/assets/index-D8sXkM2h.js",
+  "/assets/copy-DtXnIe5K.js",
+  "/assets/index-DeuyLuxn.js",
+  "/assets/SignatureStatusBadge-DyO4eAOo.js",
+  "/assets/phone-CC9W-hha.js",
+  "/assets/PhotoUploader-BH3Rzcr_.js",
+  "/assets/SignatureEnrollmentDialog-BQu98UyF.js",
+  "/assets/TermsPage-CXZtek4Y.js",
+  "/assets/index-H36UwkWW.js",
+  "/assets/printer-Fr9c9GU0.js",
+  "/assets/MemoryMonitor-CdDA8DmV.js",
+  "/assets/CompleteOnboardingPage-1yWWfNl2.js",
+  "/assets/alert-CBpyN56y.js",
+  "/assets/select-92lp1CCD.js",
+  "/assets/DpaPage-BLzrWQm2.js",
+  "/assets/Migration-CzyAtre9.js",
+  "/assets/History-gXmAp0mz.js",
+  "/assets/dataNormalization-FYCV1Y5L.js",
+  "/assets/ServerAssignmentPanel-1j1INW3j.js",
+  "/assets/user-x-Dqs5UXBz.js",
+  "/assets/chevron-left-DUgzgOhT.js",
+  "/assets/ServerProfileDialog-mtmg7atw.js",
+  "/assets/Servers-Ddpyko2g.js",
+  "/assets/NewServe-CTaS9PZC.js",
+  "/assets/DataExport-BzwcW8BN.js",
+  "/assets/index-BibVHLsB.js",
+  "/assets/index-Dv0iin58.js",
+  "/assets/NudgeServerDialog-BwQ4g04N.js"
 ];
 
 self.addEventListener('install', (event) => {
@@ -62,10 +110,36 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 3. Static assets (JS, CSS, images, fonts): Stale-while-revalidate
-  if (/\.(js|css|woff2?|png|jpe?g|gif|svg|ico|webp)$/i.test(url.pathname)) {
+  // 3. Built static assets (/assets/*): Cache-first since content is hashed
+  if (url.pathname.startsWith('/assets/')) {
     event.respondWith(
-      caches.match(event.request).then((cachedResponse) => {
+      caches.match(event.request, { ignoreSearch: true }).then((cachedResponse) => {
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+        return fetch(event.request).then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseClone);
+            });
+          }
+          return networkResponse;
+        }).catch(async (fetchErr) => {
+          const cache = await caches.open(CACHE_NAME);
+          const fallback = await cache.match(url.pathname, { ignoreSearch: true });
+          if (fallback) return fallback;
+          throw fetchErr;
+        });
+      })
+    );
+    return;
+  }
+
+  // 4. Other static assets (icons, images, fonts, manifests): Stale-while-revalidate
+  if (/\.(js|css|woff2?|png|jpe?g|gif|svg|ico|webp|webmanifest)$/i.test(url.pathname)) {
+    event.respondWith(
+      caches.match(event.request, { ignoreSearch: true }).then((cachedResponse) => {
         const fetchPromise = fetch(event.request).then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             const responseClone = networkResponse.clone();

@@ -42,7 +42,7 @@ const NewServe: React.FC<NewServeProps> = ({ clients: propClients, addServe }) =
             notes: c.notes || "",
           })));
         }
-      });
+      }).catch(() => {});
     }
   }, [propClients]);
 
@@ -102,7 +102,7 @@ const NewServe: React.FC<NewServeProps> = ({ clients: propClients, addServe }) =
 
       {/* Field servers get [] from GET /api/clients by design (routes.ts) — don't block
           them with the admin "no clients" empty state; the form lists assigned cases. */}
-      {clients.length === 0 && !isServer ? (
+      {clients.length === 0 && !isServer && typeof navigator !== "undefined" && navigator.onLine && !localStorage.getItem("servetracker_cached_cases_all") ? (
         <div className="max-w-md mx-auto text-center">
           <h2 className="text-lg font-medium mb-2">No clients found</h2>
           <p className="text-muted-foreground mb-4">

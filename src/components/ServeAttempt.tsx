@@ -143,7 +143,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       // Use api.getCases() — it prefixes the public base path (e.g. /servetracker-staging)
       // and the server filters to assigned-only cases for field-server role.
       const rawCases = await api.getCases();
-      if (Array.isArray(rawCases)) {
+      if (Array.isArray(rawCases) && rawCases.length > 0) {
         const formatted: ClientCase[] = rawCases.map((c: any) => {
           const client = clients.find((cl) => cl.id === c.client_id || (cl as any).$id === c.client_id);
           return {
@@ -157,7 +157,26 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         });
         setAllCases(formatted);
       }
-    } catch (err) { console.error("Error fetching cases:", err); }
+    } catch (err) {
+      console.error("Error fetching cases:", err);
+      try {
+        const cached = localStorage.getItem("servetracker_cached_cases_all");
+        if (cached) {
+          const raw = JSON.parse(cached);
+          if (Array.isArray(raw)) {
+            const formatted: ClientCase[] = raw.map((c: any) => ({
+              id: c.id, caseNumber: c.case_number, caseName: c.case_name,
+              homeAddress: c.home_address, workAddress: c.work_address,
+              clientId: c.client_id, clientName: "Client",
+              personEntityBeingServed: c.defendant_respondent || c.case_name || "",
+              defendantRespondent: c.defendant_respondent || "",
+              status: c.status || "Open",
+            }));
+            setAllCases(formatted);
+          }
+        }
+      } catch {}
+    }
     finally { setIsLoadingCases(false); }
   };
 
@@ -187,14 +206,31 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     try {
       // CRITICAL: filter by case_id only — never by client_id (would mix other cases)
       const recs = caseItem.id ? await api.getRecipients(caseItem.id) : [];
-      setRecipients(recs);
-      setSelectedRecipientId(
-        pickDefaultRecipientId(recs, caseItem.defendantRespondent || caseItem.caseName)
-      );
+      if (recs && recs.length > 0) {
+        setRecipients(recs);
+        setSelectedRecipientId(
+          pickDefaultRecipientId(recs, caseItem.defendantRespondent || caseItem.caseName)
+        );
+      } else {
+        const fallbackRec = {
+          id: `rec_case_${caseItem.id}`,
+          case_id: caseItem.id,
+          name: (caseItem.defendantRespondent || caseItem.caseName || "Defendant").trim(),
+          address: caseItem.homeAddress || caseItem.workAddress || "",
+        };
+        setRecipients([fallbackRec]);
+        setSelectedRecipientId(fallbackRec.id);
+      }
     } catch (err) {
       console.error("Error fetching recipients:", err);
-      setRecipients([]);
-      setSelectedRecipientId("");
+      const fallbackRec = {
+        id: `rec_case_${caseItem.id}`,
+        case_id: caseItem.id,
+        name: (caseItem.defendantRespondent || caseItem.caseName || "Defendant").trim(),
+        address: caseItem.homeAddress || caseItem.workAddress || "",
+      };
+      setRecipients([fallbackRec]);
+      setSelectedRecipientId(fallbackRec.id);
     }
   };
 

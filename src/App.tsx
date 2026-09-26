@@ -167,6 +167,17 @@ const AnimatedRoutes = () => {
     console.log("Updated localStorage serve-tracker-clients:", clients.length, "clients");
   }, [clients]);
 
+  // Preload critical offline pages and warm up cases/recipients cache for field servers
+  useEffect(() => {
+    if (authStatus === "authenticated") {
+      import("./pages/NewServe");
+      import("./pages/Dashboard");
+      import("./pages/ActiveCases");
+      import("./pages/History");
+      api.preloadOfflineCache().catch(() => {});
+    }
+  }, [authStatus]);
+
   const createClient = async (client) => {
     try {
       console.log("Creating new client:", client);
