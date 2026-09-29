@@ -107,11 +107,38 @@ export function extractTokenFromContext(c: Context): string | undefined {
       token = auth.slice(7);
     }
   }
+  if (!token) {
+    token = c.req.header("x-api-key");
+  }
   return token;
 }
 
 export function getSessionUser(token: string | undefined): AuthUser | null {
   if (!token || !db) return null;
+
+  // 0. Check API Key tokens (st_live_...)
+  if (token.startsWith("st_live_")) {
+    try {
+      const { verifyApiKey } = require("./apiKeyAuth");
+      const apiKey = verifyApiKey(db as any, token);
+      if (apiKey) {
+        const userRow = db
+          .query("SELECT id, username, display_name, role, is_active FROM users WHERE id = ?")
+          .get(apiKey.user_id) as any;
+        if (userRow && userRow.is_active === 0) return null;
+        return {
+          id: apiKey.user_id || "usr_api_key",
+          username: userRow?.username || apiKey.name || "api_key",
+          displayName: apiKey.name || "API Key",
+          role: (userRow?.role as "admin" | "server") || "admin",
+          mustChangePassword: false,
+          onboardingStatus: "complete",
+          signatureEnrolled: true,
+        };
+      }
+    } catch {}
+    return null;
+  }
 
   // Better-Auth tokens in cookies are signed (token.signature)
   const cleanBetterToken = token.split(".")[0];

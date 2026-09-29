@@ -991,7 +991,7 @@ export async function pruneExpiredOutbox(maxAgeMs: number = 48 * 60 * 60 * 1000)
   for (const item of items) {
     if (item.state === "verified" || item.state === "skipped") {
       const ts = new Date(item.updatedAt || item.createdAt).getTime();
-      if (now - ts > maxAgeMs) {
+      if (now - ts >= maxAgeMs) {
         await removePending(item.id);
         pruned++;
       }
