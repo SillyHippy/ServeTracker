@@ -530,9 +530,15 @@ test("13. photo store: deduplication, IDB survival, rehydration in order, and cl
   expect(receivedPayload.photos.length).toBe(2);
   expect(receivedPayload.photos[0].imageData).toBe(photo1);
 
-  // Verified confirm removes outbox item AND photo blobs from IndexedDB
+  // Verified confirm retains item in outbox for 48 hours with state "verified"
   const remainingItems = await listPending();
-  expect(remainingItems.length).toBe(0);
+  expect(remainingItems.length).toBe(1);
+  expect(remainingItems[0].state).toBe("verified");
+  // Pruning expired outbox cleans it up
+  const { pruneExpiredOutbox } = await import("../src/lib/offlineQueue");
+  await pruneExpiredOutbox(0);
+  const afterPrune = await listPending();
+  expect(afterPrune.length).toBe(0);
   const remainingPhotos = await getPhotosForServe("photo_test_item");
   expect(remainingPhotos.length).toBe(0);
 });

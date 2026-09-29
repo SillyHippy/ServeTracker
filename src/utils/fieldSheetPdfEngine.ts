@@ -38,7 +38,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
 
   // ================= 1. HEADER =================
   // Left side: Company Name + Contact
-  page.drawText("JUST LEGAL SOLUTIONS", {
+  page.drawText("PROCESS SERVING DISPATCH", {
     x: margin,
     y: y - 14,
     size: 16,
@@ -46,7 +46,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     color: black,
   });
 
-  page.drawText("(539) 367-6832 | Info@JustLegalSolutions.org", {
+  page.drawText("Dispatch Office", {
     x: margin,
     y: y - 28,
     size: 9,
@@ -421,7 +421,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
 
   // ================= 7. FOOTER NOTICE =================
   const notice =
-    "NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact Just Legal Solutions at (539) 367-6832 before proceeding.";
+    "NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact dispatch before proceeding.";
   page.drawText(notice, {
     x: margin,
     y: y - 10,

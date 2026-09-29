@@ -4792,6 +4792,179 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
     return c.json({ ok: true, caseId: res.caseId, alreadyPaid: res.alreadyPaid });
   });
+
+  // Organization Settings & White-Labeling APIs (Single-Tenant / OSS / Demo)
+  app.get("/api/org/settings", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    const row = db.query("SELECT value FROM app_settings WHERE key = 'org_settings'").get() as { value: string } | null;
+    let parsed: any = {};
+    if (row?.value) {
+      try { parsed = JSON.parse(row.value); } catch {}
+    }
+
+    const branding = parsed.branding || {
+      companyName: "JUST LEGAL SOLUTIONS",
+      contactPhone: "(539) 367-6832",
+      dispatchEmail: "Info@JustLegalSolutions.org",
+      logoUrl: "",
+      omitAffidavitFooter: false,
+    };
+
+    const email = parsed.email || {};
+    return c.json({
+      organization: { id: "default", name: branding.companyName || "Organization", slug: "default", plan: "enterprise", status: "active" },
+      branding,
+      emailStatus: {
+        resendConfigured: !!email.resendApiKey,
+        resendFromEmail: email.resendFromEmail || "",
+        brevoConfigured: !!email.brevoApiKey,
+        brevoFromEmail: email.brevoFromEmail || "",
+        mailjetConfigured: !!(email.mailjetApiKey && email.mailjetSecretKey),
+        mailjetFromEmail: email.mailjetFromEmail || "",
+      },
+    });
+  });
+
+  app.put("/api/org/settings", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const row = db.query("SELECT value FROM app_settings WHERE key = 'org_settings'").get() as { value: string } | null;
+    let parsed: any = {};
+    if (row?.value) {
+      try { parsed = JSON.parse(row.value); } catch {}
+    }
+
+    if (body.branding) {
+      parsed.branding = {
+        companyName: String(body.branding.companyName || "").trim(),
+        contactPhone: String(body.branding.contactPhone || "").trim(),
+        dispatchEmail: String(body.branding.dispatchEmail || "").trim(),
+        logoUrl: String(body.branding.logoUrl || "").trim(),
+        omitAffidavitFooter: Boolean(body.branding.omitAffidavitFooter),
+      };
+    }
+
+    if (body.email) {
+      const existingEmail = parsed.email || {};
+      parsed.email = {
+        resendApiKey: body.email.resendApiKey !== undefined ? String(body.email.resendApiKey).trim() : existingEmail.resendApiKey,
+        resendFromEmail: body.email.resendFromEmail !== undefined ? String(body.email.resendFromEmail).trim() : existingEmail.resendFromEmail,
+        brevoApiKey: body.email.brevoApiKey !== undefined ? String(body.email.brevoApiKey).trim() : existingEmail.brevoApiKey,
+        brevoFromEmail: body.email.brevoFromEmail !== undefined ? String(body.email.brevoFromEmail).trim() : existingEmail.brevoFromEmail,
+        mailjetApiKey: body.email.mailjetApiKey !== undefined ? String(body.email.mailjetApiKey).trim() : existingEmail.mailjetApiKey,
+        mailjetSecretKey: body.email.mailjetSecretKey !== undefined ? String(body.email.mailjetSecretKey).trim() : existingEmail.mailjetSecretKey,
+        mailjetFromEmail: body.email.mailjetFromEmail !== undefined ? String(body.email.mailjetFromEmail).trim() : existingEmail.mailjetFromEmail,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const valStr = JSON.stringify(parsed);
+    db.query(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES ('org_settings', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(valStr, now);
+
+    return c.json({
+      success: true,
+      message: "Settings updated successfully",
+      branding: parsed.branding,
+      emailStatus: {
+        resendConfigured: !!parsed.email?.resendApiKey,
+        resendFromEmail: parsed.email?.resendFromEmail || "",
+        brevoConfigured: !!parsed.email?.brevoApiKey,
+        brevoFromEmail: parsed.email?.brevoFromEmail || "",
+        mailjetConfigured: !!(parsed.email?.mailjetApiKey && parsed.email?.mailjetSecretKey),
+        mailjetFromEmail: parsed.email?.mailjetFromEmail || "",
+      },
+    });
+  });
+
+  app.post("/api/org/settings/test-email", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const to = String(body.to || (user as any).email || "").trim();
+    if (!to || !to.includes("@")) {
+      return c.json({ error: "Valid recipient email address is required" }, 400);
+    }
+
+    const row = db.query("SELECT value FROM app_settings WHERE key = 'org_settings'").get() as { value: string } | null;
+    let parsed: any = {};
+    if (row?.value) {
+      try { parsed = JSON.parse(row.value); } catch {}
+    }
+
+    const { sendWithCascade } = await import("./tenantEmail");
+    const result = await sendWithCascade({
+      to,
+      subject: `ServeTracker Email Delivery Test — ${parsed.branding?.companyName || "Organization"}`,
+      html: `<h2>Email Test Successful</h2><p>This test email confirms that your email provider cascade is working correctly.</p>`,
+      config: {
+        ...parsed.email,
+        companyName: parsed.branding?.companyName,
+      },
+    });
+
+    return c.json(result);
+  });
+
+  // GET /api/org/api-keys — List organization API keys
+  app.get("/api/org/api-keys", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const keys = db.query(
+      `SELECT id, name, key_prefix, scopes, last_used_at, expires_at, revoked_at, created_at
+       FROM api_keys
+       ORDER BY created_at DESC`
+    ).all();
+
+    return c.json({ keys });
+  });
+
+  // POST /api/org/api-keys — Generate a new organization API key
+  app.post("/api/org/api-keys", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const name = String(body.name || "API Key").trim();
+    const scopes = Array.isArray(body.scopes) ? body.scopes : ["all"];
+
+    const { generateApiKey } = await import("./apiKeyAuth");
+    const { rawKey, keyRecord } = generateApiKey(db, {
+      userId: user.id,
+      name,
+      scopes,
+    });
+
+    return c.json({
+      success: true,
+      apiKey: rawKey,
+      keyRecord,
+    }, 201);
+  });
+
+  // DELETE /api/org/api-keys/:id — Revoke an API key
+  app.delete("/api/org/api-keys/:id", (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: Admin access required" }, 403);
+    }
+    const keyId = c.req.param("id");
+    const now = new Date().toISOString();
+
+    db.query("UPDATE api_keys SET revoked_at = ? WHERE id = ?").run(now, keyId);
+    return c.json({ success: true, message: "API key revoked" });
+  });
 }
 
 async function deleteServeFiles(imageFileId?: string, thumbnailFileId?: string) {

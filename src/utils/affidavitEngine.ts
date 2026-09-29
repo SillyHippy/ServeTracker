@@ -50,6 +50,14 @@ export interface AffidavitPayload {
   affidavitKind?: AffidavitKind;
   /** Whether to include exhibit photos at the end. Default: true */
   includeExhibits?: boolean;
+  /** White-label agency branding overrides */
+  branding?: {
+    companyName?: string;
+    contactPhone?: string;
+    dispatchEmail?: string;
+    logoUrl?: string;
+    omitAffidavitFooter?: boolean;
+  };
 }
 
 function ordinalDay(n: number): string {
@@ -694,8 +702,13 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
             <div style="margin-top:6px;">
               <strong>${notary.serverName}</strong><br>
               Private Process Server<br>
-              License No. ${notary.licenseNumber || "PSL-2026-2"}<br>
-              Just Legal Solutions &bull; (539) 367-6832
+              License No. ${notary.licenseNumber || "PSL-2026-2"}${(() => {
+                if (data.branding?.omitAffidavitFooter) return "";
+                if (data.branding?.companyName || data.branding?.contactPhone) {
+                  return `<br>\n              ${data.branding.companyName || "Process Serving Agency"}${data.branding.contactPhone ? ` &bull; ${data.branding.contactPhone}` : ""}`;
+                }
+                return "";
+              })()}
             </div>
           </td>
           <td width="4%"></td>

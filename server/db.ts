@@ -647,6 +647,28 @@ function runMigrations(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_event ON audit_logs(event_type);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL DEFAULT 'default',
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      key_prefix TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      scopes TEXT NOT NULL DEFAULT '["all"]',
+      last_used_at TEXT,
+      expires_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_org ON api_keys(org_id);
   `);
 
   const attemptCols = (db.query("PRAGMA table_info(serve_attempts)").all() as { name: string }[]).map((c) => c.name);

@@ -16,6 +16,12 @@ export type FieldSheetPayload = {
   clientName?: string;
   clientPhone?: string;
   hideClient?: boolean;
+  branding?: {
+    companyName?: string;
+    contactPhone?: string;
+    dispatchEmail?: string;
+    logoUrl?: string;
+  };
 };
 
 const AGENCY = "JUST LEGAL SOLUTIONS";
@@ -97,6 +103,14 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
   const phone = text(data.contactInfo);
   const server = text(data.assignedServer);
   const extraNotes = splitRules(data.requirements).length ? text(data.notes) : "";
+
+  const agencyName = data.branding?.companyName || AGENCY;
+  const agencyContact = (data.branding?.contactPhone || data.branding?.dispatchEmail)
+    ? [data.branding.contactPhone, data.branding.dispatchEmail].filter(Boolean).join(" | ")
+    : AGENCY_CONTACT;
+  const billingNotice = data.branding?.companyName
+    ? `If service would exceed the original quoted amount, please contact ${data.branding.companyName}${data.branding.contactPhone ? ` at ${data.branding.contactPhone}` : ""} before proceeding.`
+    : BILLING_NOTICE;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -253,8 +267,9 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
   <div class="page">
     <div class="header">
       <div>
-        <h1 class="company">${esc(AGENCY)}</h1>
-        <p class="company-contact">${esc(AGENCY_CONTACT)}</p>
+        ${data.branding?.logoUrl ? `<img src="${esc(data.branding.logoUrl)}" alt="Logo" style="max-height:44px;max-width:180px;object-fit:contain;margin-bottom:4px;display:block;"/>` : ""}
+        <h1 class="company">${esc(agencyName)}</h1>
+        <p class="company-contact">${esc(agencyContact)}</p>
       </div>
       <div class="job-meta">
         <div class="job-badge">${esc(text(data.caseNumber) || "CASE #")}</div>
@@ -330,7 +345,7 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
       </table>
     </div>
 
-    <div class="bill">${esc(BILLING_NOTICE)}</div>
+    <div class="bill">${esc(billingNotice)}</div>
     <div class="hint">Generic sheet — same for every user. Flip over if you need more room. Nothing is saved.</div>
   </div>
 </body>

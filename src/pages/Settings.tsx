@@ -14,6 +14,8 @@ import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import BackupSettings from "@/components/BackupSettings";
 import UserManagement from "@/components/UserManagement";
+import { TenantBrandingSettings } from "@/components/TenantBrandingSettings";
+import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { clearLocalStorage } from "@/utils/dataSwitch";
 import {
   AlertDialog,
@@ -155,6 +157,10 @@ const Settings: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        <TenantBrandingSettings />
+
+        <ApiKeyManager />
 
         <UserManagement />
 
