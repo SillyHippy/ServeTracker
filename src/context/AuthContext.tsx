@@ -61,6 +61,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setStatus("unauthenticated");
       return false;
     } catch (err) {
+      // Server explicitly rejected the session (dead/revoked cookie): do NOT
+      // mask it as "offline" — clear cache and force re-login. Only genuine
+      // network failures keep the cached-user offline behavior.
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) {
+        localStorage.removeItem(AUTH_CACHE_KEY);
+        setUser(null);
+        setStatus("unauthenticated");
+        return false;
+      }
       // Network failure / offline: preserve active user session
       const cached = localStorage.getItem(AUTH_CACHE_KEY);
       if (cached) {

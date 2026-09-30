@@ -28,6 +28,13 @@ async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): P
     const err: any = new Error(parsed?.error || parsed?.message || parsed?.detail || text || `Request failed: ${res.status}`);
     err.status = res.status;
     err.data = parsed;
+    // 401 = server is up but session is dead/revoked. Bounce to login so the
+    // app never renders stale cached data as live. Offline requests can never
+    // produce a 401 (they throw network errors instead).
+    if (res.status === 401 && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+      try { localStorage.removeItem("servetracker_auth_user"); } catch {}
+      window.location.href = "/login";
+    }
     throw err;
   }
 
@@ -230,6 +237,9 @@ export const api = {
       }
       return data;
     } catch (err) {
+      // 401/403 = server rejected the session: never serve stale cache as live.
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
+
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) return JSON.parse(cached);
@@ -281,6 +291,9 @@ export const api = {
       }
       return data;
     } catch (err) {
+      // 401/403 = server rejected the session: never serve stale cache as live.
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
+
       try {
         const cached = localStorage.getItem("serve-tracker-clients");
         if (cached) return JSON.parse(cached);
@@ -517,6 +530,9 @@ export const api = {
       }
       return data;
     } catch (err) {
+      // 401/403 = server rejected the session: never serve stale cache as live.
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
+
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) return JSON.parse(cached);
@@ -541,6 +557,9 @@ export const api = {
       }
       return data;
     } catch (err) {
+      // 401/403 = server rejected the session: never serve stale cache as live.
+      if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
+
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) return JSON.parse(cached);
