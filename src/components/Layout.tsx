@@ -2,7 +2,6 @@ import React from "react";
 import { Outlet } from "react-router-dom";
 import { Header } from "./Header";
 import PermissionBanner from "./PermissionBanner";
-import { Toaster } from "@/components/ui/toaster";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 
@@ -26,7 +25,7 @@ const Layout: React.FC<LayoutProps> = ({ className }) => {
       >
         <Outlet />
       </main>
-      <Toaster />
+      {/* Toaster lives in App so /login can show auth errors too */}
     </div>
   );
 };

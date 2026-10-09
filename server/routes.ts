@@ -4,6 +4,7 @@ import { writeFile, unlink, mkdir } from "fs/promises";
 import { mkdirSync, copyFileSync, rmSync, existsSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import type { Db } from "./db";
+import { normalizeServiceLevel, isValidServiceLevel } from "./serviceLevel";
 import { UPLOADS_DIR, checkpointWal, recordServeTombstone, serveIsTombstoned } from "./db";
 import {
   putServeArchive,
@@ -395,6 +396,7 @@ function caseRow(row: Record<string, unknown>, role: "admin" | "server" = "serve
       notes: row.notes,
       service_requirements: row.service_requirements || "",
       contact_info: row.contact_info || "",
+      service_level: normalizeServiceLevel(row.service_level),
       status: row.status,
       assigned_to: row.assigned_to || "",
       assigned_name: row.assigned_name || "",
@@ -417,6 +419,7 @@ function caseRow(row: Record<string, unknown>, role: "admin" | "server" = "serve
     notes: row.notes,
     service_requirements: row.service_requirements || "",
     contact_info: row.contact_info || "",
+      service_level: normalizeServiceLevel(row.service_level),
     status: row.status,
     assigned_to: row.assigned_to || "",
     assigned_name: row.assigned_name || "",
@@ -1215,12 +1218,18 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       }
     }
 
+    const serviceLevelRaw = body.service_level ?? body.serviceLevel;
+    if (serviceLevelRaw !== undefined && serviceLevelRaw !== null && String(serviceLevelRaw).trim() !== "" && !isValidServiceLevel(serviceLevelRaw)) {
+      return c.json({ error: "Invalid service_level: use standard, rush, or same_day_rush" }, 400);
+    }
+    const serviceLevel = normalizeServiceLevel(serviceLevelRaw);
+
     if (existing) {
       id = existing.id;
     } else {
       db.query(
-        `INSERT INTO client_cases (id, client_id, case_number, case_name, court_name, plaintiff_petitioner, defendant_respondent, home_address, work_address, documents_to_serve, notes, service_requirements, contact_info, status, assigned_to, assigned_name, quoted_fee, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO client_cases (id, client_id, case_number, case_name, court_name, plaintiff_petitioner, defendant_respondent, home_address, work_address, documents_to_serve, notes, service_requirements, contact_info, status, assigned_to, assigned_name, quoted_fee, service_level, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.client_id,
@@ -1239,6 +1248,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         assignedTo,
         assignedName,
         body.quoted_fee ? String(body.quoted_fee) : "",
+        serviceLevel,
         ts,
         ts
       );
@@ -1386,6 +1396,16 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (!existing) {
       return c.json({ error: "Case not found" }, 404);
     }
+    if (body.service_level !== undefined || body.serviceLevel !== undefined) {
+      const raw = body.service_level ?? body.serviceLevel;
+      if (!isValidServiceLevel(raw)) {
+        return c.json({ error: "Invalid service_level: use standard, rush, or same_day_rush" }, 400);
+      }
+    }
+    const serviceLevel =
+      body.service_level !== undefined || body.serviceLevel !== undefined
+        ? normalizeServiceLevel(body.service_level ?? body.serviceLevel)
+        : normalizeServiceLevel(existing.service_level);
     // Merge: only update provided fields, keep existing for omitted ones
     const caseNumber = body.case_number !== undefined ? body.case_number : existing.case_number;
     const caseName = body.case_name !== undefined ? body.case_name : existing.case_name;
@@ -1426,10 +1446,10 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     db.query(
-      `UPDATE client_cases SET case_number = ?, case_name = ?, court_name = ?, plaintiff_petitioner = ?, defendant_respondent = ?, home_address = ?, work_address = ?, documents_to_serve = ?, notes = ?, service_requirements = ?, contact_info = ?, status = ?, assigned_to = ?, assigned_name = ?, updated_at = ? WHERE id = ?`
+      `UPDATE client_cases SET case_number = ?, case_name = ?, court_name = ?, plaintiff_petitioner = ?, defendant_respondent = ?, home_address = ?, work_address = ?, documents_to_serve = ?, notes = ?, service_requirements = ?, contact_info = ?, status = ?, assigned_to = ?, assigned_name = ?, service_level = ?, updated_at = ? WHERE id = ?`
     ).run(
       caseNumber ?? "", caseName ?? "", courtName ?? "", plaintiff ?? "", defendant ?? "",
-      homeAddress ?? "", workAddress ?? "", documents ?? "", notes ?? "", requirements ?? "", contactInfo ?? "", status ?? "Open", assignedTo ?? "", assignedName ?? "", ts, id
+      homeAddress ?? "", workAddress ?? "", documents ?? "", notes ?? "", requirements ?? "", contactInfo ?? "", status ?? "Open", assignedTo ?? "", assignedName ?? "", serviceLevel, ts, id
     );
 
     // Record assignment events + void signed affidavits when assignment changed.
@@ -3938,6 +3958,17 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       const signedSet = signedRecipientIdsByCase.get(caseId) || new Set<string>();
 
       const pushItem = (personServed: string, recipientId?: string, serviceMethod?: string) => {
+        const assignedRow = db
+          .query("SELECT * FROM users WHERE id = ? OR username = ?")
+          .get(assignedTo, assignedTo) as Record<string, unknown> | null;
+        const eligibility = serverEligibilityError(assignedRow);
+        let signBlocker = eligibility || "";
+        if (!signBlocker && assignedRow && !activeSignature(db, String(assignedRow.id))) {
+          const who =
+            String(assignedRow.legal_name || assignedRow.display_name || assignedRow.username || "Assigned server").trim() ||
+            "Assigned server";
+          signBlocker = `${who}: no active saved signature — enroll one on their profile, or reassign the case`;
+        }
         queue.push({
           caseId,
           caseNumber: String(r.case_number || ""),
@@ -3950,6 +3981,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
           assignedServerName: String(r.assigned_name || "Assigned Server"),
           status: String(r.status || "Served"),
           clientName: user.role === "admin" ? String(r.client_name || "") : undefined,
+          signBlocker,
         });
       };
 

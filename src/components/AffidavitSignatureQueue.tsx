@@ -22,6 +22,8 @@ interface ReadyAffidavitItem {
   status: string;
   clientName?: string;
   executionStatus?: "pending" | "signed" | "none";
+  /** Why Sign is blocked (license / missing signature). Empty when ready. */
+  signBlocker?: string;
 }
 
 export const AffidavitSignatureQueue: React.FC = () => {
@@ -133,14 +135,30 @@ export const AffidavitSignatureQueue: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-              <Button
-                size="sm"
-                className="h-8 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs flex items-center gap-1.5"
-                onClick={() => setSelectedCase(item)}
-              >
-                <PenLine className="h-3.5 w-3.5" /> Sign Affidavit
-              </Button>
+            <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0 self-end sm:self-center max-w-xs">
+              {item.signBlocker ? (
+                <>
+                  <div className="text-[11px] text-red-700 dark:text-red-400 text-right leading-snug">
+                    {item.signBlocker}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled
+                    className="h-8 text-xs font-semibold opacity-60"
+                  >
+                    Sign blocked
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  className="h-8 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs flex items-center gap-1.5"
+                  onClick={() => setSelectedCase(item)}
+                >
+                  <PenLine className="h-3.5 w-3.5" /> Sign Affidavit
+                </Button>
+              )}
             </div>
           </div>
         ))}

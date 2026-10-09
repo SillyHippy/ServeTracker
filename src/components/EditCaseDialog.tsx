@@ -27,6 +27,7 @@ interface ClientCase {
   assigned_name?: string;
   service_requirements?: string;
   contact_info?: string;
+  service_level?: string;
 }
 
 interface EditCaseDialogProps {
@@ -69,6 +70,7 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
     assigned_name: clientCase.assigned_name || "",
     service_requirements: clientCase.service_requirements || "",
     contact_info: clientCase.contact_info || "",
+    service_level: clientCase.service_level || "standard",
   });
 
   const [assignmentChanged, setAssignmentChanged] = useState(false);
@@ -91,6 +93,7 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
         assigned_name: clientCase.assigned_name || "",
         service_requirements: clientCase.service_requirements || "",
         contact_info: clientCase.contact_info || "",
+        service_level: clientCase.service_level || "standard",
       });
       setAssignmentChanged(false);
 
@@ -154,6 +157,7 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
         documents_to_serve: caseData.documents_to_serve,
         service_requirements: caseData.service_requirements,
         contact_info: caseData.contact_info,
+        service_level: caseData.service_level || "standard",
       };
       // Only send assignment fields if user explicitly changed them
       if (assignmentChanged) {
@@ -398,12 +402,31 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
               </Select>
             </div>
             <div>
+              <Label htmlFor="service_level">Service Level</Label>
+              <Select
+                value={caseData.service_level || "standard"}
+                onValueChange={(value) => setCaseData((prev) => ({ ...prev, service_level: value }))}
+              >
+                <SelectTrigger id="service_level">
+                  <SelectValue placeholder="Standard" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="standard">Standard</SelectItem>
+                  <SelectItem value="rush">Rush</SelectItem>
+                  <SelectItem value="same_day_rush">Same-day rush</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Printed on the field sheet. Personal service only is still the per-person checkbox above.
+              </p>
+            </div>
+            <div>
               <Label htmlFor="service_requirements">Case Requirements</Label>
               <Textarea
                 id="service_requirements"
                 value={caseData.service_requirements}
                 onChange={(e) => setCaseData((prev) => ({ ...prev, service_requirements: e.target.value }))}
-                placeholder="Personal only, 3 attempts, posting authorized, gated community, etc."
+                placeholder="3 attempts, posting authorized, gated community, etc."
               />
             </div>
             <div>

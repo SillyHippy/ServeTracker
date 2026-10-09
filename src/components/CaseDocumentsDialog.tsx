@@ -102,6 +102,7 @@ export const CaseDocumentsDialog: React.FC<Props> = ({
             notes: c.notes,
             requirements: c.service_requirements || "",
             contactInfo: c.contact_info || "",
+            serviceLevel: c.service_level || "standard",
             homeAddress: c.home_address,
             workAddress: c.work_address,
             personToServe: c.defendant_respondent || c.case_name || defendantName,

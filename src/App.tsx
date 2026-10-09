@@ -10,6 +10,7 @@ import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import { Loader2 } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
+import { Toaster } from '@/components/ui/toaster';
 
 // Lazy load heavy page components for better initial load performance
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -551,6 +552,8 @@ export default function App() {
         <AuthProvider>
           <NotificationProvider>
             <AnimatedRoutes />
+            {/* Mount outside ProtectedRoute so /login wrong-password toasts are visible */}
+            <Toaster />
           </NotificationProvider>
         </AuthProvider>
       </QueryClientProvider>

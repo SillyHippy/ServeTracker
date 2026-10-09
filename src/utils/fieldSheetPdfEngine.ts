@@ -1,5 +1,6 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { FieldSheetPayload } from "./fieldSheetEngine";
+import { resolveFieldSheetServiceBadges } from "./serviceLevel";
 
 function clean(val: unknown): string {
   return String(val ?? "").trim();
@@ -38,7 +39,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
 
   // ================= 1. HEADER =================
   // Left side: Company Name + Contact
-  page.drawText("PROCESS SERVING DISPATCH", {
+  page.drawText("JUST LEGAL SOLUTIONS", {
     x: margin,
     y: y - 14,
     size: 16,
@@ -46,7 +47,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     color: black,
   });
 
-  page.drawText("Dispatch Office", {
+  page.drawText("(539) 367-6832 | Info@JustLegalSolutions.org", {
     x: margin,
     y: y - 28,
     size: 9,
@@ -141,7 +142,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     color: darkGray,
   });
 
-  // Phone / Contact Box on Right
+  // Phone / Contact Box on Right (when present)
   if (data.contactInfo) {
     const phoneBoxW = 175;
     const phoneBoxH = 58;
@@ -178,7 +179,93 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     });
   }
 
-  y -= (bannerHeight + 10);
+  y -= (bannerHeight + 8);
+
+  // Service-type badge: color = urgency of service_level (not personal-only).
+  // standard = calm black; rush = red; same-day = red+amber double border.
+  // Personal-only stays a separate red warning line inside the box.
+  {
+    const badges = resolveFieldSheetServiceBadges({
+      serviceLevel: data.serviceLevel,
+      recipients: data.recipients,
+    });
+    const badgeH = badges.personalOnly ? 36 : 24;
+    const red = rgb(0.75, 0.08, 0.08);
+    const lightRed = rgb(1, 0.93, 0.93);
+    const amber = rgb(0.85, 0.45, 0.05);
+    const lightAmber = rgb(1, 0.96, 0.88);
+
+    let fillColor = rgb(1, 1, 1);
+    let borderColor = black;
+    let borderWidth = 1.5;
+    let labelColor = darkGray;
+    let valueColor = black;
+
+    if (badges.tone === "rush") {
+      fillColor = lightRed;
+      borderColor = red;
+      borderWidth = 2;
+      labelColor = red;
+      valueColor = red;
+    } else if (badges.tone === "same_day_rush") {
+      fillColor = lightAmber;
+      borderColor = red;
+      borderWidth = 2.5;
+      labelColor = red;
+      valueColor = red;
+    }
+
+    // Outer box
+    page.drawRectangle({
+      x: margin,
+      y: y - badgeH,
+      width: contentWidth,
+      height: badgeH,
+      color: fillColor,
+      borderColor,
+      borderWidth,
+    });
+
+    // Same-day: inner amber frame so it reads louder than plain rush red
+    if (badges.tone === "same_day_rush") {
+      page.drawRectangle({
+        x: margin + 2.5,
+        y: y - badgeH + 2.5,
+        width: contentWidth - 5,
+        height: badgeH - 5,
+        borderColor: amber,
+        borderWidth: 1.5,
+      });
+    }
+
+    page.drawText("SERVICE TYPE:", {
+      x: margin + 8,
+      y: y - 12,
+      size: 7.5,
+      font: fontBold,
+      color: labelColor,
+    });
+
+    page.drawText(badges.serviceTypeLabel, {
+      x: margin + 88,
+      y: y - 12,
+      size: 10,
+      font: fontBold,
+      color: valueColor,
+    });
+
+    if (badges.personalOnly) {
+      page.drawText("PERSONAL SERVICE ONLY  ·  NO SUBSTITUTE SERVICE", {
+        x: margin + 8,
+        y: y - 28,
+        size: 8.5,
+        font: fontBold,
+        color: rgb(0.5, 0.1, 0.1),
+      });
+    }
+
+    y -= (badgeH + 8);
+  }
 
   // ================= 3. ADDRESS BOXES (2 COLUMNS) =================
   const colW = (contentWidth - 8) / 2;
@@ -421,7 +508,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
 
   // ================= 7. FOOTER NOTICE =================
   const notice =
-    "NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact dispatch before proceeding.";
+    "NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact Just Legal Solutions at (539) 367-6832 before proceeding.";
   page.drawText(notice, {
     x: margin,
     y: y - 10,

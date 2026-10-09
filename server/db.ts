@@ -377,6 +377,8 @@ function runMigrations(db: Database) {
   addCaseCol("payment_method", "TEXT DEFAULT ''");
   addCaseCol("payment_notes", "TEXT DEFAULT ''");
   addCaseCol("invoice_email_sent", "INTEGER DEFAULT 0");
+  // Case-level service speed (standard | rush | same_day_rush). Personal-only stays on recipients.
+  addCaseCol("service_level", "TEXT DEFAULT 'standard'");
   db.exec("CREATE INDEX IF NOT EXISTS idx_cases_assigned ON client_cases(assigned_to);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_cases_invoice_id ON client_cases(invoice_id);");
 

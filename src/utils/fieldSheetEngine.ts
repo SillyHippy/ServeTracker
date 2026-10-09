@@ -1,3 +1,5 @@
+import { resolveFieldSheetServiceBadges } from "./serviceLevel";
+
 export type FieldSheetPayload = {
   caseNumber?: string;
   caseName?: string;
@@ -11,17 +13,18 @@ export type FieldSheetPayload = {
   homeAddress?: string;
   workAddress?: string;
   personToServe?: string;
-  recipients?: Array<{ full_name: string; role?: string }>;
+  recipients?: Array<{
+    full_name: string;
+    role?: string;
+    personal_service_only?: boolean | number | string;
+    personalServiceOnly?: boolean | number | string;
+  }>;
+  /** Case-level: standard | rush | same_day_rush */
+  serviceLevel?: string;
   assignedServer?: string;
   clientName?: string;
   clientPhone?: string;
   hideClient?: boolean;
-  branding?: {
-    companyName?: string;
-    contactPhone?: string;
-    dispatchEmail?: string;
-    logoUrl?: string;
-  };
 };
 
 const AGENCY = "JUST LEGAL SOLUTIONS";
@@ -103,14 +106,17 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
   const phone = text(data.contactInfo);
   const server = text(data.assignedServer);
   const extraNotes = splitRules(data.requirements).length ? text(data.notes) : "";
-
-  const agencyName = data.branding?.companyName || AGENCY;
-  const agencyContact = (data.branding?.contactPhone || data.branding?.dispatchEmail)
-    ? [data.branding.contactPhone, data.branding.dispatchEmail].filter(Boolean).join(" | ")
-    : AGENCY_CONTACT;
-  const billingNotice = data.branding?.companyName
-    ? `If service would exceed the original quoted amount, please contact ${data.branding.companyName}${data.branding.contactPhone ? ` at ${data.branding.contactPhone}` : ""} before proceeding.`
-    : BILLING_NOTICE;
+  const badges = resolveFieldSheetServiceBadges({
+    serviceLevel: data.serviceLevel,
+    recipients: data.recipients,
+  });
+  const toneClass =
+    badges.tone === "rush" ? " svc-rush" : badges.tone === "same_day_rush" ? " svc-same-day" : " svc-standard";
+  const serviceBadgeHtml = `<div class="svc-badge${toneClass}${badges.personalOnly ? " svc-personal" : ""}">
+      <span class="svc-lab">SERVICE TYPE</span>
+      <span class="svc-val">${esc(badges.serviceTypeLabel)}</span>
+      ${badges.personalOnly ? `<span class="svc-ps">PERSONAL SERVICE ONLY · NO SUBSTITUTE SERVICE</span>` : ""}
+    </div>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -181,6 +187,40 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
     .name { font-size: 22px; font-weight: 900; line-height: 1.05; text-transform: uppercase; }
     .phone-box { border: 2px solid #000; border-radius: 4px; background: #fff; padding: 6px 8px; }
     .phone-val { font-size: 14px; font-weight: 900; letter-spacing: 0.01em; }
+    .svc-badge {
+      margin-top: 6px;
+      border: 1.5px solid #000;
+      border-radius: 4px;
+      background: #fff;
+      padding: 5px 8px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 4px 10px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    /* Color = service_level urgency. Personal-only only adds the red warning line. */
+    .svc-badge.svc-standard { border-color: #000; background: #fff; }
+    .svc-badge.svc-standard .svc-lab,
+    .svc-badge.svc-standard .svc-val { color: #000; }
+    .svc-badge.svc-rush {
+      border: 2px solid #b91c1c;
+      background: #fef2f2;
+    }
+    .svc-badge.svc-rush .svc-lab,
+    .svc-badge.svc-rush .svc-val { color: #b91c1c; }
+    .svc-badge.svc-same-day {
+      border: 2.5px solid #b91c1c;
+      outline: 2px dashed #d97706;
+      outline-offset: -5px;
+      background: #fff7ed;
+    }
+    .svc-badge.svc-same-day .svc-lab,
+    .svc-badge.svc-same-day .svc-val { color: #b91c1c; }
+    .svc-lab { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; color: #333; }
+    .svc-val { font-size: 12px; font-weight: 900; }
+    .svc-ps { font-size: 10px; font-weight: 900; color: #7f1d1d; width: 100%; }
 
     .addr-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px; }
     .box { border: 1px solid #000; border-radius: 4px; background: #fff; padding: 6px 7px; min-height: 42px; }
@@ -267,9 +307,8 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
   <div class="page">
     <div class="header">
       <div>
-        ${data.branding?.logoUrl ? `<img src="${esc(data.branding.logoUrl)}" alt="Logo" style="max-height:44px;max-width:180px;object-fit:contain;margin-bottom:4px;display:block;"/>` : ""}
-        <h1 class="company">${esc(agencyName)}</h1>
-        <p class="company-contact">${esc(agencyContact)}</p>
+        <h1 class="company">${esc(AGENCY)}</h1>
+        <p class="company-contact">${esc(AGENCY_CONTACT)}</p>
       </div>
       <div class="job-meta">
         <div class="job-badge">${esc(text(data.caseNumber) || "CASE #")}</div>
@@ -290,6 +329,7 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
             : ""
         }
       </div>
+      ${serviceBadgeHtml}
       <div class="addr-row">
         <div class="box">
           <span class="lab">Primary / Home Address</span>
@@ -345,7 +385,7 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
       </table>
     </div>
 
-    <div class="bill">${esc(billingNotice)}</div>
+    <div class="bill">${esc(BILLING_NOTICE)}</div>
     <div class="hint">Generic sheet — same for every user. Flip over if you need more room. Nothing is saved.</div>
   </div>
 </body>

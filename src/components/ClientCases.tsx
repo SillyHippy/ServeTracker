@@ -10,6 +10,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Plus, FileText, Edit, Trash2, Upload, FolderOpen, MapPin, Navigation, Copy, Mail, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, API_BASE } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { ClientData } from "./ClientForm";
@@ -46,6 +47,7 @@ interface ClientCase {
   assigned_name?: string;
   service_requirements?: string;
   contact_info?: string;
+  service_level?: string;
   quoted_fee?: string | number;
   invoice_id?: string;
   invoice_number?: string;
@@ -83,6 +85,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
     notes: "",
     service_requirements: "",
     contact_info: "",
+    service_level: "standard",
     status: "active",
     assigned_to: "",
     assigned_name: "",
@@ -219,6 +222,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
         notes: "",
         service_requirements: "",
         contact_info: "",
+        service_level: "standard",
         status: "active",
         assigned_to: "",
         assigned_name: "",
@@ -525,12 +529,31 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                     />
                   </div>
                   <div>
+                    <Label htmlFor="service_level">Service Level</Label>
+                    <Select
+                      value={newCase.service_level || "standard"}
+                      onValueChange={(v) => setNewCase((prev) => ({ ...prev, service_level: v }))}
+                    >
+                      <SelectTrigger id="service_level" className="w-full">
+                        <SelectValue placeholder="Standard" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="standard">Standard</SelectItem>
+                        <SelectItem value="rush">Rush</SelectItem>
+                        <SelectItem value="same_day_rush">Same-day rush</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      Case-level speed for the field sheet. Personal service only stays on the person checkbox above.
+                    </p>
+                  </div>
+                  <div>
                     <Label htmlFor="service_requirements">Case Requirements</Label>
                     <Textarea
                       id="service_requirements"
                       value={newCase.service_requirements}
                       onChange={(e) => setNewCase(prev => ({ ...prev, service_requirements: e.target.value }))}
-                      placeholder="Personal only, 3 attempts, posting authorized, gated community, etc."
+                      placeholder="3 attempts, posting authorized, gated community, etc."
                     />
                   </div>
                   <div>
@@ -649,6 +672,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                           notes: clientCase.notes,
                           requirements: clientCase.service_requirements || "",
                           contactInfo: clientCase.contact_info || "",
+                          serviceLevel: clientCase.service_level || "standard",
                           homeAddress: clientCase.home_address,
                           workAddress: clientCase.work_address,
                           personToServe: clientCase.defendant_respondent || clientCase.case_name,

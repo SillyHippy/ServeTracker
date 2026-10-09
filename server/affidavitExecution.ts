@@ -47,16 +47,28 @@ export function computeLicenseStatus(
 /** Eligibility gate used by assignment + affidavit signing (v1: deny). */
 export function serverEligibilityError(userRow: Record<string, unknown> | null): string | null {
   if (!userRow) return "Server not found";
-  if (String(userRow.is_active) !== "1" && userRow.is_active !== 1) return "Server is deactivated";
-  if (String(userRow.onboarding_status || "") !== "active") return "Server onboarding is not complete";
-  const lic = computeLicenseStatus(
-    userRow.license_number,
-    userRow.license_jurisdiction,
-    userRow.license_expires_at
-  );
-  if (lic === "missing") return "Server has no license number on file";
-  if (lic === "incomplete") return "Server license record is incomplete";
-  if (lic === "expired") return "Server license is expired";
+  const who =
+    String(userRow.legal_name || userRow.display_name || userRow.username || "Assigned server").trim() ||
+    "Assigned server";
+  if (String(userRow.is_active) !== "1" && userRow.is_active !== 1) {
+    return `${who} is deactivated`;
+  }
+  if (String(userRow.onboarding_status || "") !== "active") {
+    return `${who}: onboarding is not complete`;
+  }
+  const num = String(userRow.license_number || "").trim();
+  const jur = String(userRow.license_jurisdiction || "").trim();
+  const exp = String(userRow.license_expires_at || "").trim();
+  const lic = computeLicenseStatus(num, jur, exp);
+  if (lic === "missing") return `${who}: no license number on file`;
+  if (lic === "incomplete") {
+    const missing: string[] = [];
+    if (!jur) missing.push("jurisdiction");
+    if (!exp) missing.push("expiration date");
+    else if (Number.isNaN(new Date(exp + "T00:00:00Z").getTime())) missing.push("valid expiration date");
+    return `${who}: license record is incomplete (missing ${missing.join(" and ") || "required fields"})`;
+  }
+  if (lic === "expired") return `${who}: license is expired`;
   return null;
 }
 
@@ -475,8 +487,16 @@ export function validateSignable(
   );
   if (methodErr) return { ok: false, error: methodErr };
 
+  const who =
+    String(assigned.legal_name || assigned.display_name || assigned.username || "Assigned server").trim() ||
+    "Assigned server";
   const sig = activeSignature(db, String(assigned.id));
-  if (!sig) return { ok: false, error: "Assigned server has no active saved signature" };
+  if (!sig) {
+    return {
+      ok: false,
+      error: `${who}: no active saved signature — enroll one on their profile, or reassign the case to a server who has one`,
+    };
+  }
 
   return { ok: true, bundle, signature: sig, targetRecipient };
 }

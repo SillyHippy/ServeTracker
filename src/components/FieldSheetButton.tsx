@@ -51,6 +51,12 @@ export default function FieldSheetButton({
         const res = await api.getAffidavitData(lookupKey, data.clientId);
         if (cancelled || !res?.case) return;
         const c = res.case as Record<string, any>;
+        const assigned =
+          typeof res.assignedServer === "object" && res.assignedServer
+            ? String(res.assignedServer.displayName || res.assignedServer.legalName || "").trim()
+            : typeof res.assignedServer === "string"
+              ? res.assignedServer
+              : "";
         setResolvedData((prev) => ({
           ...prev,
           caseNumber: c.case_number || prev.caseNumber,
@@ -61,11 +67,12 @@ export default function FieldSheetButton({
           documents: c.documents_to_serve || c.documentsToServe || prev.documents,
           requirements: c.service_requirements || c.requirements || prev.requirements,
           contactInfo: c.contact_info || c.contactInfo || prev.contactInfo,
+          serviceLevel: c.service_level || c.serviceLevel || prev.serviceLevel || "standard",
           homeAddress: c.home_address || prev.homeAddress,
           workAddress: c.work_address || prev.workAddress,
           notes: c.notes || prev.notes,
           recipients: Array.isArray(res.recipients) && res.recipients.length > 0 ? res.recipients : prev.recipients,
-          assignedServer: res.assignedServer || prev.assignedServer,
+          assignedServer: assigned || c.assigned_name || prev.assignedServer,
         }));
       } catch (err) {
         console.warn("FieldSheetButton: failed to fetch live case data, using props", err);

@@ -85,6 +85,7 @@ export interface ActiveCaseItem {
   work_address?: string;
   documents_to_serve?: string;
   service_requirements?: string;
+  service_level?: string;
   contact_info?: string;
   notes?: string;
   assigned_to?: string;
@@ -531,6 +532,7 @@ export default function ActiveCasesPanel({
                           assigned_to: item.assigned_to,
                           assigned_name: item.assigned_name,
                           service_requirements: item.service_requirements,
+                          service_level: item.service_level,
                           contact_info: item.contact_info,
                         }}
                         onUpdate={handleEditCase}
@@ -598,6 +600,7 @@ export default function ActiveCasesPanel({
                         notes: item.notes,
                         requirements: item.service_requirements || "",
                         contactInfo: item.contact_info || "",
+                        serviceLevel: item.service_level || "standard",
                         homeAddress: item.home_address,
                         workAddress: item.work_address,
                         personToServe: person,

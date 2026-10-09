@@ -13,6 +13,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
   const { status, mustChangePassword, refreshAuth } = useAuth();
@@ -26,6 +27,7 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setAuthError(null);
 
     try {
       const result = await login(password, username.trim() || undefined);
@@ -46,12 +48,17 @@ export default function LoginPage() {
           }
         }
       } else {
-        throw new Error("Incorrect login");
+        throw new Error(result.message || "Invalid username or password");
       }
-    } catch {
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "Invalid username or password";
+      setAuthError(message);
       toast({
         title: "Authentication failed",
-        description: "Invalid username or password",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -74,6 +81,14 @@ export default function LoginPage() {
 
         <form onSubmit={handleLogin}>
           <CardContent className="space-y-4">
+            {authError ? (
+              <div
+                role="alert"
+                className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
+              >
+                {authError}
+              </div>
+            ) : null}
             <div className="space-y-2">
               <label htmlFor="username" className="text-sm font-medium text-foreground">
                 Username or Email <span className="text-xs text-muted-foreground">(Optional for Admin)</span>
