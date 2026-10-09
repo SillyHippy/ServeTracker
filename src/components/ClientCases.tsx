@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, API_BASE } from "@/lib/api";
+import { serveEditPayload } from "@/utils/serveEditPayload";
 import { useToast } from "@/hooks/use-toast";
 import { ClientData } from "./ClientForm";
 import ClientDocuments from "./ClientDocuments";
@@ -320,7 +321,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
   const updateServe = async (serveData: any) => {
     try {
       const id = serveData.id || serveData.$id;
-      await api.updateServeAttempt(id, serveData);
+      await api.updateServeAttempt(id, serveEditPayload(serveData));
       const clientServes = await api.getClientServeAttempts(client.id);
       setServes(clientServes as unknown as ServeAttemptData[]);
       toast({

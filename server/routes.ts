@@ -4,8 +4,7 @@ import { writeFile, unlink, mkdir } from "fs/promises";
 import { mkdirSync, copyFileSync, rmSync, existsSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import type { Db } from "./db";
-import { normalizeServiceLevel, isValidServiceLevel } from "./serviceLevel";
-import { UPLOADS_DIR, checkpointWal, recordServeTombstone, serveIsTombstoned } from "./db";
+import { UPLOADS_DIR, checkpointWal, recordServeTombstone, serveIsTombstoned, getSystemSetting, setSystemSetting } from "./db";
 import {
   putServeArchive,
   putServePhotosToUploadsPrefix,
@@ -38,6 +37,7 @@ import {
 } from "./serveEmail";
 import { uploadSuccessfulServeToDrive } from "./driveUpload";
 import { stampServeTrackerPhoto, parseLatLng } from "./photoStamp";
+import { normalizeServiceLevel, isValidServiceLevel } from "./serviceLevel";
 import { getAuthUser, registerUserRoutes, type AuthUser } from "./auth";
 import { registerSignatureRoutes, SIGNATURES_DIR } from "./signatures";
 import {
@@ -68,6 +68,7 @@ import {
   validateSignable,
   executionTargetRecipientId,
 } from "./affidavitExecution";
+import { getJurisdictionPolicy } from "../src/utils/jurisdictionRules";
 
 function newId() {
   return randomUUID().replace(/-/g, "");
@@ -419,7 +420,7 @@ function caseRow(row: Record<string, unknown>, role: "admin" | "server" = "serve
     notes: row.notes,
     service_requirements: row.service_requirements || "",
     contact_info: row.contact_info || "",
-      service_level: normalizeServiceLevel(row.service_level),
+    service_level: normalizeServiceLevel(row.service_level),
     status: row.status,
     assigned_to: row.assigned_to || "",
     assigned_name: row.assigned_name || "",
@@ -1335,7 +1336,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
         db,
         id,
         String(body.client_id || ""),
-        String(body.defendant_respondent || ""),
+        String(body.defendant_respondent),
         String(body.home_address || ""),
         String(body.work_address || ""),
         ts
@@ -1396,16 +1397,6 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (!existing) {
       return c.json({ error: "Case not found" }, 404);
     }
-    if (body.service_level !== undefined || body.serviceLevel !== undefined) {
-      const raw = body.service_level ?? body.serviceLevel;
-      if (!isValidServiceLevel(raw)) {
-        return c.json({ error: "Invalid service_level: use standard, rush, or same_day_rush" }, 400);
-      }
-    }
-    const serviceLevel =
-      body.service_level !== undefined || body.serviceLevel !== undefined
-        ? normalizeServiceLevel(body.service_level ?? body.serviceLevel)
-        : normalizeServiceLevel(existing.service_level);
     // Merge: only update provided fields, keep existing for omitted ones
     const caseNumber = body.case_number !== undefined ? body.case_number : existing.case_number;
     const caseName = body.case_name !== undefined ? body.case_name : existing.case_name;
@@ -1434,6 +1425,17 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const assignedName = body.assigned_name !== undefined || body.assignedName !== undefined
       ? String(body.assigned_name || body.assignedName || "").trim()
       : (existing.assigned_name as string || "");
+
+    if (body.service_level !== undefined || body.serviceLevel !== undefined) {
+      const raw = body.service_level ?? body.serviceLevel;
+      if (raw !== null && String(raw).trim() !== "" && !isValidServiceLevel(raw)) {
+        return c.json({ error: "Invalid service_level: use standard, rush, or same_day_rush" }, 400);
+      }
+    }
+    const serviceLevel =
+      body.service_level !== undefined || body.serviceLevel !== undefined
+        ? normalizeServiceLevel(body.service_level ?? body.serviceLevel)
+        : normalizeServiceLevel(existing.service_level);
 
     // Assignment goes through the SAME validation helper as /api/admin/cases/:id/assign.
     if (body.assigned_to !== undefined || body.assignedTo !== undefined) {
@@ -2853,6 +2855,22 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
     const updates: string[] = [];
     const values: unknown[] = [];
+    const suppliedOccurrence = body.occurredAt ?? body.occurred_at;
+    if (body.occurredAt !== undefined && body.occurred_at !== undefined && body.occurredAt !== body.occurred_at) {
+      return c.json({ error: "Conflicting occurrence timestamps" }, 400);
+    }
+    if (suppliedOccurrence !== undefined && (typeof suppliedOccurrence !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(suppliedOccurrence) || Number.isNaN(Date.parse(suppliedOccurrence)))) {
+      return c.json({ error: "Invalid occurredAt: use a UTC ISO timestamp" }, 400);
+    }
+    const originalOccurrence = String(existing.occurred_at || existing.timestamp || "");
+    const occurrenceChanged = suppliedOccurrence !== undefined && new Date(suppliedOccurrence).getTime() !== new Date(originalOccurrence).getTime();
+    if (occurrenceChanged) {
+      body.occurredAt = suppliedOccurrence;
+      delete body.occurred_at;
+    } else {
+      delete body.occurredAt;
+      delete body.occurred_at;
+    }
 
     // GPS / coordinates are intentionally omitted — original attempt GPS is immutable on edit.
     const fieldMap: Record<string, string> = {
@@ -2895,6 +2913,13 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       service_address: "service_address",
     };
 
+    const materialChanged = Object.entries(fieldMap).some(([key, column]) =>
+      body[key] !== undefined && String(body[key] ?? "") !== String(existing[column] ?? "")
+    );
+    if (!materialChanged) {
+      return c.json(serveRow(existing, db, "admin"));
+    }
+
     for (const [key, column] of Object.entries(fieldMap)) {
       if (body[key] !== undefined) {
         updates.push(`${column} = ?`);
@@ -2906,24 +2931,21 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       values.push(id);
       db.query(`UPDATE serve_attempts SET ${updates.join(", ")} WHERE id = ?`).run(...values);
 
-      // Audit Log Entry if notes or status changed
+      // Preserve before/after occurrence and actor in the edit ledger.
       const notesChanged = body.notes !== undefined && String(body.notes) !== String(existing.notes ?? "");
       const statusChanged = body.status !== undefined && String(body.status) !== String(existing.status ?? "");
-      if (notesChanged || statusChanged) {
+      if (notesChanged || statusChanged || occurrenceChanged) {
         const newNotes = body.notes !== undefined ? String(body.notes ?? "") : String(existing.notes ?? "");
         const newStatus = body.status !== undefined ? String(body.status ?? "") : String(existing.status ?? "");
         db.query(
-          `INSERT INTO serve_attempt_edits (id, serve_id, edited_at, edited_by, old_notes, new_notes, old_status, new_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO serve_attempt_edits (id, serve_id, edited_at, edited_by, old_notes, new_notes, old_status, new_status, old_occurred_at, new_occurred_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
-          newId(),
-          id,
-          nowIso(),
-          "user",
-          String(existing.notes ?? ""),
-          newNotes,
-          String(existing.status ?? ""),
-          newStatus
+          newId(), id, nowIso(), user.id,
+          String(existing.notes ?? ""), newNotes,
+          String(existing.status ?? ""), newStatus,
+          occurrenceChanged ? originalOccurrence : null,
+          occurrenceChanged ? suppliedOccurrence : null
         );
       }
     }
@@ -2940,8 +2962,8 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     });
     // Cases stay active until an admin closes them. Do not auto-close on successful serve.
 
-    // Material attempt edits void any signed execution for the case.
-    if (row.case_id) {
+    // Preserve the signed snapshot; only a changed attempt fact voids its active execution.
+    if (row.case_id && materialChanged) {
       invalidateExecutionsForCase(db, String(row.case_id), "material_change");
     }
 
@@ -3419,6 +3441,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       createdAt: r.created_at,
       signedAt: r.signed_at,
       finalizedAt: r.finalized_at,
+      documentType: (r.document_type as string) || "affidavit",
+      document_type: (r.document_type as string) || "affidavit",
+      statutoryBasis: (r.statutory_basis as string) || "",
       recipientId: executionTargetRecipientId(r),
       recipient_id: executionTargetRecipientId(r),
     };
@@ -3665,6 +3690,32 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
   });
 
+  // GET /api/settings — system settings
+  app.get("/api/settings", (c: Context) => {
+    getUserOrAdmin(c);
+    const allowDeclarations = getSystemSetting(db, "allow_declarations", "true") === "true";
+    return c.json({
+      allow_declarations: allowDeclarations,
+    });
+  });
+
+  // PUT /api/settings — admin only
+  app.put("/api/settings", async (c: Context) => {
+    const user = getUserOrAdmin(c);
+    if (user.role !== "admin") {
+      return c.json({ error: "Forbidden: only administrators can change system settings" }, 403);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    if (typeof body.allow_declarations === "boolean") {
+      setSystemSetting(db, "allow_declarations", body.allow_declarations ? "true" : "false");
+    }
+    const allowDeclarations = getSystemSetting(db, "allow_declarations", "true") === "true";
+    return c.json({
+      success: true,
+      allow_declarations: allowDeclarations,
+    });
+  });
+
   // ---------- Affidavit e-signature ----------
 
   // POST /api/affidavits/prepare — readiness + preview + snapshot hash
@@ -3685,8 +3736,36 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     }
 
     const requestedKind = String(body.affidavitKind || body.affidavit_kind || "").trim();
+    const requestedDocType = String(body.documentType || body.document_type || "affidavit").trim().toLowerCase();
     const recipientId = String(body.recipientId || body.recipient_id || "").trim();
     const kind = inferAffidavitKind(bundle.attempts, requestedKind);
+    const docType = requestedDocType === "declaration" ? "declaration" : "affidavit";
+
+    const venueStateInput = String(body.notaryState || body.notary_state || bundle.caseObj.court_name || "OK");
+    const jurisdiction = getJurisdictionPolicy(venueStateInput);
+    if (docType === "declaration") {
+      const allowDeclarations = getSystemSetting(db, "allow_declarations", "true") === "true";
+      if (!allowDeclarations) {
+        return c.json(
+          {
+            error: "Unsworn declarations are disabled by system administrator.",
+            ready: false,
+          },
+          400
+        );
+      }
+      if (!jurisdiction.allowDeclaration) {
+        return c.json(
+          {
+            error: `Jurisdiction ${jurisdiction.stateCode} mandates a sworn notarized return of service. Declaration is not permitted.`,
+            ready: false,
+            jurisdiction,
+          },
+          400
+        );
+      }
+    }
+    const statutoryBasis = docType === "declaration" ? (jurisdiction.declarationStatute || "12 O.S. § 426") : "";
 
     // With more than one legal recipient there is no safe default: silently
     // picking the first is what let an LLC inherit its agent's personal serve.
@@ -3711,7 +3790,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     if (!v.ok) return c.json({ error: v.error, ready: false }, 400);
 
     const sig = activeSignature(db, String(bundle.assignedServer!.id));
-    const snapshot = buildSourceSnapshot(bundle, sig, kind, undefined, recipientId || undefined);
+    const snapshot = buildSourceSnapshot(bundle, sig, kind, undefined, recipientId || undefined, docType, statutoryBasis);
     const sourceHash = sha256Hex(snapshot);
 
     const lastSuccessful = latestSuccessfulServe(
@@ -3726,6 +3805,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       ready: true,
       caseId: bundle.caseObj.id,
       caseNumber: bundle.caseObj.case_number,
+      documentType: docType,
+      statutoryBasis,
+      jurisdictionPolicy: jurisdiction,
       sourceHash,
       recipientId: targetRec?.id || null,
       assignedServer: {
@@ -3765,9 +3847,29 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const caseKey = c.req.param("id");
     const body = await c.req.json().catch(() => ({}));
     const requestedKind = String(body.affidavitKind || body.affidavit_kind || "").trim();
+    const requestedDocType = String(body.documentType || body.document_type || "affidavit").trim().toLowerCase();
     const recipientId = String(body.recipientId || body.recipient_id || "").trim();
     const venueCounty = String(body.notaryCounty || body.notary_county || "").trim().toUpperCase();
     const venueState = String(body.notaryState || body.notary_state || "OKLAHOMA").trim().toUpperCase() || "OKLAHOMA";
+    const docType = requestedDocType === "declaration" ? "declaration" : "affidavit";
+
+    const jurisdiction = getJurisdictionPolicy(venueState);
+    if (docType === "declaration") {
+      const allowDeclarations = getSystemSetting(db, "allow_declarations", "true") === "true";
+      if (!allowDeclarations) {
+        return c.json(
+          { error: "Unsworn declarations are disabled by system administrator." },
+          400
+        );
+      }
+      if (!jurisdiction.allowDeclaration) {
+        return c.json(
+          { error: `Jurisdiction ${jurisdiction.stateCode} mandates a sworn notarized return of service. Declaration is not permitted.` },
+          400
+        );
+      }
+    }
+    const statutoryBasis = docType === "declaration" ? (jurisdiction.declarationStatute || "12 O.S. § 426") : "";
 
     const bundle = loadCaseBundle(db, caseKey);
     if (!bundle) return c.json({ error: "Case not found" }, 404);
@@ -3805,7 +3907,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const snapshot = buildSourceSnapshot(v.bundle!, sig, kind, {
       state: venueState || "OKLAHOMA",
       county: venueCounty,
-    }, recipientId || undefined);
+    }, recipientId || undefined, docType, statutoryBasis);
     const sourceHash = sha256Hex(snapshot);
     const mode: "server_self" | "admin_on_behalf" =
       user.role === "admin" && !isSelf ? "admin_on_behalf" : "server_self";
@@ -3825,6 +3927,9 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       sourceHash,
       renderedHash: "pending",
       supersedesExecutionId: prev ? String(prev.id) : undefined,
+      documentType: docType,
+      statutoryBasis,
+      venueState,
     });
 
     const rendered = await renderExecutionHtml(db, tempExecution);
@@ -3840,6 +3945,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
     const user = getUserOrAdmin(c);
     const caseKey = c.req.param("id");
     const recipientId = c.req.query("recipientId") || c.req.query("recipient_id") || "";
+    const requestedDocType = String(c.req.query("documentType") || c.req.query("document_type") || "").trim().toLowerCase();
     const bundle = loadCaseBundle(db, caseKey);
     if (!bundle) return c.json({ error: "Case not found" }, 404);
 
@@ -3857,12 +3963,13 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
 
     // Strict: with a recipient named, only that recipient's own signed
     // execution may be returned — never a co-recipient's affidavit.
-    const exec = activeExecution(db, String(bundle.caseObj.id), recipientId || undefined);
+    const exec = activeExecution(db, String(bundle.caseObj.id), recipientId || undefined, requestedDocType || undefined);
     if (!exec) {
       const who = recipientId ? ` for ${String(targetRec?.full_name || "this recipient")}` : "";
+      const docLabel = requestedDocType === "declaration" ? "declaration" : "affidavit";
       return c.json(
         {
-          error: `No active signed affidavit${who} — sign the affidavit first`,
+          error: `No active signed ${docLabel}${who} — sign the ${docLabel} first`,
           status: "none",
           recipientId: recipientId || null,
         },
@@ -4823,179 +4930,6 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       return c.json({ error: "Invoice not found on any case" }, 404);
     }
     return c.json({ ok: true, caseId: res.caseId, alreadyPaid: res.alreadyPaid });
-  });
-
-  // Organization Settings & White-Labeling APIs (Single-Tenant / OSS / Demo)
-  app.get("/api/org/settings", (c: Context) => {
-    const user = getUserOrAdmin(c);
-    const row = db.query("SELECT value FROM app_settings WHERE key = 'org_settings'").get() as { value: string } | null;
-    let parsed: any = {};
-    if (row?.value) {
-      try { parsed = JSON.parse(row.value); } catch {}
-    }
-
-    const branding = parsed.branding || {
-      companyName: "JUST LEGAL SOLUTIONS",
-      contactPhone: "(539) 367-6832",
-      dispatchEmail: "Info@JustLegalSolutions.org",
-      logoUrl: "",
-      omitAffidavitFooter: false,
-    };
-
-    const email = parsed.email || {};
-    return c.json({
-      organization: { id: "default", name: branding.companyName || "Organization", slug: "default", plan: "enterprise", status: "active" },
-      branding,
-      emailStatus: {
-        resendConfigured: !!email.resendApiKey,
-        resendFromEmail: email.resendFromEmail || "",
-        brevoConfigured: !!email.brevoApiKey,
-        brevoFromEmail: email.brevoFromEmail || "",
-        mailjetConfigured: !!(email.mailjetApiKey && email.mailjetSecretKey),
-        mailjetFromEmail: email.mailjetFromEmail || "",
-      },
-    });
-  });
-
-  app.put("/api/org/settings", async (c: Context) => {
-    const user = getUserOrAdmin(c);
-    if (user.role !== "admin") {
-      return c.json({ error: "Forbidden: Admin access required" }, 403);
-    }
-
-    const body = await c.req.json().catch(() => ({}));
-    const row = db.query("SELECT value FROM app_settings WHERE key = 'org_settings'").get() as { value: string } | null;
-    let parsed: any = {};
-    if (row?.value) {
-      try { parsed = JSON.parse(row.value); } catch {}
-    }
-
-    if (body.branding) {
-      parsed.branding = {
-        companyName: String(body.branding.companyName || "").trim(),
-        contactPhone: String(body.branding.contactPhone || "").trim(),
-        dispatchEmail: String(body.branding.dispatchEmail || "").trim(),
-        logoUrl: String(body.branding.logoUrl || "").trim(),
-        omitAffidavitFooter: Boolean(body.branding.omitAffidavitFooter),
-      };
-    }
-
-    if (body.email) {
-      const existingEmail = parsed.email || {};
-      parsed.email = {
-        resendApiKey: body.email.resendApiKey !== undefined ? String(body.email.resendApiKey).trim() : existingEmail.resendApiKey,
-        resendFromEmail: body.email.resendFromEmail !== undefined ? String(body.email.resendFromEmail).trim() : existingEmail.resendFromEmail,
-        brevoApiKey: body.email.brevoApiKey !== undefined ? String(body.email.brevoApiKey).trim() : existingEmail.brevoApiKey,
-        brevoFromEmail: body.email.brevoFromEmail !== undefined ? String(body.email.brevoFromEmail).trim() : existingEmail.brevoFromEmail,
-        mailjetApiKey: body.email.mailjetApiKey !== undefined ? String(body.email.mailjetApiKey).trim() : existingEmail.mailjetApiKey,
-        mailjetSecretKey: body.email.mailjetSecretKey !== undefined ? String(body.email.mailjetSecretKey).trim() : existingEmail.mailjetSecretKey,
-        mailjetFromEmail: body.email.mailjetFromEmail !== undefined ? String(body.email.mailjetFromEmail).trim() : existingEmail.mailjetFromEmail,
-      };
-    }
-
-    const now = new Date().toISOString();
-    const valStr = JSON.stringify(parsed);
-    db.query(`
-      INSERT INTO app_settings (key, value, updated_at) VALUES ('org_settings', ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(valStr, now);
-
-    return c.json({
-      success: true,
-      message: "Settings updated successfully",
-      branding: parsed.branding,
-      emailStatus: {
-        resendConfigured: !!parsed.email?.resendApiKey,
-        resendFromEmail: parsed.email?.resendFromEmail || "",
-        brevoConfigured: !!parsed.email?.brevoApiKey,
-        brevoFromEmail: parsed.email?.brevoFromEmail || "",
-        mailjetConfigured: !!(parsed.email?.mailjetApiKey && parsed.email?.mailjetSecretKey),
-        mailjetFromEmail: parsed.email?.mailjetFromEmail || "",
-      },
-    });
-  });
-
-  app.post("/api/org/settings/test-email", async (c: Context) => {
-    const user = getUserOrAdmin(c);
-    if (user.role !== "admin") {
-      return c.json({ error: "Forbidden: Admin access required" }, 403);
-    }
-    const body = await c.req.json().catch(() => ({}));
-    const to = String(body.to || (user as any).email || "").trim();
-    if (!to || !to.includes("@")) {
-      return c.json({ error: "Valid recipient email address is required" }, 400);
-    }
-
-    const row = db.query("SELECT value FROM app_settings WHERE key = 'org_settings'").get() as { value: string } | null;
-    let parsed: any = {};
-    if (row?.value) {
-      try { parsed = JSON.parse(row.value); } catch {}
-    }
-
-    const { sendWithCascade } = await import("./tenantEmail");
-    const result = await sendWithCascade({
-      to,
-      subject: `ServeTracker Email Delivery Test — ${parsed.branding?.companyName || "Organization"}`,
-      html: `<h2>Email Test Successful</h2><p>This test email confirms that your email provider cascade is working correctly.</p>`,
-      config: {
-        ...parsed.email,
-        companyName: parsed.branding?.companyName,
-      },
-    });
-
-    return c.json(result);
-  });
-
-  // GET /api/org/api-keys — List organization API keys
-  app.get("/api/org/api-keys", (c: Context) => {
-    const user = getUserOrAdmin(c);
-    if (user.role !== "admin") {
-      return c.json({ error: "Forbidden: Admin access required" }, 403);
-    }
-    const keys = db.query(
-      `SELECT id, name, key_prefix, scopes, last_used_at, expires_at, revoked_at, created_at
-       FROM api_keys
-       ORDER BY created_at DESC`
-    ).all();
-
-    return c.json({ keys });
-  });
-
-  // POST /api/org/api-keys — Generate a new organization API key
-  app.post("/api/org/api-keys", async (c: Context) => {
-    const user = getUserOrAdmin(c);
-    if (user.role !== "admin") {
-      return c.json({ error: "Forbidden: Admin access required" }, 403);
-    }
-    const body = await c.req.json().catch(() => ({}));
-    const name = String(body.name || "API Key").trim();
-    const scopes = Array.isArray(body.scopes) ? body.scopes : ["all"];
-
-    const { generateApiKey } = await import("./apiKeyAuth");
-    const { rawKey, keyRecord } = generateApiKey(db, {
-      userId: user.id,
-      name,
-      scopes,
-    });
-
-    return c.json({
-      success: true,
-      apiKey: rawKey,
-      keyRecord,
-    }, 201);
-  });
-
-  // DELETE /api/org/api-keys/:id — Revoke an API key
-  app.delete("/api/org/api-keys/:id", (c: Context) => {
-    const user = getUserOrAdmin(c);
-    if (user.role !== "admin") {
-      return c.json({ error: "Forbidden: Admin access required" }, 403);
-    }
-    const keyId = c.req.param("id");
-    const now = new Date().toISOString();
-
-    db.query("UPDATE api_keys SET revoked_at = ? WHERE id = ?").run(now, keyId);
-    return c.json({ success: true, message: "API key revoked" });
   });
 }
 

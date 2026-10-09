@@ -368,6 +368,7 @@ const AnimatedRoutes = () => {
     try {
       // Never send coordinates / gps_source on edit — original GPS stays locked
       const payload = {
+        ...(serveData.occurredAt || serveData.occurred_at ? { occurredAt: serveData.occurredAt || serveData.occurred_at } : {}),
         status: serveData.status || "unknown",
         notes: serveData.notes || "",
         case_number: serveData.caseNumber || serveData.case_number || null,

@@ -211,6 +211,8 @@ function initSchema(db: Database) {
       new_notes TEXT,
       old_status TEXT,
       new_status TEXT,
+      old_occurred_at TEXT,
+      new_occurred_at TEXT,
       FOREIGN KEY (serve_id) REFERENCES serve_attempts(id) ON DELETE CASCADE
     );
 
@@ -311,6 +313,10 @@ function runMigrations(db: Database) {
       payload_fingerprint TEXT DEFAULT ''
     );
   `);
+
+  const editCols = new Set((db.query("PRAGMA table_info(serve_attempt_edits)").all() as { name: string }[]).map((c) => c.name));
+  if (!editCols.has("old_occurred_at")) db.exec("ALTER TABLE serve_attempt_edits ADD COLUMN old_occurred_at TEXT;");
+  if (!editCols.has("new_occurred_at")) db.exec("ALTER TABLE serve_attempt_edits ADD COLUMN new_occurred_at TEXT;");
 
   // Backfill occurred_at and entered_at for older rows
   db.exec(`
@@ -534,6 +540,9 @@ function runMigrations(db: Database) {
       created_at TEXT NOT NULL,
       signed_at TEXT NOT NULL,
       finalized_at TEXT DEFAULT '',
+      document_type TEXT NOT NULL DEFAULT 'affidavit',
+      statutory_basis TEXT DEFAULT '',
+      venue_state TEXT DEFAULT 'OK',
       FOREIGN KEY (case_id) REFERENCES client_cases(id),
       FOREIGN KEY (assigned_server_id) REFERENCES users(id),
       FOREIGN KEY (signed_by_user_id) REFERENCES users(id),
@@ -602,6 +611,18 @@ function runMigrations(db: Database) {
     db.run("ALTER TABLE client_documents ADD COLUMN archived_at TEXT DEFAULT ''");
   }
   db.run("CREATE INDEX IF NOT EXISTS idx_documents_case ON client_documents(case_id)");
+
+  // Affidavit executions: declaration of service & venue columns (idempotent)
+  const execCols = (db.query("PRAGMA table_info(affidavit_executions)").all() as { name: string }[]).map((c) => c.name);
+  if (!execCols.includes("document_type")) {
+    db.run("ALTER TABLE affidavit_executions ADD COLUMN document_type TEXT NOT NULL DEFAULT 'affidavit'");
+  }
+  if (!execCols.includes("statutory_basis")) {
+    db.run("ALTER TABLE affidavit_executions ADD COLUMN statutory_basis TEXT DEFAULT ''");
+  }
+  if (!execCols.includes("venue_state")) {
+    db.run("ALTER TABLE affidavit_executions ADD COLUMN venue_state TEXT DEFAULT 'OK'");
+  }
   const sessCols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[];
   const sessColNames = new Set(sessCols.map((c) => c.name));
   const addSessCol = (colName: string, sqlDef: string) => {
@@ -656,21 +677,11 @@ function runMigrations(db: Database) {
       updated_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS api_keys (
-      id TEXT PRIMARY KEY,
-      org_id TEXT NOT NULL DEFAULT 'default',
-      user_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      key_prefix TEXT NOT NULL,
-      key_hash TEXT NOT NULL UNIQUE,
-      scopes TEXT NOT NULL DEFAULT '["all"]',
-      last_used_at TEXT,
-      expires_at TEXT,
-      revoked_at TEXT,
-      created_at TEXT NOT NULL
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_org ON api_keys(org_id);
   `);
 
   const attemptCols = (db.query("PRAGMA table_info(serve_attempts)").all() as { name: string }[]).map((c) => c.name);
@@ -730,6 +741,33 @@ export function serveIsTombstoned(db: Database, serveId: string): boolean {
   if (!serveId) return false;
   const hit = db.query("SELECT 1 AS ok FROM serve_tombstones WHERE serve_id = ?").get(serveId) as { ok?: number } | null;
   return Boolean(hit);
+}
+
+export function getSystemSetting(db: Database, key: string, defaultValue: string = ""): string {
+  try {
+    const row = (db.query("SELECT value FROM app_settings WHERE key = ?").get(key) ||
+                 db.query("SELECT value FROM system_settings WHERE key = ?").get(key)) as { value?: string } | null;
+    return row && row.value !== undefined ? row.value : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+export function setSystemSetting(db: Database, key: string, value: string): void {
+  const now = new Date().toISOString();
+  try {
+    db.query(`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(key, value, now);
+  } catch {
+    db.query(`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(key, value, now);
+  }
 }
 
 export type Db = Database;

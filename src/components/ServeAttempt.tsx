@@ -21,6 +21,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ServeAttemptData, ServeRecipient } from "@/types/ServeAttemptData";
 import { PhotoUploader, PhotoSlot } from "./PhotoUploader";
+import { OccurrenceInput } from "@/components/OccurrenceInput";
+import { localOccurrenceValue, parseLocalOccurrence } from "@/utils/serveOccurrence";
 import { saveStopDeliveriesToOutbox, syncOutbox, StorageQuotaError, newOfflineId } from "@/lib/offlineQueue";
 import {
   buildStopDeliveriesFromForm,
@@ -75,15 +77,6 @@ const filterCases = (cases: ClientCase[], query: string) => {
   );
 };
 
-// Local wall-clock string for <input type="datetime-local"> (YYYY-MM-DDTHH:mm).
-// toISOString() yields UTC digits, which made manual-log (phone call) times show
-// and store 5-6h ahead of Oklahoma local time. Round-trips correctly: parsing a
-// date-time string without offset treats it as device-local time.
-function localDatetimeInputValue(d: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete }) => {
   // Intermediate Camera Capture page removed — select → confirm (photos + GPS on same page)
   const { isServer } = useAuth();
@@ -107,7 +100,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
 
   const [attemptType, setAttemptType] = useState<"physical" | "phone" | "neighbor" | "management" | "other">("physical");
   const [contactPerson, setContactPerson] = useState<string>("");
-  const [occurredAt, setOccurredAt] = useState<string>(() => localDatetimeInputValue());
+  const [occurredAt, setOccurredAt] = useState<string>(() => localOccurrenceValue());
   const [photos, setPhotos] = useState<PhotoSlot[]>([]);
 
   // Method of service (only meaningful when Result = Served / completed)
@@ -358,7 +351,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         setIsManualLog(true);
         setGpsStatus("idle");
         setLocation(null);
-        setOccurredAt(localDatetimeInputValue()); // re-seed to phone's current local time on deep-link manual log
+        setOccurredAt(localOccurrenceValue()); // re-seed to phone's current local time on deep-link manual log
       } else {
         setIsManualLog(false);
         void lockGpsNow();
@@ -407,7 +400,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     setIsManualLog(true);
     setGpsStatus("idle");
     setLocation(null);
-    setOccurredAt(localDatetimeInputValue()); // re-seed to phone's current local time on every manual log
+    setOccurredAt(localOccurrenceValue()); // re-seed to phone's current local time on every manual log
     setStep("confirm");
   };
 
@@ -465,12 +458,17 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         return;
       }
     }
+    const manualOccurrence = isManualLog ? parseLocalOccurrence(occurredAt) : null;
+    if (isManualLog && !manualOccurrence) {
+      toast({ title: "Invalid date or time", description: "Enter a real local date (YYYY-MM-DD) and 24-hour time (HH:MM). DST gaps cannot be used.", variant: "destructive" });
+      return;
+    }
     submitLockRef.current = true;
     setIsSending(true);
     try {
       let mainImageData = photos[0]?.imageData;
       if (mainImageData && location) mainImageData = embedGpsIntoImage(mainImageData, location);
-      const ts = isManualLog ? new Date(occurredAt).toISOString() : new Date().toISOString();
+      const ts = manualOccurrence || new Date().toISOString();
       const clientId = selectedClient ? (selectedClient.id || (selectedClient as any).$id) : (selectedCase.clientId || "");
       const clientName = selectedClient?.name || selectedCase.clientName || "";
       const clientEmail = selectedClient?.email || "";
@@ -1182,10 +1180,10 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                 )}
 
                 {isManualLog && (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <div>
                       <label className="text-xs font-bold block mb-1">Date & Time</label>
-                      <Input type="datetime-local" value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} className="text-xs h-10" />
+                      <OccurrenceInput id="manual-occurrence" value={occurredAt} onChange={setOccurredAt} />
                     </div>
                     <div>
                       <label className="text-xs font-bold block mb-1">Spoke With</label>

@@ -197,6 +197,7 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
     try {
       const id = updatedServe.id || (updatedServe as any).$id;
       await api.updateServeAttempt(id, {
+        ...(updatedServe.occurredAt || updatedServe.occurred_at ? { occurredAt: updatedServe.occurredAt || updatedServe.occurred_at } : {}),
         status: updatedServe.status,
         notes: updatedServe.notes || "",
         serviceMethod: updatedServe.serviceMethod || updatedServe.service_method || "",
@@ -410,6 +411,7 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                               documents: c.documents_to_serve,
                               requirements: (c as any).service_requirements,
                               contactInfo: (c as any).contact_info,
+                              serviceLevel: (c as any).service_level || "standard",
                               notes: c.notes,
                               homeAddress: c.home_address,
                               workAddress: c.work_address,
@@ -439,6 +441,7 @@ const Dashboard: React.FC<DashboardProps> = ({ clients: propClients }) => {
                                 documents: c.documents_to_serve,
                                 requirements: (c as any).service_requirements,
                                 contactInfo: (c as any).contact_info,
+                                serviceLevel: (c as any).service_level || "standard",
                                 notes: c.notes,
                                 homeAddress: c.home_address,
                                 workAddress: c.work_address,

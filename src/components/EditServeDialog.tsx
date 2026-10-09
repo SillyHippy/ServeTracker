@@ -2,7 +2,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -14,8 +13,9 @@ import { Label } from "@/components/ui/label"
 import { ServeAttemptData } from '@/types/ServeAttemptData';
 import { useToast } from "@/hooks/use-toast"
 import { Textarea } from "@/components/ui/textarea"
-import { createUpdateNotificationEmail } from "@/utils/email";
 import { api } from "@/lib/api";
+import { OccurrenceInput } from "@/components/OccurrenceInput";
+import { occurrenceFromIso, parseLocalOccurrence } from "@/utils/serveOccurrence";
 import { PhotoUploader, PhotoSlot } from "@/components/PhotoUploader";
 import { MapPin, ShieldCheck, Trash2 } from "lucide-react";
 
@@ -45,6 +45,9 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
   const { toast } = useToast();
   const [status, setStatus] = useState<"completed" | "failed">(serve.status === "completed" || serve.status === "failed" ? serve.status : "completed");
   const [notes, setNotes] = useState(serve.notes || "");
+  const [occurrence, setOccurrence] = useState(() => occurrenceFromIso(serve.occurred_at || serve.occurredAt || serve.timestamp || ""));
+  const [occurrenceDirty, setOccurrenceDirty] = useState(false);
+  const [signedEditConfirmed, setSignedEditConfirmed] = useState(false);
   const [newPhotos, setNewPhotos] = useState<PhotoSlot[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [serviceMethod, setServiceMethod] = useState<string>(serve.serviceMethod || serve.service_method || "");
@@ -79,6 +82,9 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
   useEffect(() => {
     setStatus(serve.status === "completed" || serve.status === "failed" ? serve.status : "completed");
     setNotes(serve.notes || "");
+    setOccurrence(occurrenceFromIso(serve.occurred_at || serve.occurredAt || serve.timestamp || ""));
+    setOccurrenceDirty(false);
+    setSignedEditConfirmed(false);
     setNewPhotos([]);
     setExistingPhotos(photosFromServe());
     setDeletingPhotoId(null);
@@ -133,6 +139,17 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
 
     try {
       setIsSaving(true);
+      const originalOccurrence = serve.occurred_at || serve.occurredAt || serve.timestamp;
+      const parsedOccurrence = parseLocalOccurrence(occurrence);
+      if (!parsedOccurrence) {
+        toast({ title: "Invalid date or time", description: "Enter a real local date (YYYY-MM-DD) and 24-hour time (HH:MM). DST gaps cannot be used.", variant: "destructive" });
+        return;
+      }
+      const occurrenceChanged = occurrenceDirty && (!originalOccurrence || parsedOccurrence !== new Date(originalOccurrence).toISOString());
+      if (occurrenceChanged && !signedEditConfirmed) {
+        toast({ title: "Confirm affidavit impact", description: "Check the confirmation box before changing an attempt's time. A signed affidavit may need to be signed again.", variant: "destructive" });
+        return;
+      }
 
       if (status === "completed" && serviceMethod === "authorized-agent" && !corporateAgent.trim()) {
         toast({
@@ -153,12 +170,13 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
         return;
       }
 
-      // PUT: only notes/status — never coordinates or gps_source
+      // PUT: explicitly include occurrence only when edited; never coordinates or gps_source.
       const payload: ServeAttemptData = {
         ...serve,
         id: serveId,
         status,
         notes: notes || "",
+        ...(occurrenceChanged ? { occurredAt: parsedOccurrence, occurred_at: parsedOccurrence } : {}),
         serviceMethod,
         service_method: serviceMethod,
         acceptedBy: refusedToIdentify ? "" : acceptedBy,
@@ -179,6 +197,14 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
       delete (payload as any).imageData;
       delete (payload as any).image_data;
       delete (payload as any).photos;
+      delete (payload as any).timestamp;
+      delete (payload as any).enteredAt;
+      delete (payload as any).entered_at;
+      // On an unchanged save do not sneak the original occurrence into the PUT.
+      if (!occurrenceChanged) {
+        delete payload.occurredAt;
+        delete payload.occurred_at;
+      }
 
       const success = await onSave(payload);
 
@@ -211,28 +237,6 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
         }
       }
 
-      try {
-        const emailBody = createUpdateNotificationEmail(
-          serve.clientName || "Unknown Client",
-          serve.caseNumber || serve.case_number || "Unknown Case",
-          new Date(),
-          serve.status || "unknown",
-          status,
-          notes,
-          serve.caseName || serve.case_name
-        );
-
-        await api.sendEmailViaFunction({
-          to: [
-            serve.clientEmail || "info@justlegalsolutions.org",
-            "info@justlegalsolutions.org",
-          ],
-          subject: `Serve Attempt Updated - ${serve.caseNumber || serve.case_number || "Unknown Case"}`,
-          html: emailBody,
-        });
-      } catch (emailError) {
-        console.error("Error sending update notification email:", emailError);
-      }
 
       toast({
         title: "Serve updated",
@@ -257,7 +261,7 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
         <AlertDialogHeader>
           <AlertDialogTitle>Edit Serve Attempt</AlertDialogTitle>
           <AlertDialogDescription>
-            Update status, notes, and add photos. Original GPS coordinates cannot be changed.
+            Update occurrence, status, notes, and photos. Original GPS and recorded entry time cannot be changed.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-4 py-2">
@@ -283,6 +287,14 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
                 "No GPS source recorded — coordinates remain read-only"
               )}
             </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label>When the attempt occurred (device local time)</Label>
+            <OccurrenceInput id="edit-occurrence" value={occurrence} onChange={(value) => { setOccurrence(value); setOccurrenceDirty(true); }} />
+            <p className="text-xs text-slate-500">Recorded entry: {serve.entered_at || serve.enteredAt || serve.timestamp ? new Date(serve.entered_at || serve.enteredAt || serve.timestamp).toLocaleString() : "Unavailable"} (locked)</p>
+            <p className="text-xs text-amber-700">Changing an attempt time may invalidate a signed affidavit. Review and re-sign it before use.</p>
+            {occurrenceDirty && <label className="flex items-start gap-2 text-xs text-amber-800"><input type="checkbox" checked={signedEditConfirmed} onChange={(event) => setSignedEditConfirmed(event.target.checked)} />I understand an existing signed affidavit may be invalidated by this correction.</label>}
           </div>
 
           <div className="grid grid-cols-4 items-center gap-4">
@@ -515,9 +527,9 @@ const EditServeDialog: React.FC<EditServeDialogProps> = ({ serve, open, onOpenCh
         </form>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isSaving}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={isSaving} onClick={handleSubmit}>
+          <button type="button" disabled={isSaving} onClick={handleSubmit} className="inline-flex h-11 items-center justify-center rounded-md bg-primary px-4 text-primary-foreground disabled:opacity-50">
             {isSaving ? "Saving..." : "Save"}
-          </AlertDialogAction>
+          </button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
