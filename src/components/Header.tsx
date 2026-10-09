@@ -70,7 +70,7 @@ export function Header() {
   const mobileMenu = (
     <Sheet open={isMenuOpen} onOpenChange={setIsMenuOpen}>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="icon" className="md:hidden min-h-11 min-w-11 h-11 w-11">
+        <Button variant="ghost" size="icon" className="xl:hidden min-h-11 min-w-11 h-11 w-11">
           <Menu className="h-5 w-5" />
           <span className="sr-only">Open menu</span>
         </Button>
@@ -204,7 +204,7 @@ export function Header() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="md:hidden text-amber-700 hover:bg-amber-50 px-2 h-9"
+                className="xl:hidden text-amber-700 hover:bg-amber-50 px-2 h-9"
                 onClick={() => setIsPendingDrawerOpen(true)}
                 title="Pending sync outbox"
               >
