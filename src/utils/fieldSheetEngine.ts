@@ -25,12 +25,33 @@ export type FieldSheetPayload = {
   clientName?: string;
   clientPhone?: string;
   hideClient?: boolean;
+  branding?: { agencyName?: string; agencyPhone?: string; agencyEmail?: string };
 };
 
 const AGENCY = "JUST LEGAL SOLUTIONS";
 const AGENCY_CONTACT = "(539) 367-6832 | Info@JustLegalSolutions.org";
 const BILLING_NOTICE =
   "If service would exceed the original quoted amount, please contact Just Legal Solutions at (539) 367-6832 before proceeding.";
+
+function agencyName(data: FieldSheetPayload): string {
+  return text(data.branding?.agencyName) || AGENCY;
+}
+
+function agencyContact(data: FieldSheetPayload): string {
+  const phone = text(data.branding?.agencyPhone);
+  const email = text(data.branding?.agencyEmail);
+  if (phone || email) return [phone, email].filter(Boolean).join(" | ");
+  return AGENCY_CONTACT;
+}
+
+function billingNotice(data: FieldSheetPayload): string {
+  const name = text(data.branding?.agencyName);
+  const phone = text(data.branding?.agencyPhone);
+  if (name && phone) {
+    return `If service would exceed the original quoted amount, please contact ${name} at ${phone} before proceeding.`;
+  }
+  return BILLING_NOTICE;
+}
 
 function esc(value: unknown): string {
   return String(value ?? "")
@@ -307,8 +328,8 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
   <div class="page">
     <div class="header">
       <div>
-        <h1 class="company">${esc(AGENCY)}</h1>
-        <p class="company-contact">${esc(AGENCY_CONTACT)}</p>
+        <h1 class="company">${esc(agencyName(data))}</h1>
+        <p class="company-contact">${esc(agencyContact(data))}</p>
       </div>
       <div class="job-meta">
         <div class="job-badge">${esc(text(data.caseNumber) || "CASE #")}</div>
@@ -385,7 +406,7 @@ export function generateFieldSheetHtml(data: FieldSheetPayload): string {
       </table>
     </div>
 
-    <div class="bill">${esc(BILLING_NOTICE)}</div>
+    <div class="bill">${esc(billingNotice(data))}</div>
     <div class="hint">Generic sheet — same for every user. Flip over if you need more room. Nothing is saved.</div>
   </div>
 </body>

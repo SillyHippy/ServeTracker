@@ -6,6 +6,31 @@ function clean(val: unknown): string {
   return String(val ?? "").trim();
 }
 
+const AGENCY = "JUST LEGAL SOLUTIONS";
+const AGENCY_CONTACT = "(539) 367-6832 | Info@JustLegalSolutions.org";
+const BILLING_NOTICE =
+  "NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact Just Legal Solutions at (539) 367-6832 before proceeding.";
+
+function agencyName(data: FieldSheetPayload): string {
+  return clean(data.branding?.agencyName) || AGENCY;
+}
+
+function agencyContact(data: FieldSheetPayload): string {
+  const phone = clean(data.branding?.agencyPhone);
+  const email = clean(data.branding?.agencyEmail);
+  if (phone || email) return [phone, email].filter(Boolean).join(" | ");
+  return AGENCY_CONTACT;
+}
+
+function billingNotice(data: FieldSheetPayload): string {
+  const name = clean(data.branding?.agencyName);
+  const phone = clean(data.branding?.agencyPhone);
+  if (name && phone) {
+    return `NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact ${name} at ${phone} before proceeding.`;
+  }
+  return BILLING_NOTICE;
+}
+
 /** Parse optional field intelligence from clean operational notes. */
 function subjectIntel(notes: unknown): { age: string; sex: string; vehicle: string } {
   const text = clean(notes);
@@ -39,7 +64,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
 
   // ================= 1. HEADER =================
   // Left side: Company Name + Contact
-  page.drawText("JUST LEGAL SOLUTIONS", {
+  page.drawText(agencyName(data), {
     x: margin,
     y: y - 14,
     size: 16,
@@ -47,7 +72,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
     color: black,
   });
 
-  page.drawText("(539) 367-6832 | Info@JustLegalSolutions.org", {
+  page.drawText(agencyContact(data), {
     x: margin,
     y: y - 28,
     size: 9,
@@ -507,8 +532,7 @@ export async function generateFieldSheetPdf(data: FieldSheetPayload): Promise<Ui
   y -= (descBoxH + 10);
 
   // ================= 7. FOOTER NOTICE =================
-  const notice =
-    "NOTICE: If service will exceed quoted amount or requires special skip-tracing, contact Just Legal Solutions at (539) 367-6832 before proceeding.";
+  const notice = billingNotice(data);
   page.drawText(notice, {
     x: margin,
     y: y - 10,

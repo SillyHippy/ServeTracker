@@ -16,6 +16,13 @@ export interface PhotoStampOptions {
   /** Exhibit index 1..5 */
   position?: number;
   address?: string | null;
+  branding?: { agencyName?: string; agencyPhone?: string; agencyEmail?: string };
+}
+
+export function buildPhotoStampArtist(
+  branding?: { agencyName?: string; agencyPhone?: string; agencyEmail?: string },
+): string {
+  return String(branding?.agencyName ?? "").trim() || "Just Legal Solutions";
 }
 
 function toExifDateTime(input?: string | Date | null): string {
@@ -91,7 +98,7 @@ img.save(path, "JPEG", quality=85, optimize=True)
     `-XPComment=${label}`,
     `-XPSubject=${label}`,
     `-Software=ServeTracker`,
-    `-Artist=Just Legal Solutions`,
+    `-Artist=${buildPhotoStampArtist(opts.branding)}`,
     `-DateTimeOriginal=${exifDt}`,
     `-CreateDate=${exifDt}`,
     `-ModifyDate=${exifDt}`,

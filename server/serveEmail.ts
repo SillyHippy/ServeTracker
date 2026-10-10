@@ -76,6 +76,7 @@ export interface ServeEmailInput {
   }>;
   /** Attempt-level GPS used when a photo has no own coordinates */
   publicBase: string;
+  branding?: { agencyName?: string; agencyPhone?: string; agencyEmail?: string };
 }
 
 function methodLabel(method?: string): string {
@@ -92,6 +93,7 @@ function methodLabel(method?: string): string {
 }
 
 export function buildServeNotificationHtml(input: ServeEmailInput): string {
+  const agencyName = String(input.branding?.agencyName ?? "").trim() || "Just Legal Solutions";
   const isServed = String(input.status || "").toLowerCase() === "completed" || String(input.status || "").toLowerCase() === "served";
   const statusText = isServed ? "SERVICE COMPLETE" : String(input.status || "ATTEMPT").toUpperCase();
   const occurredText = input.occurredAt
@@ -170,7 +172,7 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
           <div style="font-family:sans-serif;max-width:600px;margin:0 auto;border:1px solid #e2e8f0;border-radius:8px;padding:24px;background:#ffffff;">
             <div style="background:#1e293b;color:#ffffff;padding:16px;border-radius:6px;margin-bottom:20px;">
               <h2 style="margin:0;font-size:20px;">${escapeHtml(statusText)}</h2>
-              <p style="margin:4px 0 0 0;font-size:14px;color:#94a3b8;">Process Server Notification · Just Legal Solutions</p>
+              <p style="margin:4px 0 0 0;font-size:14px;color:#94a3b8;">Process Server Notification · ${escapeHtml(agencyName)}</p>
             </div>
 
             <div style="margin-bottom:20px;padding:16px;background:#f8fafc;border-radius:6px;">
@@ -201,7 +203,7 @@ export function buildServeNotificationHtml(input: ServeEmailInput): string {
             ${photoLinksHtml}
 
             <div style="font-size:12px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:16px;margin-top:24px;">
-              Just Legal Solutions · Process Serving
+              ${escapeHtml(agencyName)} · Process Serving
             </div>
           </div>
         `;
