@@ -15,6 +15,9 @@ function detectRouterBasename(): string {
     if (path === "/servetracker" || path.startsWith("/servetracker/")) {
       return "/servetracker";
     }
+    // A basename the browser is not actually inside matches no route and
+    // renders a blank page. Only claim a subpath when the path has it.
+    return "/";
   }
   const fromVite = String(import.meta.env.BASE_URL || "/").replace(/\/$/, "");
   return fromVite || "/";

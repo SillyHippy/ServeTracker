@@ -874,6 +874,15 @@ export async function syncItem(
       return { id: item.id, state: "blocked", item, error: item.lastError };
     }
 
+    // 410 Gone: the serve ID was deleted and tombstoned, so the server will
+    // reject this ID forever and retrying only burns attempts. Drop it.
+    if (status === 410 || err?.data?.error === "tombstoned") {
+      item.state = "skipped";
+      item.lastError = "Deleted on server (410); removed from phone outbox";
+      await removePending(item.id);
+      return { id: item.id, state: "skipped", item, error: item.lastError };
+    }
+
     // Network failure or unknown error status -> revert to pending with backoff
     item.state = "pending";
     item.lastError = msg.slice(0, 240);
