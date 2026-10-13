@@ -395,9 +395,12 @@ export default function EditCaseDialog({ clientCase, onUpdate, isLoading, classN
                 <SelectContent>
                   <SelectItem value="active">Active</SelectItem>
                   <SelectItem value="served">Served</SelectItem>
+                  <SelectItem value="Served">Served (stored)</SelectItem>
                   <SelectItem value="non-service">Non-Service</SelectItem>
                   <SelectItem value="on-hold">On Hold</SelectItem>
                   <SelectItem value="closed">Closed</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="Open">Open (legacy)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

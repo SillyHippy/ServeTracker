@@ -28,6 +28,7 @@ import { ReserviceJobDialog } from "./ReserviceJobDialog";
 import { mergeServeAndCaseData } from "@/utils/dataNormalization";
 import { ServeAttemptData } from "@/types/ServeAttemptData";
 import EditServeDialog from "./EditServeDialog";
+import { caseStatusBadgeClass, caseStatusLabel, isServedCaseStatus } from "@/lib/caseFilters";
 
 interface ClientCase {
   $id: string;
@@ -651,6 +652,9 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                   <CardHeader className="space-y-3 p-3.5 sm:p-5">
                     <CardTitle className="text-base font-bold leading-snug pr-1 break-words flex items-center gap-2 flex-wrap">
                       {clientCase.case_name}
+                      <Badge className={caseStatusBadgeClass(clientCase.status)}>
+                        {caseStatusLabel(clientCase.status)}
+                      </Badge>
                       {clientCase.payment_status === "UNPAID" && (
                         <Badge className="bg-yellow-400 text-yellow-950 hover:bg-yellow-400">UNPAID</Badge>
                       )}
@@ -714,7 +718,7 @@ export default function ClientCases({ client, onUpdate, clientCases = [], setCli
                         personBeingServed={clientCase.defendant_respondent || clientCase.case_name}
                         documentsToServe={clientCase.documents_to_serve || ""}
                       />
-                      {clientCase.status === "served" && (
+                      {isServedCaseStatus(clientCase.status) && (
                         <Button
                           variant="outline"
                           size="sm"

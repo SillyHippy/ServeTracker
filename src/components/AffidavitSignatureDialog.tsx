@@ -20,6 +20,10 @@ interface Props {
   /** Called after a successful sign so the caller can render the signed version. */
   onSigned: (renderedHtml: string) => void;
   affidavitKind?: AffidavitKind;
+  documentType?: "affidavit" | "declaration";
+  /** When true, one confirm signs sworn affidavit AND §426 declaration. */
+  allowDeclarations?: boolean;
+  signBothFormats?: boolean;
   recipientId?: string;
   allRecipients?: Array<{ id: string; full_name: string }>;
 }
@@ -32,6 +36,9 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
   onOpenChange,
   onSigned,
   affidavitKind,
+  documentType = "affidavit",
+  allowDeclarations = false,
+  signBothFormats = false,
   recipientId,
   allRecipients,
 }) => {
@@ -54,11 +61,11 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
     setVenueLoading(true);
     (async () => {
       try {
-        const res = await api.prepareAffidavit(caseId, affidavitKind, recipientId);
+        const res = await api.prepareAffidavit(caseId, affidavitKind, recipientId, documentType);
         setPrep(res);
       } catch (err) {
         toast({
-          title: "Cannot prepare affidavit",
+          title: "Cannot prepare document",
           description: err instanceof Error ? err.message : "Could not prepare",
           variant: "destructive",
         });
@@ -78,52 +85,69 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
         setVenueLoading(false);
       }
     })();
-  }, [open, caseId, affidavitKind, recipientId]);
+  }, [open, caseId, affidavitKind, recipientId, documentType]);
+
+  const formatsToSign: Array<"affidavit" | "declaration"> =
+    signBothFormats && allowDeclarations
+      ? ["affidavit", "declaration"]
+      : [documentType === "declaration" ? "declaration" : "affidavit"];
 
   const handleSign = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prep?.assignedServer) return;
     setIsSigning(true);
     try {
-      const payload: Record<string, unknown> = {
+      const basePayload: Record<string, unknown> = {
         affidavitKind,
         recipientId,
         acknowledged: true,
         ack: true,
       };
       if (isAdmin) {
-        payload.confirmation = confirmation.trim() || prep.assignedServer.displayName;
+        basePayload.confirmation = confirmation.trim() || prep.assignedServer.displayName;
       }
-      if (venue?.state) payload.notaryState = venue.state;
-      if (venue?.county) payload.notaryCounty = venue.county;
+      if (venue?.state) basePayload.notaryState = venue.state;
+      if (venue?.county) basePayload.notaryCounty = venue.county;
 
-      if (signAllRecipients && allRecipients && allRecipients.length > 1) {
-        for (const r of allRecipients) {
-          const p = { ...payload, recipientId: r.id };
-          await api.signAffidavit(caseId, p as any);
-        }
-        toast({
-          title: "All Affidavits Signed",
-          description: `Applied ${prep.assignedServer.displayName}'s saved signature to all ${allRecipients.length} recipients.`,
-        });
-      } else {
-        const res = await api.signAffidavit(caseId, payload as any);
-        if (res.success) {
-          toast({
-            title: "Affidavit signed",
-            description: isAdmin
-              ? `Applied ${prep.assignedServer.displayName}'s saved signature on their behalf (notarization pending).`
-              : "Your signature was applied. Status: Signed — notarization pending.",
-          });
+      const recipients =
+        signAllRecipients && allRecipients && allRecipients.length > 1
+          ? allRecipients
+          : [{ id: recipientId || "", full_name: personBeingServed }];
+
+      for (const docType of formatsToSign) {
+        for (const r of recipients) {
+          await api.signAffidavit(caseId, {
+            ...basePayload,
+            documentType: docType,
+            recipientId: r.id || recipientId,
+          } as any);
         }
       }
-      const rendered = await api.renderAffidavit(caseId, recipientId);
+
+      const bothFormats = formatsToSign.length > 1;
+      const multiPeople = recipients.length > 1;
+      toast({
+        title: bothFormats
+          ? (multiPeople ? "Affidavit + Declaration signed for all" : "Affidavit + Declaration signed")
+          : formatsToSign[0] === "declaration"
+            ? (multiPeople ? "All Declarations Signed" : "Declaration signed")
+            : (multiPeople ? "All Affidavits Signed" : "Affidavit signed"),
+        description: bothFormats
+          ? `Applied ${prep.assignedServer.displayName}'s signature to sworn affidavit and §426 declaration${multiPeople ? ` for ${recipients.length} recipients` : ""}.`
+          : isAdmin
+            ? `Applied ${prep.assignedServer.displayName}'s saved signature on their behalf.`
+            : formatsToSign[0] === "declaration"
+              ? "Your signature was applied under penalty of perjury (12 O.S. § 426)."
+              : "Your signature was applied. Status: Signed — notarization pending.",
+      });
+
+      const rendered = await api.renderAffidavit(caseId, recipientId, documentType);
       onSigned(rendered.html);
       onOpenChange(false);
     } catch (err) {
       toast({
         title: "Signing failed",
-        description: err instanceof Error ? err.message : "Could not sign affidavit",
+        description: err instanceof Error ? err.message : "Could not sign document",
         variant: "destructive",
       });
     } finally {
@@ -139,11 +163,18 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <PenLine className="h-5 w-5 text-blue-600" />
-            Sign Affidavit
+            {formatsToSign.length > 1
+              ? "Sign Affidavit + Declaration"
+              : documentType === "declaration"
+                ? "Sign Declaration of Service"
+                : "Sign Affidavit"}
           </DialogTitle>
           <DialogDescription>
-            Review the affidavit facts, then apply the assigned process server's electronic signature.
-            You are already signed in — no password re-entry.
+            {formatsToSign.length > 1
+              ? "One confirm applies the electronic signature to both the sworn affidavit (notary still needed) and the §426 declaration."
+              : documentType === "declaration"
+                ? "Review the declaration facts, then apply the electronic signature under penalty of perjury (12 O.S. § 426). No notary required."
+                : "Review the affidavit facts, then apply the assigned process server's electronic signature. Notary signs/stamps right after printing."}
           </DialogDescription>
         </DialogHeader>
 
@@ -164,7 +195,11 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
               <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-1.5">
                 <div className="flex justify-between gap-2">
                   <span className="text-slate-500 font-medium">Document:</span>
-                  <span className="font-bold text-right">{prep.preview?.title}</span>
+                  <span className="font-bold text-right">
+                    {documentType === "declaration"
+                      ? (prep.preview?.kind === "non-service" ? "DECLARATION OF NON-SERVICE" : "DECLARATION OF SERVICE")
+                      : (prep.preview?.title || "AFFIDAVIT OF SERVICE")}
+                  </span>
                 </div>
                 <div className="flex justify-between gap-2">
                   <span className="text-slate-500 font-medium">Case No:</span>
@@ -183,7 +218,9 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
                   <span className="font-semibold">{prep.preview?.attemptsCount}</span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-slate-500 font-medium">Notary venue:</span>
+                  <span className="text-slate-500 font-medium">
+                    {documentType === "declaration" ? "Execution venue:" : "Notary venue:"}
+                  </span>
                   <span className="font-semibold text-right">
                     {venueLoading ? "Detecting current county…" : venue ? venueLabel(venue) : "STATE OF OKLAHOMA / COUNTY OF TULSA"}
                   </span>
@@ -208,8 +245,20 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
               </div>
 
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">
-                <strong>Notice:</strong> This applies the process server's electronic signature only. It does
-                not notarize the affidavit. The notary block remains for wet-ink / stamp by the real notary.
+                {formatsToSign.length > 1 ? (
+                  <>
+                    <strong>Notice:</strong> Signs both documents in one step — sworn affidavit (notary wet-ink/stamp still required after print) and unsworn declaration under 12 O.S. § 426.
+                  </>
+                ) : documentType === "declaration" ? (
+                  <>
+                    <strong>Notice:</strong> This applies the process server's electronic signature under penalty of perjury (12 O.S. § 426). No notary required.
+                  </>
+                ) : (
+                  <>
+                    <strong>Notice:</strong> This applies the process server's electronic signature only. It does
+                    not notarize the affidavit. The notary block remains for wet-ink / stamp by the real notary.
+                  </>
+                )}
               </div>
 
               {allRecipients && allRecipients.length > 1 && (
@@ -235,7 +284,11 @@ export const AffidavitSignatureDialog: React.FC<Props> = ({
                 disabled={isSigning}
                 className="bg-blue-600 hover:bg-blue-700 text-white"
               >
-                {isSigning ? "Applying…" : `Apply Signature (${assignedName})`}
+                {isSigning
+                  ? "Applying…"
+                  : formatsToSign.length > 1
+                    ? `Sign both as ${assignedName}`
+                    : `Apply Signature (${assignedName})`}
               </Button>
             </DialogFooter>
           </form>

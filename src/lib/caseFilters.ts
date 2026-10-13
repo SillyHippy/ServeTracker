@@ -41,3 +41,39 @@ export function includeCaseInList(opts: {
   }
   return matchesPaymentFilter(opts.paymentStatus, opts.paymentFilter);
 }
+
+export function isServedCaseStatus(status?: string): boolean {
+  return canonicalStatus(status) === "served";
+}
+
+export function caseStatusLabel(status?: string): string {
+  const raw = String(status || "").trim();
+  if (raw === "completed") return "Completed";
+  if (raw === "Open") return "Open";
+  if (raw === "Served") return "Served";
+  const c = canonicalStatus(status);
+  const labels: Record<string, string> = {
+    active: "Active",
+    served: "Served",
+    "non-service": "Non-Service",
+    "on-hold": "On Hold",
+    closed: "Closed",
+  };
+  if (labels[c]) return labels[c];
+  return raw || "Active";
+}
+
+export function caseStatusBadgeClass(status?: string): string {
+  switch (canonicalStatus(status)) {
+    case "served":
+      return "bg-emerald-100 text-emerald-800 hover:bg-emerald-100";
+    case "closed":
+      return "bg-slate-100 text-slate-700 hover:bg-slate-100";
+    case "non-service":
+      return "bg-rose-100 text-rose-800 hover:bg-rose-100";
+    case "on-hold":
+      return "bg-amber-100 text-amber-800 hover:bg-amber-100";
+    default:
+      return "bg-blue-100 text-blue-800 hover:bg-blue-100";
+  }
+}

@@ -5,7 +5,7 @@ export const serveAttemptSchema = z.object({
   clientId: z.string().optional(),
   caseNumber: z.string().optional(),
   notes: z.string().optional(),
-  status: z.enum(["completed", "failed"]),
+  status: z.enum(["completed", "failed", "bad-address"]),
   serviceAddress: z.string().optional(),
 });
 

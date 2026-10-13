@@ -32,7 +32,8 @@ export type NotificationType =
   | "serve_complete"
   | "affidavit_signed"
   | "license_expiry"
-  | "payment_received";
+  | "payment_received"
+  | "bad_address";
 
 export type NotificationPriority = "low" | "normal" | "high" | "urgent";
 
@@ -156,28 +157,33 @@ export async function createNotification(
     console.warn(`[PushDispatcher] Failed to dispatch push to user ${params.userId}:`, err);
   });
 
-  // Targeted SMS Dispatch if user has phone on file and SMS alerts enabled
-  try {
-    const userRow = db.query(
-      "SELECT phone, phone_sms_enabled FROM users WHERE id = ?"
-    ).get(params.userId) as { phone?: string; phone_sms_enabled?: number } | null;
+  // SMS — field servers ONLY (nudge / assignment / broadcast). Never admins/clients.
+  // Attempt/payment/affidavit alerts = push + in-app. Capcom6/Twilio same rule.
+  const SMS_TYPES = new Set<NotificationType>(["nudge", "case_assigned", "broadcast"]);
+  if (SMS_TYPES.has(params.type)) {
+    try {
+      const userRow = db.query(
+        "SELECT phone, phone_sms_enabled, role FROM users WHERE id = ?"
+      ).get(params.userId) as { phone?: string; phone_sms_enabled?: number; role?: string } | null;
 
-    const userPhone = userRow?.phone || "";
-    const smsEnabled = userRow?.phone_sms_enabled !== 0;
+      const userPhone = userRow?.phone || "";
+      const smsEnabled = userRow?.phone_sms_enabled !== 0;
+      const isServer = String(userRow?.role || "").toLowerCase() === "server";
 
-    if (userPhone && smsEnabled) {
-      const actionLink = params.actionUrl ? `\nhttps://servetracker.justlegalsolutions.org${params.actionUrl}` : "";
-      sendSms({
-        userId: params.userId,
-        to: userPhone,
-        message: `[Serve Tracker] ${params.title}\n${params.body}${actionLink}`,
-        priority: priority === "urgent" ? "urgent" : priority === "high" ? "high" : "normal",
-      }).catch((err) => {
-        console.warn(`[SmsDispatcher] Failed to dispatch SMS to user ${params.userId}:`, err);
-      });
+      if (isServer && userPhone && smsEnabled) {
+        const actionLink = params.actionUrl ? `\nhttps://servetracker.justlegalsolutions.org${params.actionUrl}` : "";
+        sendSms({
+          userId: params.userId,
+          to: userPhone,
+          message: `[Serve Tracker] ${params.title}\n${params.body}${actionLink}`,
+          priority: priority === "urgent" ? "urgent" : priority === "high" ? "high" : "normal",
+        }).catch((err) => {
+          console.warn(`[SmsDispatcher] Failed to dispatch SMS to user ${params.userId}:`, err);
+        });
+      }
+    } catch (smsErr) {
+      console.warn("[SmsDispatcher] Exception checking user phone:", smsErr);
     }
-  } catch (smsErr) {
-    console.warn("[SmsDispatcher] Exception checking user phone:", smsErr);
   }
 
   return row;

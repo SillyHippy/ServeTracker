@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
-import { FileText, Printer, PenLine, Loader2, AlertTriangle } from 'lucide-react';
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
+import { FileText, Printer, PenLine, Loader2, AlertTriangle, X } from 'lucide-react';
 import {
   generateAffidavitHtml,
   generateBatchAffidavitsHtml,
@@ -11,6 +11,7 @@ import {
   distinctPeopleCount,
   serviceMethodLabel,
   type AffidavitKind,
+  type LegalDocumentType,
 } from '@/utils/affidavitEngine';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ServeAttemptData } from '@/types/ServeAttemptData';
@@ -143,8 +144,29 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const [fetchFailed, setFetchFailed] = useState(false);
   const [hasPendingOutbox, setHasPendingOutbox] = useState(false);
   const [pendingOutboxCount, setPendingOutboxCount] = useState(0);
-  const [affidavitKind, setAffidavitKind] = useState<AffidavitKind>(() => inferAffidavitKind(serves));
+  const [documentType, setDocumentType] = useState<LegalDocumentType>('affidavit');
+  const [allowDeclarations, setAllowDeclarations] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('servetracker_allow_declarations');
+      return stored !== null ? stored === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
   const { toast } = useToast();
+
+  useEffect(() => {
+    if (isOpen) {
+      api.getSettings().then((s) => {
+        if (typeof s.allow_declarations === 'boolean') {
+          setAllowDeclarations(s.allow_declarations);
+          if (!s.allow_declarations && documentType === 'declaration') {
+            setDocumentType('affidavit');
+          }
+        }
+      }).catch(() => {});
+    }
+  }, [isOpen]);
 
   const courtNumber = String(caseNumber || '').trim();
   const fakeCourt = !courtNumber || courtNumber.toLowerCase() === 'unknown';
@@ -248,9 +270,26 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
     };
   }, [isOpen, lookupKey, documentsToServe, client, serves, caseRecordId]);
 
-  useEffect(() => {
-    setAffidavitKind(inferAffidavitKind(resolvedAttempts));
-  }, [resolvedAttempts, isOpen]);
+  const effectiveKind: AffidavitKind = useMemo(() => {
+    const rec = recipientsList.find((r) => String(r.id) === selectedRecipientId);
+    const nm = (
+      rec?.full_name ||
+      personBeingServed ||
+      resolvedDefendant ||
+      defendantRespondent ||
+      caseName ||
+      ""
+    ).trim();
+    return inferAffidavitKind(resolvedAttempts, undefined, rec?.id, nm);
+  }, [
+    resolvedAttempts,
+    selectedRecipientId,
+    recipientsList,
+    personBeingServed,
+    resolvedDefendant,
+    defendantRespondent,
+    caseName,
+  ]);
 
   const handlePrintOrSave = async () => {
     if (hasPendingOutbox) {
@@ -313,6 +352,19 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
       fallbackCoords: coordsFromAttempts(attemptsForPrint),
     });
 
+    let sig: { dataUrl: string; mimeType: string } | undefined;
+    if (caseId && documentType === 'declaration') {
+      try {
+        const rend = await api.renderAffidavit(caseId, selectedRecipientId || undefined);
+        if (rend?.html) {
+          const sigMatch = rend.html.match(/src="(data:image\/[^;]+;base64,[^"]+)"/);
+          if (sigMatch) {
+            sig = { dataUrl: sigMatch[1], mimeType: "image/png" };
+          }
+        }
+      } catch {}
+    }
+
     const html = generateAffidavitHtml({
       case: {
         case_number: caseNumber || '',
@@ -334,7 +386,10 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
       },
       attempts: attemptsForPrint,
       swornDate: new Date(),
-      affidavitKind,
+      signature: sig,
+      effectiveKind,
+      documentType,
+      statutoryAuthority: documentType === 'declaration' ? '12 O.S. § 426' : undefined,
       notaryBlock: {
         serverName,
         licenseNumber,
@@ -346,9 +401,11 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
     const printSuccess = printHtmlWithImages(html);
     if (printSuccess) {
       toast({
-        title: 'Affidavit Document Ready',
+        title: documentType === 'declaration' ? 'Declaration Document Ready' : 'Affidavit Document Ready',
         description: docs
-          ? 'Print window opened — all exhibit photos loaded. Wet-ink: server (left), notary (right).'
+          ? (documentType === 'declaration'
+              ? 'Print window opened — all exhibit photos loaded. Executed under penalty of perjury (12 O.S. § 426).'
+              : 'Print window opened — all exhibit photos loaded. Wet-ink: server (left), notary (right).')
           : 'Print opened — no Documents to Serve on this case yet (Edit Case to add them).',
       });
       setIsOpen(false);
@@ -460,7 +517,9 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           attempts: attemptsForPrint,
           swornDate: new Date(),
           signature: sig,
-          affidavitKind,
+          effectiveKind,
+          documentType,
+          statutoryAuthority: documentType === 'declaration' ? '12 O.S. § 426' : undefined,
           notaryBlock: {
             serverName,
             licenseNumber,
@@ -489,7 +548,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   };
 
   // Print the server-rendered SIGNED version (render endpoint embeds signature).
-  const handlePrintSigned = async () => {
+  const handlePrintSigned = async (signedDocType: LegalDocumentType = documentType) => {
     if (hasPendingOutbox) {
       toast({
         title: "Sync Pending — Print Blocked",
@@ -509,16 +568,89 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
     if (!caseId) return;
     setIsRenderingSigned(true);
     try {
-      const res = await api.renderAffidavit(caseId, selectedRecipientId || undefined);
-      const printSuccess = printHtmlWithImages(res.html);
+      const res = await api.renderAffidavit(caseId, selectedRecipientId || undefined, signedDocType);
+      let htmlToPrint = res.html;
+      if (signedDocType === 'declaration' && !htmlToPrint.includes('DECLARATION OF SERVICE')) {
+        const sigMatch = htmlToPrint.match(/src="(data:image\/[^;]+;base64,[^"]+)"/);
+        const sig = sigMatch ? { dataUrl: sigMatch[1], mimeType: "image/png" } : undefined;
+        htmlToPrint = generateAffidavitHtml({
+          case: {
+            case_number: caseNumber || '',
+            case_name: caseName || '',
+            court_name: resolvedCourt || '',
+            plaintiff_petitioner: resolvedPlaintiff || '',
+            defendant_respondent: resolvedDefendant || personBeingServed || '',
+            documents_to_serve: resolvedDocs || '',
+          },
+          client: {
+            name: client.name,
+            email: client.email,
+          },
+          recipient: {
+            id: selectedRecipientId || undefined,
+            full_name: activeRecipientName || 'TARGET RECIPIENT',
+            home_address: resolvedHome,
+            work_address: resolvedWork,
+          },
+          attempts: resolvedAttempts,
+          swornDate: new Date(),
+          signature: sig,
+          effectiveKind,
+          documentType: 'declaration',
+          statutoryAuthority: '12 O.S. § 426',
+          notaryBlock: {
+            serverName: assignedServer?.legalName || 'Joseph Iannazzi',
+            licenseNumber: assignedServer?.licenseNumber || 'PSL-2026-2',
+            state: 'OKLAHOMA',
+            county: 'TULSA',
+          },
+        });
+      } else if (signedDocType === 'affidavit' && htmlToPrint.includes('DECLARATION OF SERVICE')) {
+        const sigMatch = htmlToPrint.match(/src="(data:image\/[^;]+;base64,[^"]+)"/);
+        const sig = sigMatch ? { dataUrl: sigMatch[1], mimeType: "image/png" } : undefined;
+        htmlToPrint = generateAffidavitHtml({
+          case: {
+            case_number: caseNumber || '',
+            case_name: caseName || '',
+            court_name: resolvedCourt || '',
+            plaintiff_petitioner: resolvedPlaintiff || '',
+            defendant_respondent: resolvedDefendant || personBeingServed || '',
+            documents_to_serve: resolvedDocs || '',
+          },
+          client: {
+            name: client.name,
+            email: client.email,
+          },
+          recipient: {
+            id: selectedRecipientId || undefined,
+            full_name: activeRecipientName || 'TARGET RECIPIENT',
+            home_address: resolvedHome,
+            work_address: resolvedWork,
+          },
+          attempts: resolvedAttempts,
+          swornDate: new Date(),
+          signature: sig,
+          effectiveKind,
+          documentType: 'affidavit',
+          notaryBlock: {
+            serverName: assignedServer?.legalName || 'Joseph Iannazzi',
+            licenseNumber: assignedServer?.licenseNumber || 'PSL-2026-2',
+            state: 'OKLAHOMA',
+            county: 'TULSA',
+          },
+        });
+      }
+      const printSuccess = printHtmlWithImages(htmlToPrint);
       if (printSuccess) {
         toast({
-          title: 'Signed Affidavit Ready',
-          description: 'Signed version printed — electronic signature applied (left). Notarization pending: notary wet-ink/stamp (right).',
+          title: documentType === 'declaration' ? 'Signed Declaration Ready' : 'Signed Affidavit Ready',
+          description: documentType === 'declaration'
+            ? 'Signed declaration printed — electronic signature applied under penalty of perjury (12 O.S. § 426). No notary required.'
+            : 'Signed version printed — electronic signature applied (left). Notarization pending: notary wet-ink/stamp (right).',
         });
         setIsOpen(false);
       } else {
-        toast({ title: 'Pop-up Blocked', description: 'Please allow pop-ups to print the signed affidavit.', variant: 'destructive' });
+        toast({ title: 'Pop-up Blocked', description: 'Please allow pop-ups to print the signed document.', variant: 'destructive' });
       }
     } catch (err) {
       toast({
@@ -532,22 +664,64 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   };
 
   const handleSigned = (renderedHtml: string) => {
+    let finalHtml = renderedHtml;
+    if (documentType === 'declaration' && !renderedHtml.includes('DECLARATION OF SERVICE')) {
+      const sigMatch = renderedHtml.match(/src="(data:image\/[^;]+;base64,[^"]+)"/);
+      const sig = sigMatch ? { dataUrl: sigMatch[1], mimeType: "image/png" } : undefined;
+      finalHtml = generateAffidavitHtml({
+        case: {
+          case_number: caseNumber || '',
+          case_name: caseName || '',
+          court_name: resolvedCourt || '',
+          plaintiff_petitioner: resolvedPlaintiff || '',
+          defendant_respondent: resolvedDefendant || personBeingServed || '',
+          documents_to_serve: resolvedDocs || '',
+        },
+        client: {
+          name: client.name,
+          email: client.email,
+        },
+        recipient: {
+          id: selectedRecipientId || undefined,
+          full_name: activeRecipientName || 'TARGET RECIPIENT',
+          home_address: resolvedHome,
+          work_address: resolvedWork,
+        },
+        attempts: resolvedAttempts,
+        swornDate: new Date(),
+        signature: sig,
+        effectiveKind,
+        documentType: 'declaration',
+        statutoryAuthority: '12 O.S. § 426',
+        notaryBlock: {
+          serverName: assignedServer?.legalName || 'Joseph Iannazzi',
+          licenseNumber: assignedServer?.licenseNumber || 'PSL-2026-2',
+          state: 'OKLAHOMA',
+          county: 'TULSA',
+        },
+      });
+    }
     setSignedExecutions((prev) => [
       ...prev,
-      { status: "signed_not_notarized", recipientId: selectedRecipientId, recipient_id: selectedRecipientId },
+      { status: "signed_not_notarized", recipientId: selectedRecipientId, recipient_id: selectedRecipientId, documentType, document_type: documentType },
     ]);
-    printHtmlWithImages(renderedHtml);
+    printHtmlWithImages(finalHtml);
   };
 
   const pbsName = personBeingServed || resolvedDefendant || defendantRespondent || caseName || 'Target Recipient';
   const activeRecipientObj = recipientsList.find((r) => String(r.id) === selectedRecipientId);
-  const hasActiveSigned = signedExecutions.some(
-    (e) =>
-      e.status === "signed_not_notarized" &&
-      (!selectedRecipientId || String(e.recipientId || e.recipient_id || "") === selectedRecipientId)
-  );
+  const executionDocType = (e: { documentType?: string; document_type?: string }) =>
+    String(e.documentType || e.document_type || "affidavit").toLowerCase() as LegalDocumentType;
+  const hasSignedForDoc = (dt: LegalDocumentType) =>
+    signedExecutions.some(
+      (e) =>
+        e.status === "signed_not_notarized" &&
+        executionDocType(e) === dt &&
+        (!selectedRecipientId || String(e.recipientId || e.recipient_id || "") === selectedRecipientId),
+    );
+  const hasActiveSigned = hasSignedForDoc(documentType);
   const activeRecipientName = activeRecipientObj?.full_name || pbsName;
-  const inferredKind = inferAffidavitKind(resolvedAttempts, undefined, activeRecipientObj?.id, activeRecipientName);
+  const inferredKind = effectiveKind;
   const servedAttempt = latestSuccessfulServe(resolvedAttempts, activeRecipientObj?.id, activeRecipientName);
   const methodRaw = String((servedAttempt as any)?.service_method || (servedAttempt as any)?.serviceMethod || '').toLowerCase();
   const acceptedRaw = String((servedAttempt as any)?.accepted_by || (servedAttempt as any)?.acceptedBy || '').trim();
@@ -557,7 +731,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
   const peopleCount = distinctPeopleCount(resolvedAttempts);
   const caseNoLabel = courtNumber || 'No case #';
   const serverLabel = assignedServer?.displayName || 'the assigned server';
-  const isService = affidavitKind === 'service';
+  const isService = effectiveKind === 'service';
   const compactSelect = recipientsList.length > 2 || (typeof window !== 'undefined' && window.innerWidth < 640);
 
   return (
@@ -576,16 +750,37 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           <span className="truncate">Affidavit</span>
         </Button>
       </DialogTrigger>
-      <DialogContent className="w-[calc(100vw-1rem)] max-w-2xl max-h-[92vh] overflow-y-auto p-4 sm:p-6">
+      <DialogContent
+        hideClose
+        className="w-[calc(100vw-1rem)] max-w-2xl max-h-[92vh] p-0 gap-0 overflow-hidden flex flex-col"
+        onPointerDownOutside={(e) => {
+          if (signOpen) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (signOpen) e.preventDefault();
+        }}
+      >
+        <div className="sticky top-0 z-20 flex shrink-0 items-center justify-end border-b bg-background px-3 py-2">
+          <DialogClose asChild>
+            <Button type="button" variant="ghost" size="icon" className="h-9 w-9" aria-label="Close">
+              <X className="h-5 w-5" />
+            </Button>
+          </DialogClose>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <FileText className="w-5 h-5 text-blue-600" />
-            <span>Generate Court Affidavit</span>
+            <span>{documentType === 'declaration' ? 'Generate Court Declaration' : 'Generate Court Affidavit'}</span>
           </DialogTitle>
           <DialogDescription>
-            {assignedServer
-              ? `${assignedServer.legalName} (${assignedServer.licenseNumber}) signs left; notary wet-ink/stamp right. Swear date = print day.`
-              : 'Physical attempts as date/time bars; phone notes in Comments. Signature left; notary right. Swear date = print day.'}
+            {documentType === 'declaration'
+              ? (assignedServer
+                  ? `${assignedServer.legalName} (${assignedServer.licenseNumber}) signs under penalty of perjury (12 O.S. § 426). No notary required.`
+                  : 'Physical attempts as date/time bars. Executed under penalty of perjury (12 O.S. § 426). No notary required.')
+              : (assignedServer
+                  ? `${assignedServer.legalName} (${assignedServer.licenseNumber}) signs left; notary wet-ink/stamp right. Swear date = print day.`
+                  : 'Physical attempts as date/time bars; phone notes in Comments. Signature left; notary right. Swear date = print day.')}
           </DialogDescription>
         </DialogHeader>
 
@@ -609,35 +804,55 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
               </div>
             </div>
           )}
-          <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-1.5">
+          <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-2">
             <div className="space-y-1.5">
-              <span className="text-slate-500 font-medium">Type:</span>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-medium">Format:</span>
+                <span className="text-[11px] text-slate-500 font-mono">
+                  {documentType === 'declaration' ? '12 O.S. § 426 · No Notary' : 'Sworn Jurat · Notary Required'}
+                </span>
+              </div>
               <div className="flex gap-1.5">
                 <Button
                   type="button"
                   size="sm"
-                  variant={isService ? "default" : "outline"}
+                  variant={documentType === "affidavit" ? "default" : "outline"}
                   className="h-7 text-xs flex-1"
-                  onClick={() => setAffidavitKind("service")}
+                  onClick={() => setDocumentType("affidavit")}
                 >
-                  Affidavit of Service
+                  Sworn Affidavit
                 </Button>
                 <Button
                   type="button"
                   size="sm"
-                  variant={!isService ? "default" : "outline"}
+                  variant={documentType === "declaration" ? "default" : "outline"}
                   className="h-7 text-xs flex-1"
-                  onClick={() => setAffidavitKind("non-service")}
+                  onClick={() => setDocumentType("declaration")}
+                  disabled={!allowDeclarations}
+                  title={!allowDeclarations ? "Unsworn declarations are disabled by Administrator in Settings" : undefined}
                 >
-                  Non-Service
+                  Declaration (§ 426)
                 </Button>
               </div>
-              {inferredKind === "non-service" && isService && (
-                <p className="text-[11px] text-amber-700">No successful serve with a recorded method — verify before printing a Service affidavit.</p>
+              {!allowDeclarations && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400 italic">
+                  Declarations are currently disabled by Administrator in Settings.
+                </p>
               )}
-              {inferredKind === "service" && !isService && (
-                <p className="text-[11px] text-slate-500">A completed serve exists; this will print as Affidavit of Non-Service.</p>
-              )}
+            </div>
+
+            <div className="space-y-1 pt-1.5 border-t border-slate-200 dark:border-slate-800">
+              <span className="text-slate-500 font-medium">Type:</span>
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {isService
+                  ? documentType === "declaration"
+                    ? "Declaration of Service"
+                    : "Affidavit of Service"
+                  : documentType === "declaration"
+                    ? "Non-Service Declaration"
+                    : "Affidavit of Non-Service"}
+              </p>
+              <p className="text-[11px] text-slate-500">Derived from recorded attempts for this recipient.</p>
             </div>
             {recipientsList.length > 1 ? (
               <div className="space-y-2 pt-1 border-t border-slate-200 dark:border-slate-700">
@@ -729,14 +944,23 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             <div className="text-xs text-slate-500 flex items-center gap-1">
               <Loader2 className="h-3 w-3 animate-spin" /> Checking signed versions…
             </div>
-          ) : hasActiveSigned ? (
-            <div className="rounded-lg border border-green-200 bg-green-50 p-2.5 text-xs text-green-800">
-              A signed version exists (notarization pending). Print it to apply the electronic signature.
-            </div>
-          ) : null}
+          ) : (
+            <>
+              {hasSignedForDoc("affidavit") && (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-2.5 text-xs text-green-800">
+                  Signed sworn affidavit on file (notarization pending).
+                </div>
+              )}
+              {allowDeclarations && hasSignedForDoc("declaration") && (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-2.5 text-xs text-green-800">
+                  Signed declaration on file (12 O.S. § 426 — no notary).
+                </div>
+              )}
+            </>
+          )}
         </div>
 
-        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2 border-t mt-2">
           <Button variant="outline" className="h-11 w-full sm:w-auto" onClick={() => setIsOpen(false)}>
             Cancel
           </Button>
@@ -752,24 +976,39 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
               <span>Print All ({recipientsList.length} Packets)</span>
             </Button>
           )}
-          {hasActiveSigned && caseId ? (
+          <Button
+            onClick={handlePrintOrSave}
+            className="h-11 w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center gap-2"
+            disabled={isLoadingCase || hasPendingOutbox || fetchFailed}
+            title={hasPendingOutbox ? "Blocked: outbox sync pending" : fetchFailed ? "Blocked: server records unavailable" : undefined}
+          >
+            <Printer className="w-4 h-4" />
+            <span>
+              {recipientsList.length > 1
+                ? `Print ${activeRecipientName.split(" ")[0]}`
+                : documentType === "declaration"
+                  ? "Print Declaration"
+                  : "Print / Save PDF"}
+            </span>
+          </Button>
+          {caseId && hasSignedForDoc("affidavit") && (
             <Button
-              onClick={handlePrintSigned}
+              onClick={() => handlePrintSigned("affidavit")}
               disabled={isRenderingSigned || hasPendingOutbox || fetchFailed}
               className="h-11 w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white flex items-center justify-center gap-2"
             >
               {isRenderingSigned ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
-              <span>Print Signed Version</span>
+              <span>Print Signed Affidavit</span>
             </Button>
-          ) : (
+          )}
+          {caseId && allowDeclarations && hasSignedForDoc("declaration") && (
             <Button
-              onClick={handlePrintOrSave}
-              className="h-11 w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center gap-2"
-              disabled={isLoadingCase || hasPendingOutbox || fetchFailed}
-            title={hasPendingOutbox ? "Blocked: outbox sync pending" : fetchFailed ? "Blocked: server records unavailable" : undefined}
+              onClick={() => handlePrintSigned("declaration")}
+              disabled={isRenderingSigned || hasPendingOutbox || fetchFailed}
+              className="h-11 w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white flex items-center justify-center gap-2"
             >
-              <Printer className="w-4 h-4" />
-              <span>{recipientsList.length > 1 ? `Print ${activeRecipientName.split(' ')[0]}` : "Print / Save PDF"}</span>
+              {isRenderingSigned ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+              <span>Print Signed Declaration</span>
             </Button>
           )}
           {caseId && (isAdmin || assignedServer) && (
@@ -778,15 +1017,29 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
               variant={hasActiveSigned ? "outline" : "secondary"}
               className="h-11 w-full sm:w-auto flex items-center justify-center gap-2"
               disabled={isLoadingCase || hasPendingOutbox || fetchFailed}
-              title={hasPendingOutbox ? "Blocked: outbox sync pending" : fetchFailed ? "Blocked: server records unavailable" : "Applies the assigned server's electronic signature only — does not notarize"}
+              title={
+                hasPendingOutbox
+                  ? "Blocked: outbox sync pending"
+                  : fetchFailed
+                    ? "Blocked: server records unavailable"
+                    : allowDeclarations
+                      ? "One tap signs sworn affidavit and §426 declaration"
+                      : "Applies the assigned server's electronic signature only — does not notarize"
+              }
             >
               <PenLine className="w-4 h-4" />
               <span>
-                {hasActiveSigned
-                  ? "Re-sign (new version)"
-                  : recipientsList.length > 1
-                    ? `Sign both as ${serverLabel}`
-                    : `Sign Affidavit as ${serverLabel}`}
+                {allowDeclarations
+                  ? hasSignedForDoc("affidavit") && hasSignedForDoc("declaration")
+                    ? `Re-sign both as ${serverLabel}`
+                    : recipientsList.length > 1
+                      ? `Sign Affidavit + Declaration (all) as ${serverLabel}`
+                      : `Sign Affidavit + Declaration as ${serverLabel}`
+                  : hasActiveSigned
+                    ? "Re-sign (new version)"
+                    : recipientsList.length > 1
+                      ? `Sign both as ${serverLabel}`
+                      : `Sign Affidavit as ${serverLabel}`}
               </span>
             </Button>
           )}
@@ -797,6 +1050,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
             <AffidavitExecutionAudit caseId={caseId} />
           </div>
         )}
+        </div>
       </DialogContent>
 
       {caseId && (
@@ -807,7 +1061,10 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
           open={signOpen}
           onOpenChange={setSignOpen}
           onSigned={handleSigned}
-          affidavitKind={affidavitKind}
+          affidavitKind={effectiveKind}
+          documentType={documentType}
+          allowDeclarations={allowDeclarations}
+          signBothFormats={allowDeclarations}
           recipientId={selectedRecipientId}
           allRecipients={recipientsList}
         />

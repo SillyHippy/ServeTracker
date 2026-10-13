@@ -30,7 +30,8 @@ async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): P
     err.data = parsed;
     // 401 = server is up but session is dead/revoked. Bounce to login so the
     // app never renders stale cached data as live. Offline requests can never
-    // produce a 401 (they throw network errors instead).
+    // produce a 401 (they throw network errors instead), so this only fires
+    // when the server explicitly rejected the request.
     if (res.status === 401 && typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
       try { localStorage.removeItem("servetracker_auth_user"); } catch {}
       window.location.href = "/login";
@@ -239,7 +240,6 @@ export const api = {
     } catch (err) {
       // 401/403 = server rejected the session: never serve stale cache as live.
       if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
-
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) return JSON.parse(cached);
@@ -293,7 +293,6 @@ export const api = {
     } catch (err) {
       // 401/403 = server rejected the session: never serve stale cache as live.
       if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
-
       try {
         const cached = localStorage.getItem("serve-tracker-clients");
         if (cached) return JSON.parse(cached);
@@ -532,7 +531,6 @@ export const api = {
     } catch (err) {
       // 401/403 = server rejected the session: never serve stale cache as live.
       if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
-
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) return JSON.parse(cached);
@@ -559,7 +557,6 @@ export const api = {
     } catch (err) {
       // 401/403 = server rejected the session: never serve stale cache as live.
       if ((err as any)?.status === 401 || (err as any)?.status === 403) throw err;
-
       try {
         const cached = localStorage.getItem(cacheKey);
         if (cached) return JSON.parse(cached);
@@ -846,7 +843,12 @@ export const api = {
 
   // ---- Affidavit e-sign ----
 
-  async prepareAffidavit(caseId: string, affidavitKind?: "service" | "non-service", recipientId?: string) {
+  async prepareAffidavit(
+    caseId: string,
+    affidavitKind?: "service" | "non-service",
+    recipientId?: string,
+    documentType?: "affidavit" | "declaration"
+  ) {
     const res = await fetch(`${API_BASE}/api/affidavits/prepare`, {
       method: "POST",
       credentials: "include",
@@ -854,7 +856,7 @@ export const api = {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ caseId, affidavitKind, recipientId }),
+      body: JSON.stringify({ caseId, affidavitKind, recipientId, documentType }),
     });
     const text = await res.text();
     let data: Record<string, unknown> = {};
@@ -880,6 +882,7 @@ export const api = {
     acknowledged?: boolean;
     confirmation?: string;
     affidavitKind?: "service" | "non-service";
+    documentType?: "affidavit" | "declaration";
     recipientId?: string;
     notaryState?: string;
     notaryCounty?: string;
@@ -890,8 +893,11 @@ export const api = {
     });
   },
 
-  async renderAffidavit(caseId: string, recipientId?: string) {
-    const q = recipientId ? `?recipientId=${encodeURIComponent(recipientId)}` : "";
+  async renderAffidavit(caseId: string, recipientId?: string, documentType?: "affidavit" | "declaration") {
+    const params = new URLSearchParams();
+    if (recipientId) params.set("recipientId", recipientId);
+    if (documentType) params.set("documentType", documentType);
+    const q = params.toString() ? `?${params.toString()}` : "";
     return apiFetch<import("@/types/AffidavitExecution").AffidavitRenderResult>(`/api/affidavits/${caseId}/render${q}`);
   },
 
@@ -911,6 +917,25 @@ export const api = {
       api.getClients().catch(() => {});
       api.getServerWorkload().catch(() => {});
     } catch {}
+  },
+  async getSettings() {
+    try {
+      return await apiFetch<{ allow_declarations: boolean }>("/api/settings");
+    } catch {
+      const stored = localStorage.getItem("servetracker_allow_declarations");
+      return { allow_declarations: stored !== null ? stored === "true" : true };
+    }
+  },
+  async updateSettings(settings: { allow_declarations?: boolean }) {
+    if (typeof settings.allow_declarations === "boolean") {
+      try {
+        localStorage.setItem("servetracker_allow_declarations", String(settings.allow_declarations));
+      } catch {}
+    }
+    return apiFetch<{ success: boolean; allow_declarations: boolean }>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    });
   },
 };
 

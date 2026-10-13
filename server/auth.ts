@@ -634,7 +634,7 @@ function activeCaseCountFor(db: Database, userId: string): number {
   const row = db
     .query(
       `SELECT COUNT(*) as c FROM client_cases
-       WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')`
+       WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice','on-hold','hold')`
     )
     .get(userId) as { c: number };
   return Number(row?.c || 0);

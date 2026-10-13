@@ -2177,7 +2177,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       // Prefer active case row for this client+case # when caller omitted UUID
       const activeCase = db.query(
         `SELECT id FROM client_cases WHERE client_id = ? AND case_number = ?
-         AND LOWER(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')
+         AND LOWER(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice','on-hold','hold')
          ORDER BY updated_at DESC, created_at DESC LIMIT 1`
       ).get(clientId, caseNum) as { id: string } | null;
       const anyCase = activeCase || (db.query(
@@ -2249,7 +2249,12 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       stagedCommits.push({ src: stagePath, dest: join(UPLOADS_DIR, "serves", filename) });
     }
 
-    const serveStatus = body.status || "unknown";
+    const badAddress =
+      body.bad_address === true ||
+      body.badAddress === true ||
+      String(body.result_detail || body.resultDetail || "").toLowerCase() === "bad address";
+    let serveStatus = body.status || "unknown";
+    if (badAddress) serveStatus = "bad-address";
     const accuracyMeters = Number(body.accuracy_meters || body.accuracyMeters || 0);
     const deviceInfo = String(body.device_info || body.deviceInfo || c.req.header("user-agent") || "").slice(0, 255);
     const attemptHash = createHash("sha256").update(`${id}|${caseNum}|${timestamp}|${coordinates}|${user.id}|${serveStatus}`).digest("hex");
@@ -2689,11 +2694,20 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       const caseNum = String(response.case_number || response.caseNumber || "Case");
       const person = String(response.person_being_served || response.personBeingServed || "");
       const statusLabel = String(response.status || "logged");
+      const isBadAddress = statusLabel.toLowerCase() === "bad-address";
       notifyAdmins(db, {
-        type: statusLabel.toLowerCase() === "served" ? "serve_complete" : "serve_attempt",
-        priority: statusLabel.toLowerCase() === "served" ? "high" : "normal",
-        title: `Attempt: ${caseNum} (${statusLabel})`,
-        body: `${serverName} logged attempt on ${person || caseNum}`,
+        type: isBadAddress
+          ? "bad_address"
+          : statusLabel.toLowerCase() === "served"
+            ? "serve_complete"
+            : "serve_attempt",
+        priority: isBadAddress || statusLabel.toLowerCase() === "served" ? "high" : "normal",
+        title: isBadAddress
+          ? `Bad address: ${caseNum}`
+          : `Attempt: ${caseNum} (${statusLabel})`,
+        body: isBadAddress
+          ? `${serverName} flagged a bad address on ${person || caseNum} — review needed`
+          : `${serverName} logged attempt on ${person || caseNum}`,
         entityType: "serve",
         entityId: String(id),
         actionUrl: `/history?case=${caseNum}`,
@@ -3473,7 +3487,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       const activeCases = db
         .query(
           `SELECT id, updated_at, created_at FROM client_cases
-           WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')`
+           WHERE assigned_to = ? AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice','on-hold','hold')`
         )
         .all(id) as { id: string; updated_at?: string; created_at?: string }[];
 
@@ -3562,7 +3576,7 @@ export function registerRoutes(app: { get: Function; post: Function; put: Functi
       (db
         .query(
           `SELECT COUNT(*) as c FROM client_cases
-           WHERE (assigned_to = '' OR assigned_to IS NULL) AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice')`
+           WHERE (assigned_to = '' OR assigned_to IS NULL) AND lower(COALESCE(status,'')) NOT IN ('closed','completed','served','non-service','nonservice','on-hold','hold')`
         )
         .get() as { c: number }).c || 0
     );

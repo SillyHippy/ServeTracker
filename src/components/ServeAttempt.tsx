@@ -181,7 +181,9 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
       s === "completed" ||
       s === "served" ||
       s === "non-service" ||
-      s === "nonservice"
+      s === "nonservice" ||
+      s === "on-hold" ||
+      s === "hold"
     );
   };
 
@@ -434,6 +436,7 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
     }
     // Method of service validation — only for successful serves (the affidavit
     // wording depends on it; Joseph refuses to sign a false affidavit).
+    const isBadAddress = data.status === "bad-address";
     if (data.status === "completed") {
       if (!serviceMethod) {
         toast({ title: "Method required", description: "Select how they were served (Personal or Substitute).", variant: "destructive" });
@@ -494,7 +497,8 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         coordinates: location ? `${location.latitude},${location.longitude}` : "",
         address: data.serviceAddress || selectedCase.homeAddress || selectedCase.workAddress || (selectedClient?.address || ""),
         serviceAddress: data.serviceAddress, notes: data.notes || "",
-        timestamp: ts, occurred_at: ts, status: data.status,
+        timestamp: ts, occurred_at: ts,
+        status: isBadAddress ? "failed" : data.status,
         attempt_type: attemptType,
         gps_source: !isManualLog && location ? "captured" : "manual",
         contact_person: contactPerson, is_manual: isManualLog, photos: photos as any,
@@ -504,10 +508,14 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
         entityName: entityName || corporateAgent, entity_name: entityName || corporateAgent,
         recipientTitle: serviceMethod === "authorized-agent" && recipientTitle === "Registered Agent" ? "" : recipientTitle,
         recipient_title: serviceMethod === "authorized-agent" && recipientTitle === "Registered Agent" ? "" : recipientTitle,
+        bad_address: isBadAddress,
+        badAddress: isBadAddress,
+        ...(isBadAddress ? { result_detail: "bad address", resultDetail: "bad address" } : {}),
       };
       // Build payloads for all deliveries at this stop
       const deliveryPayloads = deliveries.map((delivery) => {
-        const deliveryStatus = delivery.status || data.status;
+        const rawDelivery = delivery.status || data.status;
+        const deliveryStatus = rawDelivery === "bad-address" ? "failed" : rawDelivery;
         const id = newOfflineId();
         return {
           ...shared,
@@ -920,11 +928,18 @@ export const ServeAttempt: React.FC<ServeAttemptProps> = ({ clients, onComplete 
                         <SelectContent>
                           <SelectItem value="completed">✓ Served</SelectItem>
                           <SelectItem value="failed">✗ Unsuccessful</SelectItem>
+                          <SelectItem value="bad-address">⚠ Bad Address</SelectItem>
                         </SelectContent>
                       </Select>
                     )} />
                   </div>
                 </div>
+
+                {form.watch("status") === "bad-address" && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-950">
+                    Bad address — admin will be notified immediately when you save.
+                  </div>
+                )}
 
                 {/* Method of Service — REQUIRED when Result = Served. Affidavit wording depends on it. */}
                 {form.watch("status") === "completed" && (
