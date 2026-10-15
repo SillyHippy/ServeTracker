@@ -9,28 +9,26 @@ export interface CustomToastProps {
 }
 
 // Create the base toast function
-const toastFn = (props?: CustomToastProps): string | number => {
+const toastFn = (props?: CustomToastProps): { id: string; dismiss: () => void; update: () => void } => {
   if (props) {
     const { title, description, variant } = props;
     if (variant === "destructive") {
       return sonnerToast.error(title, { description });
-    } else if (variant === "success") {
-      return sonnerToast.success(title, { description });
-    } else if (variant === "warning") {
-      return sonnerToast.warning(title, { description });
-    } else if (variant === "info") {
-      return sonnerToast.info(title, { description });
     }
-    return sonnerToast(title, { description });
   }
-  return sonnerToast("Notification");
+  // No-op handle for non-destructive toasts
+  return {
+    id: '',
+    dismiss: () => {},
+    update: () => {}
+  };
 };
 
 // Add methods to the function
 toastFn.error = (title?: string, options?: any) => sonnerToast.error(title, options);
-toastFn.success = (title?: string, options?: any) => sonnerToast.success(title, options);
-toastFn.warning = (title?: string, options?: any) => sonnerToast.warning(title, options);
-toastFn.info = (title?: string, options?: any) => sonnerToast.info(title, options);
+toastFn.success = () => ({ id: '', dismiss: () => {}, update: () => {} });
+toastFn.warning = () => ({ id: '', dismiss: () => {}, update: () => {} });
+toastFn.info = () => ({ id: '', dismiss: () => {}, update: () => {} });
 
 // Export as toast
 export const toast = toastFn;
