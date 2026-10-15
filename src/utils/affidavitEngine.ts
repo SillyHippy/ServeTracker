@@ -565,7 +565,25 @@ export function buildAffidavitSectionHtml(data: AffidavitPayload): {
   const commentsBlock = commentsParts.join("\n");
 
   const exhibits: ExhibitPhotoItem[] = [];
-  physicalAttempts.forEach((att, idx) => {
+  // Per-recipient exhibits: only photos captured on THIS recipient's own rows.
+  // Sibling rows of the same encounter (two people served at one stop) carry
+  // duplicated copies of the same scene photos; merging them here made each
+  // affidavit print the whole stop's photo set (2× duplication). Fall back to
+  // the merged encounter only when this recipient has no attributed rows
+  // (legacy data with no recipient attribution).
+  const targetIdForPhotos = String(data.recipient?.id || "").trim();
+  const targetNameForPhotos = String(recipientName || "").trim();
+  const ownAttempts =
+    targetIdForPhotos || targetNameForPhotos
+      ? sortedAttempts.filter(
+          (a) =>
+            isPhysicalRow(a) &&
+            servesTargetRecipient(a, targetIdForPhotos, targetNameForPhotos)
+        )
+      : [];
+  const exhibitSource =
+    ownAttempts.length > 0 ? ownAttempts : physicalAttempts;
+  exhibitSource.forEach((att, idx) => {
     const dStr = fmtAttemptDt(att);
     if (att.photos && att.photos.length > 0) {
       att.photos.forEach((p) => {
@@ -817,10 +835,54 @@ export function generateAffidavitHtml(data: AffidavitPayload): string {
  */
 export function generateBatchAffidavitsHtml(
   payloads: AffidavitPayload[],
-  options?: boolean | { includeExhibits?: boolean }
+  options?: boolean | { includeExhibits?: boolean; perCaseExhibits?: boolean }
 ): string {
   if (payloads.length === 0) return "";
   const includeExhibits = typeof options === "boolean" ? options : options?.includeExhibits !== false;
+  const perCaseExhibits = typeof options === "object" ? options.perCaseExhibits === true : false;
+
+  if (perCaseExhibits) {
+    const sectionsHtml: string[] = [];
+    const exhibitGridFor = (exs: ExhibitPhotoItem[]): string =>
+      exs
+        .map(
+          (ex) => `
+          <div class="exhibit-card">
+            <img src="${ex.photoUrl}" alt="Exhibit" />
+            <div style="font-size:9pt;margin-top:6px;font-weight:bold;">Attempt #${ex.attemptNum} — Photo #${ex.pos}</div>
+            <div style="font-size:8pt;color:#666;">${ex.dateStr}</div>
+          </div>`
+        )
+        .join("");
+    payloads.forEach((payload, idx) => {
+      const { sectionHtml, exhibits } = buildAffidavitSectionHtml(payload);
+      const caseExhibitsHtml = (includeExhibits && exhibits.length > 0)
+        ? `
+        <div class="exhibit-page">
+          <div class="section-title" style="font-size:13pt;margin-top:24px;">EXHIBIT PHOTOS (${exhibits.length})</div>
+          <div class="exhibit-grid">
+            ${exhibitGridFor(exhibits)}
+          </div>
+        </div>`
+        : "";
+
+      sectionsHtml.push(`
+        <div class="affidavit-packet" style="page-break-after: always; break-after: page;">
+          ${sectionHtml}
+          ${caseExhibitsHtml}
+        </div>
+      `);
+    });
+    // Last packet must not force a trailing blank page.
+    const last = sectionsHtml.length - 1;
+    sectionsHtml[last] = sectionsHtml[last].replace(
+      'style="page-break-after: always; break-after: page;"',
+      'style="page-break-after: auto; break-after: auto;"',
+    );
+    const caseNumber = payloads[0]?.case?.case_number || "";
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>AFFIDAVITS BATCH - ${caseNumber}</title><style>${COMMON_CSS}</style></head><body>${sectionsHtml.join("\n")}</body></html>`;
+  }
+
   let sharedExhibits: ExhibitPhotoItem[] = [];
   const sectionsHtml: string[] = [];
 

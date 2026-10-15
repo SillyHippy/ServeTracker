@@ -530,7 +530,7 @@ export const AffidavitGenerator: React.FC<AffidavitGeneratorProps> = ({
       })
     );
 
-    const html = generateBatchAffidavitsHtml(payloads, true);
+    const html = generateBatchAffidavitsHtml(payloads, { perCaseExhibits: true });
     const printSuccess = printHtmlWithImages(html);
     if (printSuccess) {
       toast({
