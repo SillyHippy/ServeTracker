@@ -759,7 +759,7 @@ const COMMON_CSS = `
   .exhibit-page { page-break-before: always; break-before: page; text-align: center; }
   .exhibit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
   .exhibit-card { border: 1px solid #ccc; padding: 6px; background: #fafafa; break-inside: avoid; page-break-inside: avoid; }
-  .exhibit-card img { width: 100%; height: 4.55in; object-fit: contain; }
+  .exhibit-card img { max-width: 100%; max-height: 210px; object-fit: contain; }
   @media print {
     body { margin: 0.35in; }
     .exhibit-page { page-break-before: always; break-before: page; }
